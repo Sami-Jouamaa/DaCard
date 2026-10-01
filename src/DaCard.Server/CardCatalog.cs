@@ -12,13 +12,15 @@ public record CardEntry(string Id, string Key, string Rarity, string? Collection
     Dictionary<string, List<string>> Frames, CardFile Data, string Dir, List<LayerSource> Front, List<LayerSource> Back)
 {
     public bool HasLayers => Data.Layers != null;
+    public string Addon { get; init; } = "";
+    public string IdKey => CardCatalog.IdKeyOf(Data.IdKey, Key);
 }
 
 [Injectable(InjectionType.Singleton)]
 public class CardCatalog(ISptLogger<CardCatalog> logger, JsonUtil jsonUtil)
 {
     public static readonly string[] RarityOrder = ["Common", "Uncommon", "Rare", "Epic", "Legendary"];
-    public const string CardsFolder = "data/cards";
+
     public const string DefaultCollection = "_Default";
     public const string DataFile = "card.json";
     public const string ArtBase = "card";
@@ -27,7 +29,7 @@ public class CardCatalog(ISptLogger<CardCatalog> logger, JsonUtil jsonUtil)
     private const string IdSalt = "DaCard:";
 
     public List<CardEntry> Cards { get; } = new();
-    public string? BackImagePath { get; private set; }
+    public Dictionary<string, string> BackImages { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public CardManifest Manifest { get; set; } = new();
 
@@ -35,22 +37,45 @@ public class CardCatalog(ISptLogger<CardCatalog> logger, JsonUtil jsonUtil)
 
     public static bool IsRarity(string folder) => RarityOrder.Any(r => r.Equals(folder, StringComparison.OrdinalIgnoreCase));
 
-    public void Scan(string cardsDir, IReadOnlyList<TextureSlot> slots)
+    public static string IdKeyOf(string? idKey, string key) => string.IsNullOrWhiteSpace(idKey) ? key : idKey.Trim();
+
+    public void Scan(IReadOnlyList<AddonEntry> addons, IReadOnlyList<TextureSlot> slots)
     {
         Cards.Clear();
-        Directory.CreateDirectory(Path.Combine(cardsDir, DefaultCollection));
-
-        var back = Path.Combine(cardsDir, "back.png");
-        BackImagePath = File.Exists(back) ? back : null;
-
+        BackImages.Clear();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var addon in addons)
+        {
+            var cardsDir = Path.Combine(addon.Dir, Addons.Cards);
+            if (!Directory.Exists(cardsDir))
+                continue;
+            var back = Path.Combine(cardsDir, "back.png");
+            if (File.Exists(back))
+                BackImages[addon.Folder] = back;
+            foreach (var card in ScanAddon(addon, cardsDir, slots, seen))
+            {
+                if (ids.TryGetValue(card.Id, out var first))
+                {
+                    logger.Error($"[DaCard] {addon.Where(Addons.Cards)}: card '{card.Key}' is the same card as '{first}' (same \"idKey\": a copied card folder?); skipping it.");
+                    continue;
+                }
+                ids[card.Id] = card.Key;
+                Cards.Add(card);
+            }
+        }
+    }
+
+    private IEnumerable<CardEntry> ScanAddon(AddonEntry addon, string cardsDir, IReadOnlyList<TextureSlot> slots, HashSet<string> seen)
+    {
+        var cardsPath = addon.Where(Addons.Cards);
         foreach (var collectionDir in Directory.GetDirectories(cardsDir).OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
         {
             var folder = Path.GetFileName(collectionDir);
             if (IsRarity(folder))
             {
-                logger.Warning($"[DaCard] {CardsFolder}/{folder}/ is the old layout and is ignored: cards now go into {CardsFolder}/<collection>/{folder}/<card>/, " +
-                               $"or {CardsFolder}/{DefaultCollection}/{folder}/<card>/ without a collection.");
+                logger.Warning($"[DaCard] {cardsPath}/{folder}/ is ignored: cards go into {cardsPath}/<collection>/{folder}/<card>/, " +
+                               $"or {cardsPath}/{DefaultCollection}/{folder}/<card>/ without a collection.");
                 continue;
             }
             var collection = folder.Equals(DefaultCollection, StringComparison.OrdinalIgnoreCase) ? null : folder;
@@ -60,13 +85,13 @@ public class CardCatalog(ISptLogger<CardCatalog> logger, JsonUtil jsonUtil)
                 var rarity = RarityOrder.FirstOrDefault(r => r.Equals(Path.GetFileName(rarityDir), StringComparison.OrdinalIgnoreCase));
                 if (rarity == null)
                 {
-                    logger.Warning($"[DaCard] Ignoring {CardsFolder}/{folder}/{Path.GetFileName(rarityDir)}: not a rarity ({string.Join(", ", RarityOrder)})");
+                    logger.Warning($"[DaCard] Ignoring {cardsPath}/{folder}/{Path.GetFileName(rarityDir)}: not a rarity ({string.Join(", ", RarityOrder)})");
                     continue;
                 }
 
                 var loose = Directory.GetFiles(rarityDir, "*.png").Length + Directory.GetFiles(rarityDir, "*.json").Length;
                 if (loose > 0)
-                    logger.Warning($"[DaCard] {CardsFolder}/{folder}/{rarity}: {loose} file(s) directly in the rarity folder are ignored. " +
+                    logger.Warning($"[DaCard] {cardsPath}/{folder}/{rarity}: {loose} file(s) directly in the rarity folder are ignored. " +
                                    $"Every card needs its own folder: {rarity}/<card>/{DataFile} + {ArtBase}.png.");
 
                 foreach (var cardDir in Directory.GetDirectories(rarityDir).OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
@@ -75,13 +100,13 @@ public class CardCatalog(ISptLogger<CardCatalog> logger, JsonUtil jsonUtil)
                     var key = collection == null ? name : $"{collection}/{name}";
                     if (!seen.Add(key))
                     {
-                        logger.Error($"[DaCard] Duplicate card '{name}' in {CardsFolder}/{folder}: card folder names must be unique within a collection; skipping {CardsFolder}/{folder}/{rarity}/{name}.");
+                        logger.Error($"[DaCard] Duplicate card '{name}' in {cardsPath}/{folder}: card folder names must be unique; skipping {cardsPath}/{folder}/{rarity}/{name}.");
                         continue;
                     }
 
-                    var card = TryLoad($"{CardsFolder}/{folder}/{rarity}/{name}", rarity, key, collection, cardDir, slots);
+                    var card = TryLoad($"{cardsPath}/{folder}/{rarity}/{name}", rarity, key, collection, cardDir, slots);
                     if (card != null)
-                        Cards.Add(card);
+                        yield return card with { Addon = addon.Folder };
                 }
             }
         }
@@ -146,7 +171,7 @@ public class CardCatalog(ISptLogger<CardCatalog> logger, JsonUtil jsonUtil)
             return null;
         }
 
-        return new CardEntry(IdFor(key), key, rarity, collection, textures, frames, data, cardDir, front, back);
+        return new CardEntry(IdFor(IdKeyOf(data.IdKey, key)), key, rarity, collection, textures, frames, data, cardDir, front, back);
     }
 
     public static string IdFor(string key)
@@ -155,5 +180,5 @@ public class CardCatalog(ISptLogger<CardCatalog> logger, JsonUtil jsonUtil)
         return Convert.ToHexString(hash, 0, 12).ToLowerInvariant();
     }
 
-    public static string FoilIdFor(CardEntry card) => IdFor("foil:" + card.Key);
+    public static string FoilIdFor(CardEntry card) => IdFor("foil:" + card.IdKey);
 }

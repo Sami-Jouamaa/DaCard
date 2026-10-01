@@ -90,8 +90,8 @@
         uniform vec3 uRarity;
         uniform sampler2D uArt, uDepth, uFoilMask, uOverlay, uBack;
         uniform sampler2D uNormal;    // card.normal.png, flat when missing
-        // The layer stacks (as the client builds them): uOverlay / uBack colour, foil (R: foil, G: frame glow), normals
-        uniform sampler2D uLayerFoil, uLayerNormal, uBackFoil, uBackNormal;
+        uniform sampler2D uLayerFoil, uLayerNormal, uBackFoil, uBackNormal, uLayerSurface, uBackSurface;
+        uniform float uRoughness;
         // Material floats (MATERIAL below)
         uniform float uArtGlow, uBorderGlow, uFoilScale, uFoilShift;
         uniform float uSteps, uNear, uFar, uHeightMin, uHeightMax;
@@ -278,17 +278,18 @@
             return pow(c, vec3(1.0 / 2.2));
         }
 
-        // Lit card face. frame: 0 = the art's glow, 1 = a frame's; foil: where the foil version is foil (CardLayerFoil)
-        vec3 shade(vec4 base, float frame, vec3 nt, float foil, vec3 n, vec3 T, vec3 B, vec3 v, vec3 viewTS, float smooth0) {
+        vec3 shade(vec4 base, float frame, vec3 nt, float foil, float rough0, float metal0, vec3 n, vec3 T, vec3 B, vec3 v, vec3 viewTS) {
             float glow = mix(uArtGlow, uBorderGlow, frame);
             nt.xy *= uNormalStrength;
             nt = normalize(nt);
             vec3 nLit = normalize(T * nt.x + B * nt.y + n * nt.z);
             vec4 foilMask = vec4(vec3(foil), 1.0);
-            float metal = foilMetal(foilMask, 0.0);
-            vec3 albedo = foilAlbedo(base.rgb * (1.0 - glow), metal, vUV, viewTS);
-            vec3 color = albedo * light(nLit, v, mix(smooth0, 0.9, metal), metal) + base.rgb * glow;
-            float rough = mix(1.0 - max(smooth0, 0.85), 0.1, metal);
+            float shine = foilMetal(foilMask, 0.0);
+            float metal = max(metal0, shine);
+            float smoothness = mix(1.0 - rough0, 0.9, shine);
+            vec3 albedo = foilAlbedo(base.rgb * (1.0 - glow), shine, vUV, viewTS);
+            vec3 color = albedo * light(nLit, v, smoothness, metal) + base.rgb * glow;
+            float rough = clamp(1.0 - smoothness, 0.1, 1.0);
             vec3 f0 = mix(vec3(0.04), pow(max(albedo, vec3(0.0)), vec3(2.2)), metal);
             return lit(color, nLit, v, rough, f0) + cardFoil(vUV, viewTS, foilMask, 0.0, base);
         }
@@ -302,8 +303,9 @@
                 vec3 T = normalize(mat3(uModel) * vec3(-1, 0, 0)), B = normalize(mat3(uModel) * vec3(0, 1, 0));
                 vec3 viewTS = vec3(dot(v, T), dot(v, B), dot(v, n));
                 vec4 foil = texture(uBackFoil, vUV);
+                vec4 surface = texture(uBackSurface, vUV);
                 vec3 nt = texture(uBackNormal, vUV).xyz * 2.0 - 1.0;
-                outColor = vec4(shade(texture(uBack, vUV), foil.g, nt, foil.r, n, T, B, v, viewTS, 0.3), 1.0);
+                outColor = vec4(shade(texture(uBack, vUV), foil.g, nt, foil.r, mix(uRoughness, surface.r, surface.a), surface.g, n, T, B, v, viewTS), 1.0);
                 return;
             }
             vec3 T = normalize(mat3(uModel) * vec3(1, 0, 0)), B = normalize(mat3(uModel) * vec3(0, 1, 0));
@@ -320,7 +322,9 @@
             vec3 nt = mix(np, texture(uLayerNormal, vUV).xyz * 2.0 - 1.0, layers.a);
             vec4 pictureFoil = texture(uFoilMask, vUV);
             float foil = mix(pictureFoil.r * pictureFoil.a, layerFoil.r, layers.a);
-            outColor = vec4(shade(base, layerFoil.g, nt, foil, n, T, B, v, viewTS, uDeep ? 0.0 : 0.7), 1.0);
+            vec4 surface = texture(uLayerSurface, vUV);
+            float rough = mix(uRoughness, surface.r, surface.a * layers.a);
+            outColor = vec4(shade(base, layerFoil.g, nt, foil, rough, surface.g * surface.a, n, T, B, v, viewTS), 1.0);
         }`;
 
     function compile(gl, type, src) {
@@ -358,12 +362,13 @@
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.idx, gl.STATIC_DRAW);
 
-        const units = { art: 0, depth: 1, foilMask: 2, overlay: 3, back: 4, normal: 5, layerFoil: 6, layerNormal: 7, backFoil: 8, backNormal: 9 };
+        const units = { art: 0, depth: 1, foilMask: 2, overlay: 3, back: 4, normal: 5, layerFoil: 6, layerNormal: 7, backFoil: 8, backNormal: 9, layerSurface: 10, backSurface: 11 };
         const white = [255, 255, 255, 255], flat = [128, 128, 255, 255], noFoil = [0, 0, 0, 255];
         const fallback = { art: [0, 0, 0, 0], depth: white, foilMask: noFoil, overlay: [0, 0, 0, 0], back: [40, 42, 48, 255],
-            normal: flat, layerFoil: noFoil, layerNormal: flat, backFoil: noFoil, backNormal: flat };
+            normal: flat, layerFoil: noFoil, layerNormal: flat, backFoil: noFoil, backNormal: flat, layerSurface: [0, 0, 0, 0], backSurface: [0, 0, 0, 0] };
         const samplers = { art: 'uArt', depth: 'uDepth', foilMask: 'uFoilMask', overlay: 'uOverlay', back: 'uBack',
-            normal: 'uNormal', layerFoil: 'uLayerFoil', layerNormal: 'uLayerNormal', backFoil: 'uBackFoil', backNormal: 'uBackNormal' };
+            normal: 'uNormal', layerFoil: 'uLayerFoil', layerNormal: 'uLayerNormal', backFoil: 'uBackFoil', backNormal: 'uBackNormal',
+            layerSurface: 'uLayerSurface', backSurface: 'uBackSurface' };
         const textures = {};
         for (const key of Object.keys(units)) {
             const t = gl.createTexture();
@@ -464,6 +469,7 @@
             gl.uniformMatrix4fv(u.uViewProj, false, mul(perspective(FOV, canvas.width / canvas.height, 0.05, 20), viewMat));
             gl.uniform3fv(u.uEye, eye);
             gl.uniform1i(u.uDeep, params.type === '3d' ? 1 : 0);
+            gl.uniform1f(u.uRoughness, roughnessOf(params.type));
             gl.uniform1f(u.uFoil, params.foil ? params.material.FoilStrength : 0);
             gl.uniform3fv(u.uRarity, params.rarity);
             const material = params.type === '3d' ? params.material : { ...params.material, ...MATERIAL_2D };
@@ -537,9 +543,12 @@
         };
     }
 
+    const roughnessOf = (type) => (type === '3d' ? 1 : 0.3);
+
     window.CardView = {
         available: () => !!document.createElement('canvas').getContext('webgl2'),
         create,
         MATERIAL,
+        roughnessOf,
     };
 })();

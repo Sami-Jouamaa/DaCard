@@ -15,8 +15,6 @@ public record LayerLists
 
 public record LayerFile
 {
-    // <file>.png (the picture), <file>.foil.png (foil area), <file>.normal.png, <file>.normalmask.png (where the normal map
-    // shows); animated: frames.<file>[.foil|.normal|.normalmask]/frame_000.png ...
     [JsonPropertyName("file")] public string? File { get; set; }
 
     [JsonPropertyName("name")] public string? Name { get; set; }
@@ -24,10 +22,8 @@ public record LayerFile
     // % of copies that show this layer (rolled per copy of the card)
     [JsonPropertyName("chance")] public double Chance { get; set; } = 100;
 
-    // The foil version puts its foil on this layer (inside its foil area, else on all of it); false: never foil, and it covers the foil under it
     [JsonPropertyName("canBeFoil")] public bool CanBeFoil { get; set; } = true;
 
-    // Frame rate per animated map ("art", "foil", "normal", "normalmask")
     [JsonPropertyName("fps")] public Dictionary<string, double>? Fps { get; set; }
 
     // A card's layer over its collection's layers (an autograph...); else under them (its art, under the collection's frame)
@@ -61,8 +57,6 @@ public record LayerText
     [JsonPropertyName("font")] public string? Font { get; set; }
 }
 
-// The layer's picture on the card: centred at (x, y) (share of the card, y from the top), at scale times the size that
-// fits inside the card, turned clockwise by rotation degrees. Its foil area and normal map go with it.
 public record LayerTransform
 {
     [JsonPropertyName("x")] public double X { get; set; } = 0.5;
@@ -71,7 +65,6 @@ public record LayerTransform
     [JsonPropertyName("rotation")] public double Rotation { get; set; }
 }
 
-// A layer's files on disk. Maps: "art" (always), "foil", "normal", "normalmask".
 public record LayerSource(string Key, double Chance, bool CanBeFoil, bool Frame, Dictionary<string, string> Maps,
     Dictionary<string, List<string>> Frames, Dictionary<string, double> Fps, double SharedFps)
 {
@@ -84,9 +77,8 @@ public record LayerSource(string Key, double Chance, bool CanBeFoil, bool Frame,
     public string? FontPath { get; init; }
     public string SourceFile { get; init; } = "";
 
-    // normalmask: where the layer's normal map shows (white; black: the layer is flat there)
-    public const string Art = "art", Foil = "foil", Normal = "normal", NormalMask = "normalmask";
-    public static readonly string[] MapNames = [Art, Foil, Normal, NormalMask];
+    public const string Art = "art", Normal = "normal", Roughness = "roughness", Metallic = "metallic", Mask = "mask";
+    public static readonly string[] MapNames = [Art, Normal, Roughness, Metallic, Mask];
 }
 
 public record LayerManifestEntry
@@ -99,7 +91,6 @@ public record LayerManifestEntry
     // A collection's layer (frame, background): glows like the card frame, not like the art
     [JsonPropertyName("frame")] public bool Frame { get; set; }
 
-    // "art", "foil", "normal" -> image url
     [JsonPropertyName("textures")] public Dictionary<string, string> Textures { get; set; } = new();
 
     [JsonPropertyName("transform")] public LayerTransform? Transform { get; set; }
@@ -164,7 +155,6 @@ public static class CardLayers
         return layers;
     }
 
-    // One picture (+ optional .foil / .normal maps and frame folders) as a layer
     public static LayerSource? FromFiles(string dir, string file, string key, double chance, bool canBeFoil, bool frame,
         Dictionary<string, double>? fps, double sharedFps)
     {
@@ -189,7 +179,6 @@ public static class CardLayers
         return new LayerSource(key, Math.Clamp(chance, 0, 100), canBeFoil, frame, maps, frames, own, sharedFps);
     }
 
-    // The frames of card.png live in frames/, frames.foil/, frames.normal/ (older cards, ComfyUI); a layer's in frames.<file>[.<map>]/
     public static string FramesFolder(string file, string map)
     {
         var baseName = file == Legacy ? "frames" : "frames." + file;

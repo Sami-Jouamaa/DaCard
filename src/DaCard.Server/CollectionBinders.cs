@@ -16,7 +16,11 @@ public record StickerPicture(string Path, StickerPlacement Placement);
 
 // Front / Back: the collection's card layers, under every card's own
 public record CollectionEntry(string Id, string Key, CollectionFile Data, IReadOnlyList<StickerPicture> Stickers,
-    List<LayerSource> Front, List<LayerSource> Back, string Dir);
+    List<LayerSource> Front, List<LayerSource> Back, string Dir)
+{
+    public string Addon { get; init; } = "";
+    public string IdKey => CardCatalog.IdKeyOf(Data.IdKey, Key);
+}
 
 [Injectable(InjectionType.Singleton)]
 public class CollectionBinders(ISptLogger<CollectionBinders> logger, JsonUtil jsonUtil, CustomItemService customItemService, LocaleTable locales, ItemLedger ledger)
@@ -35,43 +39,64 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, JsonUtil js
     // Stash cells of every binder, whatever its card count
     public const int Width = 1, Height = 2;
 
-    public List<CollectionEntry> Scan(string cardsDir)
+    public List<CollectionEntry> Scan(IReadOnlyList<AddonEntry> addons)
     {
         var found = new List<CollectionEntry>();
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var addon in addons)
+        foreach (var collection in ScanAddon(addon))
+        {
+            if (!keys.Add(collection.Key) || !ids.Add(collection.Id))
+            {
+                logger.Error($"[DaCard] {addon.Where(Addons.Cards, collection.Key)}: another collection has the same folder name or \"idKey\" (a copied collection?); skipping it.");
+                continue;
+            }
+            found.Add(collection);
+        }
+        return found;
+    }
+
+    private IEnumerable<CollectionEntry> ScanAddon(AddonEntry addon)
+    {
+        var cardsDir = Path.Combine(addon.Dir, Addons.Cards);
         if (!Directory.Exists(cardsDir))
-            return found;
+            yield break;
+        var cardsPath = addon.Where(Addons.Cards);
         foreach (var dir in Directory.GetDirectories(cardsDir).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
         {
             var key = Path.GetFileName(dir);
             if (key.Equals(CardCatalog.DefaultCollection, StringComparison.OrdinalIgnoreCase) || CardCatalog.IsRarity(key))
                 continue;
             var json = Path.Combine(dir, DataFile);
-            CollectionFile? data = new();
-            if (File.Exists(json))
+            if (!File.Exists(json))
+                continue;
+            CollectionFile? data;
+            try
             {
-                try
-                {
-                    data = jsonUtil.Deserialize<CollectionFile>(File.ReadAllText(json));
-                }
-                catch (Exception e)
-                {
-                    logger.Error($"[DaCard] {CardCatalog.CardsFolder}/{key}/{DataFile} is not valid JSON: {e.Message}");
-                    continue;
-                }
+                data = jsonUtil.Deserialize<CollectionFile>(File.ReadAllText(json));
+            }
+            catch (Exception e)
+            {
+                logger.Error($"[DaCard] {cardsPath}/{key}/{DataFile} is not valid JSON: {e.Message}");
+                continue;
             }
             if (data == null)
                 continue;
             data.Name = string.IsNullOrWhiteSpace(data.Name) ? key : data.Name;
-            var (front, back) = ReadLayers(dir, key, data);
-            found.Add(new CollectionEntry(CardCatalog.IdFor("binder:" + key), key, data, FindStickers(dir, key, data), front, back, dir));
+            var idKey = CardCatalog.IdKeyOf(data.IdKey, key);
+            var where = $"{cardsPath}/{key}/{DataFile}";
+            var (front, back) = ReadLayers(dir, idKey, data, where);
+            yield return new CollectionEntry(CardCatalog.IdFor("binder:" + idKey), key, data, FindStickers(dir, where, data), front, back, dir)
+            {
+                Addon = addon.Folder
+            };
         }
-        return found;
     }
 
     // Collection front layers glow like a card frame. Older collections: overlay.png (the frame) and back.png
-    private (List<LayerSource> Front, List<LayerSource> Back) ReadLayers(string dir, string key, CollectionFile data)
+    private (List<LayerSource> Front, List<LayerSource> Back) ReadLayers(string dir, string key, CollectionFile data, string where)
     {
-        var where = $"{CardCatalog.CardsFolder}/{key}/{DataFile}";
         if (data.Layers != null)
             return (CardLayers.Read(dir, data.Layers.Front, $"coll:{key}:", true, where, logger),
                     CardLayers.Read(dir, data.Layers.Back, $"coll:{key}:", false, where, logger));
@@ -81,7 +106,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, JsonUtil js
         return (front != null ? [front] : [], back != null ? [back] : []);
     }
 
-    private List<StickerPicture> FindStickers(string dir, string key, CollectionFile data)
+    private List<StickerPicture> FindStickers(string dir, string where, CollectionFile data)
     {
         var stickers = new List<StickerPicture>();
         if (data.Stickers != null)
@@ -93,7 +118,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, JsonUtil js
                 if (file.Length > 0 && File.Exists(path))
                     stickers.Add(new StickerPicture(path, layer));
                 else
-                    logger.Warning($"[DaCard] {CardCatalog.CardsFolder}/{key}/{DataFile}: sticker picture '{layer.File}' is missing; skipping that sticker.");
+                    logger.Warning($"[DaCard] {where}: sticker picture '{layer.File}' is missing; skipping that sticker.");
             }
             return stickers;
         }
@@ -130,7 +155,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, JsonUtil js
                 return new Slot
                 {
                     Name = slotName,
-                    Id = new MongoId(CardCatalog.IdFor($"binder-slot:{collection.Key}:{card.Key}")),
+                    Id = new MongoId(CardCatalog.IdFor($"binder-slot:{collection.IdKey}:{card.IdKey}")),
                     Parent = new MongoId(collection.Id),
                     Properties = new SlotProperties
                     {
@@ -155,7 +180,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, JsonUtil js
                 Slots = members.Select(card => new LedgerSlot
                 {
                     Name = SlotName(card),
-                    Id = CardCatalog.IdFor($"binder-slot:{collection.Key}:{card.Key}"),
+                    Id = CardCatalog.IdFor($"binder-slot:{collection.IdKey}:{card.IdKey}"),
                     Label = card.Data.ShortName ?? card.Data.Name,
                     Filter = [card.Id, CardCatalog.FoilIdFor(card)]
                 }).ToList()
@@ -178,7 +203,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, JsonUtil js
         return entries;
     }
 
-    private static string SlotName(CardEntry card) => "cardslot_" + Regex.Replace(card.Key.ToLowerInvariant(), "[^a-z0-9_]", "_");
+    private static string SlotName(CardEntry card) => "cardslot_" + Regex.Replace(card.IdKey.ToLowerInvariant(), "[^a-z0-9_]", "_");
 
     private bool CreateItem(CollectionEntry collection, int cardCount, List<Slot> slots, BinderSettings settings)
     {
@@ -205,7 +230,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, JsonUtil js
             ItemTplToClone = CloneTpl,
             ParentId = ParentCompoundItem,
             NewId = new MongoId(collection.Id),
-            NewItemName = "dacard_binder_" + collection.Key.ToLowerInvariant(),
+            NewItemName = "dacard_binder_" + collection.IdKey.ToLowerInvariant(),
             FleaPriceRoubles = settings.Price,
             HandbookPriceRoubles = settings.Price,
             HandbookParentId = HandbookStorageContainers,

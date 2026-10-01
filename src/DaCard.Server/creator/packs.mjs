@@ -11,14 +11,21 @@
     const MAP_LABEL = { albedo: 'Albedo', normal: 'Normal map', metallic: 'Metallic', roughness: 'Roughness', ao: 'Ambient occlusion' };
     const MAP_NOTE = { albedo: 'The colours (required)', normal: 'OpenGL: green up', metallic: 'White = metal', roughness: 'White = rough, black = glossy', ao: 'Mixed AO' };
     const MAP_FILE = /^(albedo|normal|metallic|roughness|ao)\.png$/i;
-    const LAYER_FILE = /^layer_\d+(\.(metallic|roughness|normal|foil|normalmask))?(\.mask)?\.png$/i;
-    const LAYER_INPUTS = ['art', 'metallic', 'roughness', 'normal'];
-    const LAYER_KEYS = ['art', 'artMask', 'metallic', 'metallicMask', 'roughness', 'roughnessMask', 'normal', 'normalMask'];
-    const LAYER_SUFFIX = { artMask: 'mask', metallic: 'metallic', metallicMask: 'metallic.mask', roughness: 'roughness', roughnessMask: 'roughness.mask', normal: 'normal', normalMask: 'normal.mask' };
-    const LAYER_MAP_LABEL = { art: 'Albedo', metallic: 'Metallic', roughness: 'Roughness', normal: 'Normal map' };
-    const LAYER_MAP_EMPTY = { art: 'Required', metallic: 'None: from the finish', roughness: 'None: from the finish', normal: 'None: the base\'s creases show' };
-    const FINISHES = { print: 'Printed (matte ink)', foil: 'Foil (shiny metal)', base: 'Keep the base\'s shine' };
-    const PRINT_ROUGH = 0.62, FOIL_ROUGH = 0.2;
+    const LAYER_FILE = /^layer_[A-Za-z0-9]+(\.(metallic|roughness|normal|foil|normalmask|mask))?(\.mask)?\.png$/i;
+    const HASH_LAYER = /^(layer_[0-9a-f]{10})$/i;
+    const newLayerStem = () => 'layer_' + Array.from(crypto.getRandomValues(new Uint8Array(5)), (b) => b.toString(16).padStart(2, '0')).join('');
+    const LAYER_KEYS = ['art', 'normal', 'roughness', 'metallic', 'mask'];
+    const LAYER_SUFFIX = { normal: '.normal', roughness: '.roughness', metallic: '.metallic', mask: '.mask' };
+    const LAYER_MAP_LABEL = { art: 'Albedo', normal: 'Normal', roughness: 'Roughness', metallic: 'Metallic', mask: 'Mask' };
+    const LAYER_MAP_EMPTY = { art: 'Required', normal: 'None', roughness: 'Default', metallic: 'None', mask: 'Albedo alpha' };
+    const TEXT_KEYS = ['normal', 'roughness', 'metallic'];
+    const TEXT_W = 1024, TEXT_LINE = 256;
+    const LAYER_KINDS = {
+        image: { label: 'Image layer', title: 'Add a picture layer' },
+        text: { label: 'Text layer', title: 'Add a text layer' },
+    };
+    const FONT_FILE = /^layer_[A-Za-z0-9]+\.(ttf|otf)$/i;
+    const textDefaults = () => ({ value: '${name}', color: '#FFFFFF', align: 'center', uppercase: false, lines: 1, font: null, fontName: '', face: null });
     const MAX_SIDE = 2048;
     const PREVIEW_SIZE = 1024, SAVE_SIZE = 2048;
     const FACE_LABEL = { front: 'Front', back: 'Back', texture: 'Whole texture' };
@@ -184,22 +191,10 @@
 
     function derive(key, picture) {
         if (key === 'metallic' || key === 'roughness') picture.value = valueCanvas(picture.img, (v) => v);
-        if (key.endsWith('Mask')) picture.alpha = valueCanvas(picture.img, null, true);
+        if (key === 'mask') picture.alpha = valueCanvas(picture.img, null, true);
         return picture;
     }
 
-    function opaqueCanvas(img) {
-        const { w, h } = sizeOf(img);
-        const c = newCanvas(w, h);
-        const ctx = c.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0, c.width, c.height);
-        const data = ctx.getImageData(0, 0, c.width, c.height);
-        for (let i = 3; i < data.data.length; i += 4) data.data[i] = 255;
-        ctx.putImageData(data, 0, 0);
-        return c;
-    }
-
-    const gray = (v) => { const g = Math.round(v * 255); return `rgb(${g}, ${g}, ${g})`; };
 
     function rotateNormals(canvas, degrees) {
         if (!degrees) return canvas;
@@ -237,11 +232,11 @@
         return c;
     }
 
-    const touchesMetal =(layer) => !!layer.metallic || layer.finish !== 'base';
-    const touchesRough = (layer) => !!layer.roughness || layer.finish !== 'base';
+    const touchesMetal = (layer) => !!layer.metallic;
+    const touchesRough = (layer) => !!layer.roughness;
 
     function layerMaps(layer, S) {
-        const key = [S, layer.face, layer.x, layer.y, layer.scale, layer.rotation, layer.uid, layer.version, layer.finish, layer.normalStrength].join('|');
+        const key = [S, layer.face, layer.x, layer.y, layer.scale, layer.rotation, layer.uid, layer.version, layer.normalStrength].join('|');
         if (layer.cache && layer.cache.key === key) return layer.cache.maps;
         const { W, H } = faceSize(layer.face, S);
         const placed = (source) => {
@@ -250,23 +245,20 @@
             return c;
         };
         const artAlpha = placed(layer.img);
-        const within = (paint, mask) => {
+        const maskAlpha = layer.mask ? placed(layer.mask.alpha) : null;
+        const cut = (paint, byArt) => {
             const c = newCanvas(W, H), g = c.getContext('2d');
             paint(g);
             g.globalCompositeOperation = 'destination-in';
-            g.drawImage(mask ? placed(mask.alpha) : artAlpha, 0, 0);
+            if (byArt) g.drawImage(artAlpha, 0, 0);
+            if (maskAlpha) g.drawImage(maskAlpha, 0, 0);
             return c;
         };
         const image = (source) => (g) => drawPlaced(g, layer, W, H, source);
-        const flat = (v) => (g) => { g.fillStyle = gray(v); g.fillRect(0, 0, W, H); };
-        if (layer.artMask && !layer.artOpaque) layer.artOpaque = opaqueCanvas(layer.img);
-        const finish = { print: [0, PRINT_ROUGH], foil: [1, FOIL_ROUGH] }[layer.finish];
-        const albedo = layer.artMask ? within(image(layer.artOpaque), layer.artMask) : artAlpha;
-        const metal = layer.metallic ? within(image(layer.metallic.value), layer.metallicMask)
-            : finish ? within(flat(finish[0]), layer.metallicMask) : null;
-        const rough = layer.roughness ? within(image(layer.roughness.value), layer.roughnessMask)
-            : finish ? within(flat(finish[1]), layer.roughnessMask) : null;
-        const normal = layer.normal ? within(image(strengthened(layer.normal, layer.normalStrength)), layer.normalMask) : null;
+        const albedo = maskAlpha ? cut(image(layer.img), false) : artAlpha;
+        const metal = layer.metallic ? cut(image(layer.metallic.value), true) : null;
+        const rough = layer.roughness ? cut(image(layer.roughness.value), true) : null;
+        const normal = layer.normal ? cut(image(strengthened(layer.normal, layer.normalStrength)), true) : null;
         const toAtlas = (c, isNormal = false) => {
             if (!c) return null;
             if (layer.face === 'texture') return isNormal ? rotateNormals(c, layer.rotation) : c;
@@ -318,41 +310,50 @@
         ps.urls.forEach(URL.revokeObjectURL);
         ps.urls = [];
         const packs = [], skins = [];
-        const data = app.state.data;
-        if (data) {
-            const pdir = await app.getDir(data, PACKS);
-            if (pdir) {
-                for await (const [folder, handle] of pdir.entries()) {
-                    if (handle.kind !== 'directory') continue;
-                    const json = await app.getFile(handle, PACK_FILE);
-                    if (!json) continue;
-                    let data;
-                    try { data = JSON.parse(await json.text()); } catch { data = { name: folder, _broken: true }; }
-                    data.name = data.name || folder;
-                    packs.push({ folder, dir: handle, parent: pdir, data, thumb: await app.getFile(handle, THUMB_FILE) });
-                }
+        for (const addon of app.state.data ? app.state.addons || [] : []) {
+            const pdir = await app.getDir(addon.dir, PACKS);
+            for await (const [folder, handle] of pdir ? pdir.entries() : []) {
+                if (handle.kind !== 'directory') continue;
+                const json = await app.getFile(handle, PACK_FILE);
+                if (!json) continue;
+                let data;
+                try { data = JSON.parse(await json.text()); } catch { data = { name: folder, _broken: true }; }
+                data.name = data.name || folder;
+                packs.push({ folder, dir: handle, parent: pdir, addon: addon.folder, data, thumb: await app.getFile(handle, THUMB_FILE) });
             }
-            const sdir = await app.getDir(data, SKINS);
-            if (sdir) {
-                for await (const [folder, handle] of sdir.entries()) {
-                    if (handle.kind !== 'directory') continue;
-                    const json = await app.getFile(handle, SKIN_FILE);
-                    let data = {};
-                    if (json) try { data = JSON.parse(await json.text()); } catch { data = {}; }
-                    data.name = data.name || folder;
-                    skins.push({ folder, dir: handle, data, maps: await mapsIn(handle), thumb: await app.getFile(handle, THUMB_FILE), images: {} });
-                }
+            const sdir = await app.getDir(addon.dir, SKINS);
+            for await (const [folder, handle] of sdir ? sdir.entries() : []) {
+                if (handle.kind !== 'directory') continue;
+                const json = await app.getFile(handle, SKIN_FILE);
+                let data = {};
+                if (json) try { data = JSON.parse(await json.text()); } catch { data = {}; }
+                data.name = data.name || folder;
+                skins.push({ folder, dir: handle, parent: sdir, addon: addon.folder, data, maps: await mapsIn(handle), thumb: await app.getFile(handle, THUMB_FILE), images: {} });
             }
         }
         packs.sort((a, b) => a.data.name.localeCompare(b.data.name));
-        skins.sort((a, b) => a.data.name.localeCompare(b.data.name));
+        const ddir = app.state.data ? await app.defaultSkinsDir() : null;
+        for await (const [folder, handle] of ddir ? ddir.entries() : []) {
+            if (handle.kind !== 'directory') continue;
+            const json = await app.getFile(handle, SKIN_FILE);
+            let data = {};
+            if (json) try { data = JSON.parse(await json.text()); } catch { data = {}; }
+            data.name = data.name || folder;
+            skins.push({ folder, dir: handle, addon: null, data, maps: await mapsIn(handle), thumb: await app.getFile(handle, THUMB_FILE), images: {} });
+        }
+        skins.sort((a, b) => (!a.addon === !b.addon ? a.data.name.localeCompare(b.data.name) : a.addon ? 1 : -1));
         ps.packs = packs;
         ps.skins = skins;
+        app.state.packs = packs;
+        app.state.skins = skins;
+        if (ps.edit && ps.edit.source && !packs.some((p) => p.addon === ps.edit.source.addon && p.folder === ps.edit.source.folder)) closePack();
+        if (window.CCAddons) window.CCAddons.render();
         const count = $('#packs-count');
-        count.hidden = !app.state.cards;
+        count.hidden = !app.state.data;
         count.textContent = packs.length;
         renderList();
-        if (ps.edit) renderSkins();
+        if (ps.edit && ps.edit.look === 'preset') renderSkins();
+        if (ps.edit && ps.edit.look === 'layers') renderBases();
     }
 
     function renderList() {
@@ -384,8 +385,8 @@
         }
         const empty = $('#pk-empty');
         empty.hidden = ps.packs.length > 0;
-        empty.innerHTML = !app.state.cards ? 'Connect the mod folder to see your booster packs.'
-            : !app.state.data ? 'Connect the <b>Guro-DaCard</b> folder (or its data folder): booster packs live in <code>data/packs/</code>.'
+        empty.innerHTML = !app.state.data ? 'Connect the mod folder to see your booster packs.'
+            : !app.state.data ? 'Connect the <b>Guro-DaCard</b> folder.'
             : 'No booster packs yet. Make one with New booster pack.';
     }
 
@@ -549,10 +550,29 @@
         };
     }
 
+    const lockedAddon = () => (ps.edit && (ps.edit.source || ps.edit.template) ? (ps.edit.source || ps.edit.template).addon : null);
+    const editAddon = () => lockedAddon() || $('#pk-addon').value;
+
     function poolOf(sel) {
         const filter = sel.rarities.size > 0 && sel.rarities.size < RARITIES.length ? sel.rarities : null;
-        return (app.state.list || []).filter((c) => (sel.all || sel.collections.has(collKey(c)) || sel.cards.has(lower(c.key)))
-            && (!filter || filter.has(c.rarity)));
+        const addon = editAddon();
+        const chosen = (c) => (sel.all && c.addon === addon)
+            || (c.collection ? sel.collections.has(lower(c.collection)) : sel.collections.has(lower(DEFAULT_COLLECTION)) && c.addon === addon)
+            || sel.cards.has(lower(c.key));
+        return (app.state.list || []).filter((c) => chosen(c) && (!filter || filter.has(c.rarity)));
+    }
+
+    function fillAddons() {
+        const sel = $('#pk-addon');
+        const addons = app.state.addons || [];
+        const value = sel.value;
+        sel.innerHTML = addons.length
+            ? addons.map((a) => `<option value="${app.escapeHtml(a.folder)}">${app.escapeHtml(a.name)}</option>`).join('')
+            : '<option value="">My Addon (new)</option>';
+        if ([...sel.options].some((o) => o.value === value)) sel.value = value;
+        if (lockedAddon()) sel.value = lockedAddon();
+        sel.disabled = !!lockedAddon();
+        app.syncSelect(sel);
     }
 
     function renderCardChoice() {
@@ -568,7 +588,7 @@
         const options = [...app.state.collections.map((c) => ({ key: lower(c.folder), folder: c.folder, name: c.data.name })),
             { key: lower(DEFAULT_COLLECTION), folder: DEFAULT_COLLECTION, name: 'No collection' }];
         for (const o of options) {
-            const count = (app.state.list || []).filter((c) => collKey(c) === o.key).length;
+            const count = (app.state.list || []).filter((c) => collKey(c) === o.key && (c.collection || c.addon === editAddon())).length;
             const chip = document.createElement('button');
             chip.type = 'button';
             chip.className = 'chip-toggle';
@@ -683,16 +703,17 @@
         return hasMaps ? 'textures' : 'preset';
     }
 
-    async function openPack(pack) {
-        if (!app.state.data) { app.toast.err('Connect the Guro-DaCard folder first', 'Booster packs are saved into its data/packs/ folder.'); return; }
-        const data = pack ? structuredClone(pack.data) : {};
+    async function openPack(pack, template = null) {
+        if (!app.state.data) { app.toast.err('Connect the Guro-DaCard folder first'); return; }
+        const data = pack ? structuredClone(pack.data) : template ? structuredClone(template.data) : {};
         const hasMaps = pack ? Object.keys(await mapsIn(pack.dir)).length > 0 : false;
         ps.editUrls.forEach(URL.revokeObjectURL);
         ps.editUrls = [];
         const e = ps.edit = {
             source: pack || null,
+            template,
             data,
-            look: lookOf(data, hasMaps),
+            look: template ? (Array.isArray(data.layers) ? 'layers' : 'textures') : lookOf(data, hasMaps),
             skin: data.skin || null,
             base: data.base || null,
             layers: [],
@@ -701,12 +722,15 @@
             cards: selectionOf(data),
             collFolders: new Map(),
             cardKeys: new Map((data.cards && data.cards.cards || []).map((k) => [lower(k).replace(/\\/g, '/'), k])),
-            loading: !!pack,
+            loading: !!(pack || template),
         };
+        $('#pk-editor').classList.toggle('is-template', !!template);
+        $('#pk-save').textContent = template ? 'Save template' : 'Save booster pack';
         if (!pack) e.cards.all = true;
         for (const c of (data.cards && data.cards.collections) || []) e.collFolders.set(lower(c), c);
 
-        $('#pk-title').textContent = pack ? data.name : 'New booster pack';
+        fillAddons();
+        $('#pk-title').textContent = template ? `Template: ${data.name}` : pack ? data.name : 'New booster pack';
         $('#pk-name').value = data.name || '';
         $('#pk-short').value = data.shortName || '';
         $('#pk-desc').value = data.description || '';
@@ -718,7 +742,7 @@
         $('#pk-normal-dx').checked = false;
         $('#pk-skin-name').value = '';
         const del = $('#pk-delete');
-        del.hidden = !pack;
+        del.hidden = !pack || !!template;
         delete del.dataset.armed;
         del.textContent = 'Delete pack';
         updateLootRow();
@@ -732,39 +756,166 @@
         refresh();
         $('#pk-name').focus();
 
-        if (!pack) return;
+        if (!pack && !template) return;
+        const dir = pack ? pack.dir : template.dir;
         try {
-            if (e.look === 'layers') {
-                for (const saved of data.layers || []) {
-                    const file = saved.file ? await app.getFile(pack.dir, saved.file) : null;
-                    if (!file) continue;
-                    const files = { ...saved, metallic: saved.metallic || saved.foil, normalMask: saved.normalMask || saved.normalmask };
-                    const values = { ...(await readPicture(file)), ...saved };
-                    delete values.foil;
-                    delete values.normalmask;
-                    for (const key of LAYER_KEYS.slice(1)) {
-                        values[key] = null;
-                        const extra = files[key] ? await app.getFile(pack.dir, files[key]) : null;
-                        if (extra) values[key] = derive(key, await readPicture(extra));
-                    }
-                    if (!FINISHES[values.finish]) values.finish = 'print';
-                    e.layers.push(newLayer(values));
-                }
-            }
+            if (e.look === 'layers') e.layers = await readLayers(dir, data.layers);
             if (e.look === 'textures') {
-                const maps = await mapsIn(pack.dir);
+                const maps = await mapsIn(dir);
                 for (const [m, file] of Object.entries(maps)) e.maps[m] = { blob: file, img: await createImageBitmap(file), name: file.name };
             }
         } catch (err) {
             app.toast.err('Could not read all of the pack\'s pictures', err.message);
         }
         if (ps.edit !== e) return;
+        for (const layer of e.layers) if (isText(layer)) renderText(layer);
         e.loading = false;
         renderLook();
         refresh();
     }
 
+    async function fileFrom(dir, name, copy) {
+        const file = await app.getFile(dir, name);
+        return file && copy ? new File([await file.arrayBuffer()], file.name, { type: file.type }) : file;
+    }
+
+    async function readLayers(dir, list, copy = false) {
+        const out = [];
+        for (const saved of Array.isArray(list) ? list : []) {
+            if (!saved || typeof saved.file !== 'string') continue;
+            const stem = saved.file.replace(/\.png$/i, '');
+            const own = (layer) => {
+                for (const k of ['name', 'face', 'x', 'y', 'scale', 'rotation', 'opacity', 'hidden', 'normalStrength']) if (saved[k] !== undefined) layer[k] = saved[k];
+                layer.name = typeof saved.name === 'string' ? saved.name : layer.name;
+                layer.file = copy ? null : stem;
+            };
+            if (saved.text && typeof saved.text === 'object') {
+                const layer = newLayer({ kind: 'text', text: { ...textDefaults(), ...saved.text, font: null, fontName: '', face: null } });
+                own(layer);
+                if (typeof saved.text.font === 'string' && FONT_FILE.test(saved.text.font)) {
+                    const font = await fileFrom(dir, saved.text.font, copy);
+                    if (font) await setTextFont(layer, font).catch(() => {});
+                }
+                for (const key of TEXT_KEYS) {
+                    const extra = await fileFrom(dir, `${stem}${LAYER_SUFFIX[key]}.png`, copy);
+                    layer[key] = extra ? derive(key, await readPicture(extra)) : null;
+                }
+                out.push(layer);
+                continue;
+            }
+            const file = await fileFrom(dir, `${stem}.png`, copy);
+            if (!file) continue;
+            const layer = newLayer({ ...(await readPicture(file)), name: '' });
+            own(layer);
+            for (const key of LAYER_KEYS.slice(1)) {
+                const extra = await fileFrom(dir, `${stem}${LAYER_SUFFIX[key]}.png`, copy);
+                layer[key] = extra ? derive(key, await readPicture(extra)) : null;
+            }
+            out.push(layer);
+        }
+        return out;
+    }
+
+    async function writeLayers(dir, layers) {
+        const entries = [], keepLayers = new Set(), keepFonts = new Set(), stems = new Set();
+        for (const layer of layers) {
+            const own = HASH_LAYER.exec(layer.file || '');
+            let stem = own && !stems.has(own[1].toLowerCase()) ? own[1].toLowerCase() : null;
+            while (!stem || stems.has(stem)) stem = newLayerStem();
+            stems.add(stem);
+            layer.file = stem;
+            const entry = {
+                file: stem, name: layer.name || undefined, face: layer.face,
+                x: round(layer.x, 4), y: round(layer.y, 4), scale: round(layer.scale, 4), rotation: Math.round(layer.rotation),
+                opacity: round(layer.opacity, 3), hidden: layer.hidden || undefined,
+                normalStrength: layer.normalStrength !== 1 ? round(layer.normalStrength, 2) : undefined,
+            };
+            if (isText(layer)) {
+                const t = layer.text;
+                entry.text = { value: t.value, color: t.color, align: t.align, lines: t.lines };
+                if (t.uppercase) entry.text.uppercase = true;
+                if (t.font) {
+                    entry.text.font = `${stem}${(t.fontName.match(/\.(ttf|otf)$/i) || ['.ttf'])[0].toLowerCase()}`;
+                    await app.writeFile(dir, entry.text.font, t.font);
+                    keepFonts.add(entry.text.font.toLowerCase());
+                }
+            } else {
+                await app.writeFile(dir, `${stem}.png`, layer.blob);
+                keepLayers.add(`${stem}.png`);
+            }
+            for (const key of isText(layer) ? TEXT_KEYS : LAYER_KEYS.slice(1)) {
+                if (!layer[key]) continue;
+                await app.writeFile(dir, `${stem}${LAYER_SUFFIX[key]}.png`, layer[key].blob);
+                keepLayers.add(`${stem}${LAYER_SUFFIX[key]}.png`);
+            }
+            entries.push(JSON.parse(JSON.stringify(entry)));
+        }
+        return { entries, keepLayers, keepFonts };
+    }
+
+    const sameSkin = (a, b) => !!a && !!b && a.addon === b.addon && lower(a.folder) === lower(b.folder);
+
+    async function openTemplate(skin) {
+        await openPack(null, skin);
+    }
+
+    function editSkin(skin, anchor) {
+        if (ps.edit && !ps.edit.template) {
+            app.confirmMenu(anchor, `Edit "${skin.data.name}"?`, 'Unsaved pack changes are lost.', 'Edit', () => openTemplate(skin));
+            return;
+        }
+        openTemplate(skin);
+    }
+
+    function deleteSkin(skin, anchor) {
+        const uses = (p, key) => typeof p.data[key] === 'string' && lower(p.data[key]) === lower(skin.folder);
+        const users = ps.packs.filter((p) => uses(p, 'skin') || uses(p, 'base'));
+        const presets = users.filter((p) => uses(p, 'skin')).length;
+        const fallback = ps.skins.find((x) => !x.addon && lower(x.folder) === CardAddonKit.FALLBACK_SKIN);
+        const note = users.length
+            ? `${users.length} pack${users.length === 1 ? ' uses' : 's use'} it.${presets ? ` Preset packs switch to ${fallback ? fallback.data.name : 'the default skin'}.` : ''}`
+            : 'No pack uses it.';
+        app.confirmMenu(anchor, `Delete "${skin.data.name}"?`, note, 'Delete', async () => {
+            try {
+                await skin.parent.removeEntry(skin.folder, { recursive: true });
+                if (ps.edit && sameSkin(ps.edit.template, skin)) closePack();
+                app.toast.ok('Preset deleted', skin.data.name);
+                await scan();
+            } catch (err) {
+                app.toast.err('Could not delete the preset', err.message);
+            }
+        });
+    }
+
+    async function pickBase(folder) {
+        const e = ps.edit;
+        const skin = folder ? ps.skins.find((x) => lower(x.folder) === lower(folder)) : null;
+        if (!(skin && skin.addon && Array.isArray(skin.data.layers) && skin.data.layers.length)) {
+            e.base = folder;
+            renderBases();
+            refresh();
+            return;
+        }
+        e.loading = true;
+        renderLayers();
+        try {
+            const copied = await readLayers(skin.dir, skin.data.layers, true);
+            for (const layer of copied) if (isText(layer)) renderText(layer);
+            e.layers = [...copied, ...e.layers];
+            e.base = typeof skin.data.base === 'string' && skin.data.base ? skin.data.base : null;
+            app.toast.ok('Template layers copied', `${copied.length} from ${skin.data.name}`);
+        } catch (err) {
+            app.toast.err('Could not copy the template\'s layers', err.message);
+        }
+        if (ps.edit !== e) return;
+        e.loading = false;
+        renderBases();
+        renderLayers();
+        refresh();
+    }
+
     function closePack() {
+        $('#pk-editor').classList.remove('is-template');
         ps.edit = null;
         ps.editUrls.forEach(URL.revokeObjectURL);
         ps.editUrls = [];
@@ -774,9 +925,9 @@
 
     function updateFolder() {
         const e = ps.edit;
-        const name = $('#pk-name').value.trim();
-        $('#pk-folder').innerHTML = e && e.source ? `Folder <code>data/${PACKS}/${app.escapeHtml(e.source.folder)}/</code>`
-            : name ? `Folder <code>data/${PACKS}/${app.slugify(name)}/</code>` : 'Name in game.';
+        $('#pk-folder').innerHTML = e && e.template ? `Folder <code>data/${app.escapeHtml(e.template.addon)}/${SKINS}/${app.escapeHtml(e.template.folder)}/</code>`
+            : e && e.source ? `Folder <code>data/${app.escapeHtml(e.source.addon)}/${PACKS}/${app.escapeHtml(e.source.folder)}/</code>`
+            : 'Name in game.';
     }
 
     function updateLootRow() {
@@ -808,6 +959,12 @@
         if (e.look === 'textures') renderMaps();
     }
 
+    function skinOf(folder) {
+        if (!folder) return null;
+        return ps.skins.find((s) => lower(s.folder) === lower(folder))
+            || ps.skins.find((s) => !s.addon && lower(s.folder) === CardAddonKit.FALLBACK_SKIN) || null;
+    }
+
     async function skinImage(skin, map) {
         if (!skin || !skin.maps[map]) return null;
         if (!skin.images[map]) skin.images[map] = createImageBitmap(skin.maps[map]).catch(() => null);
@@ -816,10 +973,12 @@
 
     function renderSkinGrid(grid, selected, pick, plainName) {
         grid.innerHTML = '';
-        const options = [{ folder: null, data: { name: plainName }, maps: {} }, ...ps.skins];
+        const self = ps.edit && ps.edit.template;
+        const options = [{ folder: null, data: { name: plainName }, maps: {} }, ...ps.skins.filter((x) => !sameSkin(x, self))];
         for (const skin of options) {
-            const tile = document.createElement('button');
-            tile.type = 'button';
+            const tile = document.createElement('div');
+            tile.tabIndex = 0;
+            tile.setAttribute('role', 'button');
             tile.className = 'skin-tile';
             tile.classList.toggle('is-on', lower(skin.folder) === lower(selected));
             const pic = document.createElement('div');
@@ -838,11 +997,22 @@
                     if (c) pic.appendChild(c);
                 })();
             }
+            if (skin.addon) {
+                const actions = document.createElement('span');
+                actions.className = 'skin-actions';
+                actions.innerHTML = '<button type="button" class="facade-iconbtn" data-act="edit" title="Edit preset" aria-label="Edit preset">✎</button><button type="button" class="facade-iconbtn skin-delete" data-act="delete" title="Delete preset" aria-label="Delete preset">×</button>';
+                actions.querySelector('[data-act="edit"]').addEventListener('click', (ev) => { ev.stopPropagation(); editSkin(skin, ev.currentTarget); });
+                actions.querySelector('[data-act="delete"]').addEventListener('click', (ev) => { ev.stopPropagation(); deleteSkin(skin, ev.currentTarget); });
+                tile.appendChild(actions);
+            }
             tile.addEventListener('click', () => pick(skin.folder));
+            tile.addEventListener('keydown', (ev) => { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target === tile) { ev.preventDefault(); pick(skin.folder); } });
             grid.appendChild(tile);
         }
-        if (selected && !ps.skins.some((s) => lower(s.folder) === lower(selected)))
-            grid.insertAdjacentHTML('afterbegin', `<p class="pack-pool-empty">"${app.escapeHtml(selected)}" isn't in data/skins/ any more: the plain template is used instead. Pick another one.</p>`);
+        if (selected && !ps.skins.some((s) => lower(s.folder) === lower(selected))) {
+            const fallback = skinOf(selected);
+            grid.insertAdjacentHTML('afterbegin', `<p class="pack-pool-empty">"${app.escapeHtml(selected)}" isn't installed: ${fallback ? `uses ${app.escapeHtml(fallback.data.name)}` : 'uses the plain template'} until it is.</p>`);
+        }
     }
 
     function renderSkins() {
@@ -852,15 +1022,58 @@
 
     function renderBases() {
         const e = ps.edit;
-        renderSkinGrid($('#pk-bases'), e.base, (folder) => { e.base = folder; renderBases(); refresh(); }, 'Template');
+        renderSkinGrid($('#pk-bases'), e.base, (folder) => pickBase(folder), 'Template');
     }
 
     function newLayer(values) {
         return Object.assign({
-            uid: nextUid++, name: '', face: 'front', x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1, hidden: false,
-            img: null, blob: null, file: null, artMask: null, artOpaque: null, metallic: null, metallicMask: null,
-            roughness: null, roughnessMask: null, normal: null, normalMask: null, normalStrength: 1, finish: 'print', version: 0, cache: null,
+            uid: nextUid++, kind: 'image', text: null, name: '', face: 'front', x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1, hidden: false,
+            img: null, blob: null, file: null, mask: null, metallic: null, roughness: null, normal: null, normalStrength: 1, version: 0, cache: null,
         }, values, { uid: nextUid++, version: 0, cache: null });
+    }
+
+    const isText = (layer) => layer.kind === 'text';
+
+    function textVars() {
+        return { name: $('#pk-name').value.trim(), shortname: $('#pk-short').value.trim(), description: $('#pk-desc').value.trim() };
+    }
+
+    function renderText(layer) {
+        const t = layer.text;
+        const lines = Math.min(6, Math.max(1, Math.round(t.lines || 1)));
+        const c = newCanvas(TEXT_W, TEXT_LINE * lines);
+        CardText.draw(c.getContext('2d'), {
+            value: t.value, x: 0.5, y: 0, width: 1, height: 1, size: 0.85 / lines, align: t.align, valign: 'middle',
+            color: t.color, opacity: 1, uppercase: t.uppercase, autoSize: true, rotation: 0, face: t.face,
+        }, textVars(), c.width, c.height);
+        layer.img = c;
+        layer.version++;
+        layer.cache = null;
+    }
+
+    function rerenderTexts() {
+        const e = ps.edit;
+        if (!e) return;
+        let any = false;
+        for (const layer of e.layers) if (isText(layer)) { renderText(layer); any = true; }
+        if (any) refresh();
+    }
+
+    function addTextLayer() {
+        const e = ps.edit;
+        if (!e) return;
+        const face = ps.view === 'back' ? 'back' : ps.view === 'texture' ? 'texture' : 'front';
+        const layer = newLayer({ kind: 'text', text: textDefaults(), name: 'Text', face, scale: 0.8 });
+        renderText(layer);
+        e.layers.push(layer);
+        e.selected = layer.uid;
+        renderLayers();
+        refresh();
+    }
+
+    async function setTextFont(layer, file) {
+        const copy = new File([await file.arrayBuffer()], file.name, { type: file.type });
+        Object.assign(layer.text, { font: copy, fontName: file.name, face: await CardText.loadFace(copy) });
     }
 
     async function addLayers(files) {
@@ -913,8 +1126,8 @@
             card.classList.toggle('is-hidden', layer.hidden);
             card.innerHTML = `
                 <div class="pl-head">
-                    <img class="layer-thumb" alt="">
-                    <input type="text" class="facade-input layer-name" maxlength="60" placeholder="Picture ${i + 1}">
+                    ${isText(layer) ? '<span class="layer-thumb layer-thumb-text" aria-hidden="true">T</span>' : '<img class="layer-thumb" alt="">'}
+                    <input type="text" class="facade-input layer-name" maxlength="60" placeholder="${isText(layer) ? 'Text' : 'Picture'} ${i + 1}">
                     <select class="facade-select pl-face">${Object.entries(FACE_LABEL).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
                     <span class="spacer"></span>
                     <button type="button" class="facade-iconbtn" data-act="up" aria-label="Move up" title="Move up (over the next one)"${i === e.layers.length - 1 ? ' disabled' : ''}>▲</button>
@@ -923,7 +1136,6 @@
                     <button type="button" class="facade-iconbtn" data-act="remove" aria-label="Remove layer" title="Remove">×</button>
                 </div>
                 <div class="layer-maps"></div>
-                <label class="pl-finish"><span>Finish</span><select class="facade-select">${Object.entries(FINISHES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select><small class="field-note"></small></label>
                 <div class="layer-transform">
                     <label class="range-row"><span>Size</span><input type="range" class="facade-range" data-k="scale" min="0.05" max="4" step="0.005"><output></output></label>
                     <label class="range-row"><span>Turn</span><input type="range" class="facade-range" data-k="rotation" min="-180" max="180" step="1"><output></output></label>
@@ -935,23 +1147,10 @@
                         <button type="button" class="facade-btn fx-sm fx-grey" data-act="straight">Straighten</button>
                     </div>
                 </div>`;
-            card.querySelector('.layer-thumb').src = objectUrl(layer.blob, ps.editUrls);
+            if (!isText(layer)) card.querySelector('.layer-thumb').src = objectUrl(layer.blob, ps.editUrls);
             const mapsBox = card.querySelector('.layer-maps');
-            for (const key of LAYER_INPUTS) {
-                const column = document.createElement('div');
-                column.className = 'layer-map-column';
-                column.appendChild(layerMapCell(layer, key));
-                column.appendChild(layerMapCell(layer, key + 'Mask'));
-                mapsBox.appendChild(column);
-            }
-            const finish = card.querySelector('.pl-finish select');
-            finish.value = layer.finish;
-            finish.disabled = !!(layer.metallic && layer.roughness);
-            card.querySelector('.pl-finish small').textContent = layer.metallic && layer.roughness
-                ? 'Not used.'
-                : 'For empty Metallic / Roughness.';
-            finish.addEventListener('change', () => { layer.finish = finish.value; layer.version++; refresh(); });
-            app.enhanceSelect(finish);
+            if (isText(layer)) mapsBox.before(textBlock(layer));
+            for (const key of isText(layer) ? TEXT_KEYS : LAYER_KEYS) mapsBox.appendChild(layerMapCell(layer, key));
             const name = card.querySelector('.layer-name');
             name.value = layer.name;
             name.addEventListener('input', () => { layer.name = name.value; });
@@ -1004,16 +1203,68 @@
         });
     }
 
+    function textBlock(layer) {
+        const t = layer.text;
+        const box = document.createElement('div');
+        box.className = 'layer-text pl-text';
+        box.innerHTML = `
+            <label class="text-value"><span>Text</span><textarea class="facade-input" rows="2" spellcheck="false" data-x="value"></textarea></label>
+            <div class="style-row">
+                <div class="align-buttons">${CardText.ALIGNS.map((a) => `<button type="button" class="facade-btn fx-sm" data-align="${a}">${{ left: 'Left', center: 'Centre', right: 'Right' }[a]}</button>`).join('')}</div>
+                <label class="color-pick"><span>Colour</span><input type="color" data-x="color"></label>
+                <label class="pl-lines"><span>Lines</span><input type="number" class="facade-input" min="1" max="6" step="1" data-x="lines"></label>
+                <label class="facade-check-row"><input type="checkbox" class="facade-switch" data-x="uppercase"><span>Uppercase</span></label>
+            </div>
+            <div class="font-row">
+                <span>Font</span>
+                <button type="button" class="facade-btn fx-sm font-pick" data-x="font"></button>
+                <button type="button" class="facade-iconbtn" data-x="font-clear" title="Default font">×</button>
+                <input type="file" data-x="font-file" accept=".ttf,.otf,font/ttf,font/otf" hidden>
+            </div>
+            <small class="field-note">\${name} \${shortName} \${description}</small>`;
+        const value = $('[data-x="value"]', box), color = $('[data-x="color"]', box), lines = $('[data-x="lines"]', box), upper = $('[data-x="uppercase"]', box);
+        const show = () => {
+            value.value = t.value;
+            color.value = /^#[0-9a-f]{6}$/i.test(t.color) ? t.color : '#ffffff';
+            lines.value = t.lines;
+            upper.checked = !!t.uppercase;
+            for (const b of $$('[data-align]', box)) b.classList.toggle('fx-on', b.dataset.align === t.align);
+            $('[data-x="font"]', box).textContent = t.font ? t.fontName || 'Custom font' : 'Bw Modelica (default)';
+            $('[data-x="font-clear"]', box).hidden = !t.font;
+        };
+        const changed = () => { renderText(layer); show(); refresh(); };
+        value.addEventListener('input', () => { t.value = value.value; changed(); });
+        color.addEventListener('input', () => { t.color = color.value.toUpperCase(); changed(); });
+        lines.addEventListener('change', () => { t.lines = Math.min(6, Math.max(1, Math.round(+lines.value || 1))); changed(); });
+        upper.addEventListener('change', () => { t.uppercase = upper.checked; changed(); });
+        for (const b of $$('[data-align]', box)) b.addEventListener('click', () => { t.align = b.dataset.align; changed(); });
+        const fontInput = $('[data-x="font-file"]', box);
+        $('[data-x="font"]', box).addEventListener('click', () => fontInput.click());
+        fontInput.addEventListener('change', async () => {
+            const file = fontInput.files[0];
+            fontInput.value = '';
+            if (!file) return;
+            try {
+                await setTextFont(layer, file);
+                changed();
+            } catch (err) {
+                app.toast.err(`Could not use ${file.name}`, err.message);
+            }
+        });
+        $('[data-x="font-clear"]', box).addEventListener('click', () => { Object.assign(t, { font: null, fontName: '', face: null }); changed(); });
+        show();
+        return box;
+    }
+
     function layerMapCell(layer, key) {
-        const isMask = key.endsWith('Mask');
         const picture = key === 'art' ? (layer.img ? { blob: layer.blob, name: layer.name } : null) : layer[key];
         const cell = document.createElement('div');
-        cell.className = 'layer-media' + (isMask ? ' is-mask' : '');
+        cell.className = 'layer-media';
         cell.innerHTML = `
             <div class="drop drop-sm${picture ? ' has-file' : ''}" tabindex="0">
-                <b>${isMask ? 'Mask' : LAYER_MAP_LABEL[key]}</b>
+                <b>${LAYER_MAP_LABEL[key]}</b>
                 ${picture ? '<img class="media-thumb" alt="">' : ''}
-                <small class="media-name">${picture ? app.escapeHtml(key === 'art' ? 'Click to replace' : picture.name || key) : isMask ? 'Use Albedo Alpha' : LAYER_MAP_EMPTY[key]}</small>
+                <small class="media-name">${picture ? app.escapeHtml(key === 'art' ? 'Click to replace' : picture.name || key) : LAYER_MAP_EMPTY[key]}</small>
             </div>
             <input type="file" accept="image/*" hidden>
             ${picture && key !== 'art' ? '<button type="button" class="facade-btn fx-sm fx-grey">Remove</button>' : ''}`;
@@ -1023,7 +1274,7 @@
             if (!file || !file.type.startsWith('image/')) return;
             try {
                 const read = await readPicture(file);
-                if (key === 'art') { layer.img = read.img; layer.blob = read.blob; layer.artOpaque = null; } else layer[key] = derive(key, read);
+                if (key === 'art') { layer.img = read.img; layer.blob = read.blob; } else layer[key] = derive(key, read);
                 layer.version++;
             } catch (err) {
                 app.toast.err(`Could not read ${file.name}`, err.message);
@@ -1038,7 +1289,7 @@
         drop.addEventListener('dragleave', () => drop.classList.remove('is-over'));
         drop.addEventListener('drop', (ev) => { ev.preventDefault(); drop.classList.remove('is-over'); take(ev.dataTransfer.files[0]); });
         const clear = cell.querySelector('button');
-        if (clear) clear.addEventListener('click', () => { layer[key] = null; if (key === 'artMask') layer.artOpaque = null; layer.version++; renderLayers(); refresh(); });
+        if (clear) clear.addEventListener('click', () => { layer[key] = null; layer.version++; renderLayers(); refresh(); });
         return cell;
     }
 
@@ -1093,7 +1344,7 @@
     }
 
     async function baseMaps(folder, full) {
-        const skin = folder ? ps.skins.find((s) => lower(s.folder) === lower(folder)) : null;
+        const skin = skinOf(folder);
         const template = await templatePreview();
         const out = {};
         for (const m of MAPS) out[m] = (await skinImage(skin, m)) || (full ? await templateFull(m) : template[m]);
@@ -1101,7 +1352,7 @@
     }
 
     function layerMapsToWrite(e) {
-        const skin = e.base ? ps.skins.find((s) => lower(s.folder) === lower(e.base)) : null;
+        const skin = skinOf(e.base);
         const shown = e.layers.filter((l) => !l.hidden && l.img);
         const has = (m) => !!(skin && skin.maps[m]);
         return MAPS.filter((m) => m === 'albedo' || (m === 'normal' && (shown.some((l) => l.normal) || has(m)))
@@ -1118,7 +1369,7 @@
         } else if (e.look === 'textures') {
             for (const m of MAPS) out[m] = e.maps[m] ? e.maps[m].img : null;
         } else {
-            const skin = ps.skins.find((s) => lower(s.folder) === lower(e.skin));
+            const skin = skinOf(e.skin);
             for (const m of MAPS) out[m] = await skinImage(skin, m);
         }
         return out;
@@ -1326,19 +1577,19 @@
         let form;
         try { form = readPackForm(); } catch (err) { app.toast.err('Can\'t save yet', err.message); if (err.field) $(err.field).focus(); return; }
 
-        const folder = e.source ? e.source.folder : app.slugify(form.name);
-        const clash = ps.packs.find((p) => p !== e.source && (lower(p.data.name) === lower(form.name) || lower(p.folder) === lower(folder)));
+        const clash = ps.packs.find((p) => p !== e.source && lower(p.data.name) === lower(form.name));
         if (clash) { app.toast.err(`"${form.name}" already exists`, 'Pick another name.'); return; }
 
         const button = $('#pk-save'), label = button.textContent;
         button.disabled = true;
         button.textContent = 'Saving…';
         try {
-            const packsDir = await app.getDir(app.state.data, PACKS, true);
             let dir = e.source ? e.source.dir : null;
             if (!dir) {
-                if (await app.getDir(packsDir, folder)) throw new Error(`data/${PACKS}/${folder} already exists`);
-                dir = await packsDir.getDirectoryHandle(folder, { create: true });
+                const addon = await CardAddonKit.ensure(app.state.data, app.state.addons || [], $('#pk-addon').value);
+                const packsDir = await app.getDir(addon.dir, PACKS, true);
+                dir = await packsDir.getDirectoryHandle(await CardAddonKit.freeName(packsDir), { create: true });
+                if (!(app.state.addons || []).some((a) => a.folder === addon.folder)) await app.scanAddons();
             }
             const data = Object.assign({}, e.data, {
                 name: form.name,
@@ -1356,34 +1607,18 @@
             delete data.layers;
             delete data.base;
 
-            const keepLayers = new Set(), keepMaps = new Set();
+            const keepLayers = new Set(), keepMaps = new Set(), keepFonts = new Set();
             let albedoForThumb = null;
             if (e.look === 'preset') {
                 if (e.skin) data.skin = e.skin;
-                const skin = ps.skins.find((s) => lower(s.folder) === lower(e.skin));
+                const skin = skinOf(e.skin);
                 albedoForThumb = await skinImage(skin, 'albedo');
             } else if (e.look === 'layers') {
                 if (e.base) data.base = e.base;
-                data.layers = [];
-                let n = 1;
-                for (const layer of e.layers) {
-                    const stem = `layer_${n++}`;
-                    const entry = {
-                        file: `${stem}.png`, name: layer.name || undefined, face: layer.face,
-                        x: round(layer.x, 4), y: round(layer.y, 4), scale: round(layer.scale, 4), rotation: Math.round(layer.rotation),
-                        opacity: round(layer.opacity, 3), finish: layer.finish, hidden: layer.hidden || undefined,
-                        normalStrength: layer.normalStrength !== 1 ? round(layer.normalStrength, 2) : undefined,
-                    };
-                    await app.writeFile(dir, entry.file, layer.blob);
-                    keepLayers.add(entry.file);
-                    for (const key of LAYER_KEYS.slice(1)) {
-                        if (!layer[key]) continue;
-                        entry[key] = `${stem}.${LAYER_SUFFIX[key]}.png`;
-                        await app.writeFile(dir, entry[key], layer[key].blob);
-                        keepLayers.add(entry[key]);
-                    }
-                    data.layers.push(entry);
-                }
+                const written = await writeLayers(dir, e.layers);
+                data.layers = written.entries;
+                written.keepLayers.forEach((n) => keepLayers.add(n));
+                written.keepFonts.forEach((n) => keepFonts.add(n));
                 const tex = await currentTextures(SAVE_SIZE);
                 for (const m of layerMapsToWrite(e)) {
                     await app.writeFile(dir, `${m}.png`, await pngBlob(tex[m]));
@@ -1399,6 +1634,7 @@
                 albedoForThumb = e.maps.albedo.img;
             }
             await removeFiles(dir, LAYER_FILE, keepLayers);
+            await removeFiles(dir, FONT_FILE, keepFonts);
             await removeFiles(dir, MAP_FILE, keepMaps);
             const thumb = await thumbOf(albedoForThumb);
             if (thumb) await app.writeFile(dir, THUMB_FILE, thumb);
@@ -1440,33 +1676,41 @@
         if (!e || !app.state.data) return;
         const name = $('#pk-skin-name').value.trim();
         if (!name) { app.toast.err('The preset needs a name'); $('#pk-skin-name').focus(); return; }
-        const folder = app.slugify(name);
-        if (ps.skins.some((s) => lower(s.folder) === folder || lower(s.data.name) === lower(name))) { app.toast.err(`A preset "${name}" already exists`, 'Pick another name.'); return; }
+        if (ps.skins.some((s) => lower(s.data.name) === lower(name))) { app.toast.err(`A preset "${name}" already exists`, 'Pick another name.'); return; }
         if (e.look === 'textures' && !e.maps.albedo) { app.toast.err('No albedo map yet', 'Add the textures first.'); return; }
         const button = $('#pk-skin-save');
         button.disabled = true;
         try {
-            const skinsDir = await app.getDir(app.state.data, SKINS, true);
+            const addon = await CardAddonKit.ensure(app.state.data, app.state.addons || [], editAddon());
+            const skinsDir = await app.getDir(addon.dir, SKINS, true);
+            const folder = await CardAddonKit.freeName(skinsDir);
             const dir = await skinsDir.getDirectoryHandle(folder, { create: true });
+            const info = { name };
             let albedo = null;
             if (e.look === 'layers') {
                 const tex = await currentTextures(SAVE_SIZE);
                 for (const m of layerMapsToWrite(e)) await app.writeFile(dir, `${m}.png`, await pngBlob(tex[m]));
                 albedo = tex.albedo;
+                const copies = await Promise.all(e.layers.map(async (l) => ({ ...l, file: null })));
+                info.layers = (await writeLayers(dir, copies)).entries;
+                if (e.base) info.base = e.base;
             } else if (e.look === 'textures') {
                 for (const m of MAPS) if (e.maps[m]) await app.writeFile(dir, `${m}.png`, e.maps[m].blob);
                 albedo = e.maps.albedo.img;
             } else {
-                const skin = ps.skins.find((s) => lower(s.folder) === lower(e.skin));
-                for (const m of MAPS) if (skin && skin.maps[m]) await app.writeFile(dir, `${m}.png`, skin.maps[m]);
+                const skin = skinOf(e.skin);
+                if (skin) await CardAddonKit.copyInto(skin.dir, dir);
+                const source = skin && skin.data && typeof skin.data === 'object' ? skin.data : {};
+                if (Array.isArray(source.layers)) info.layers = source.layers;
+                if (typeof source.base === 'string') info.base = source.base;
                 albedo = await skinImage(skin, 'albedo');
             }
             const thumb = await thumbOf(albedo);
             if (thumb) await app.writeFile(dir, THUMB_FILE, thumb);
-            await app.writeFile(dir, SKIN_FILE, new Blob([JSON.stringify({ name }, null, 2) + '\n'], { type: 'application/json' }));
+            await app.writeFile(dir, SKIN_FILE, new Blob([JSON.stringify(info, null, 2) + '\n'], { type: 'application/json' }));
             $('#pk-skin-name').value = '';
             await scan();
-            app.toast.ok('Preset saved', `${name} is in data/skins/${folder}/: pick it under Preset skin for any pack.`);
+            app.toast.ok('Preset saved', `${name} · data/${addon.folder}/skins/${folder}/`);
         } catch (err) {
             app.toast.err('Could not save the preset', err.message);
         } finally {
@@ -1474,29 +1718,89 @@
         }
     }
 
+    async function saveTemplate() {
+        const e = ps.edit, skin = e && e.template;
+        if (!skin) return;
+        if (e.loading) { app.toast.err('Still opening the template', 'Wait for its pictures to load, then save.'); return; }
+        const name = $('#pk-name').value.trim();
+        if (!name) { app.toast.err('The template needs a name'); $('#pk-name').focus(); return; }
+        if (ps.skins.some((x) => !sameSkin(x, skin) && lower(x.data.name) === lower(name))) { app.toast.err(`A preset "${name}" already exists`, 'Pick another name.'); return; }
+        if (e.look === 'textures' && !e.maps.albedo) { app.toast.err('No albedo map yet', 'Add the textures first.'); return; }
+        const button = $('#pk-save'), label = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Saving…';
+        try {
+            const dir = skin.dir;
+            const info = { ...e.data, name };
+            delete info.layers;
+            delete info.base;
+            const keepLayers = new Set(), keepFonts = new Set(), keepMaps = new Set();
+            let albedo;
+            if (e.look === 'layers') {
+                const written = await writeLayers(dir, e.layers);
+                info.layers = written.entries;
+                written.keepLayers.forEach((n) => keepLayers.add(n));
+                written.keepFonts.forEach((n) => keepFonts.add(n));
+                if (e.base) info.base = e.base;
+                const tex = await currentTextures(SAVE_SIZE);
+                for (const m of layerMapsToWrite(e)) {
+                    await app.writeFile(dir, `${m}.png`, await pngBlob(tex[m]));
+                    keepMaps.add(`${m}.png`);
+                }
+                albedo = tex.albedo;
+            } else {
+                for (const m of MAPS) {
+                    if (!e.maps[m]) continue;
+                    await app.writeFile(dir, `${m}.png`, e.maps[m].blob);
+                    keepMaps.add(`${m}.png`);
+                }
+                albedo = e.maps.albedo.img;
+            }
+            await removeFiles(dir, LAYER_FILE, keepLayers);
+            await removeFiles(dir, FONT_FILE, keepFonts);
+            await removeFiles(dir, MAP_FILE, keepMaps);
+            const thumb = await thumbOf(albedo);
+            if (thumb) await app.writeFile(dir, THUMB_FILE, thumb);
+            await app.writeFile(dir, SKIN_FILE, new Blob([JSON.stringify(info, null, 2) + '\n'], { type: 'application/json' }));
+            app.toast.ok('Template saved', `${name} · packs using it as their preset show the change after a server restart.`);
+            closePack();
+            await scan();
+        } catch (err) {
+            app.toast.err('Could not save the template', err.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = label;
+        }
+    }
+
     function wire() {
         $('#pk-new').addEventListener('click', () => {
-            if (!app.state.cards) { app.toast.err('Connect the mod folder first', 'Booster packs are saved into its data/packs/ folder.'); return; }
+            if (!app.state.data) { app.toast.err('Connect the mod folder first'); return; }
             openPack(null);
         });
         $('#pk-cancel').addEventListener('click', closePack);
-        $('#pk-save').addEventListener('click', savePack);
+        $('#pk-save').addEventListener('click', () => (ps.edit && ps.edit.template ? saveTemplate() : savePack()));
         $('#pk-delete').addEventListener('click', deletePack);
         $('#pk-skin-save').addEventListener('click', saveSkin);
         $('#pk-name').addEventListener('input', updateFolder);
         $('#pk-count').addEventListener('input', renderPool);
         $('#pk-loot').addEventListener('change', updateLootRow);
         $('#pk-all').addEventListener('change', () => { if (ps.edit) { ps.edit.cards.all = $('#pk-all').checked; renderCardChoice(); } });
+        $('#pk-addon').addEventListener('change', () => { if (ps.edit) renderCardChoice(); });
         $('#pk-normal-dx').addEventListener('change', () => { if (ps.edit && ps.edit.maps.normal) flipNormal(); });
         for (const tile of $$('.look-choice .look-tile')) tile.addEventListener('click', () => setLook(tile.dataset.look));
 
-        const drop = $('#pk-layer-drop'), input = $('#pk-layer-file');
-        drop.addEventListener('click', () => input.click());
-        drop.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); input.click(); } });
+        const input = $('#pk-layer-file'), panel = $('#pk-look-layers');
+        CardMedia.picker($('#pk-layer-add'), (kind) => (kind === 'text' ? addTextLayer() : input.click()), LAYER_KINDS, 'Choose the layer type');
         input.addEventListener('change', () => { addLayers([...input.files]); input.value = ''; });
-        drop.addEventListener('dragover', (ev) => { ev.preventDefault(); drop.classList.add('is-over'); });
-        drop.addEventListener('dragleave', () => drop.classList.remove('is-over'));
-        drop.addEventListener('drop', (ev) => { ev.preventDefault(); drop.classList.remove('is-over'); addLayers([...ev.dataTransfer.files]); });
+        panel.addEventListener('dragover', (ev) => { if ([...ev.dataTransfer.items].some((i) => i.type.startsWith('image/'))) ev.preventDefault(); });
+        panel.addEventListener('drop', (ev) => {
+            const files = [...ev.dataTransfer.files].filter((f) => f.type.startsWith('image/'));
+            if (!files.length || ev.target.closest('.layer-media')) return;
+            ev.preventDefault();
+            addLayers(files);
+        });
+        for (const id of ['#pk-name', '#pk-short', '#pk-desc']) $(id).addEventListener('input', rerenderTexts);
 
         $('#pk-odds-save').addEventListener('click', saveOdds);
         $('#pk-odds-reset').addEventListener('click', () => { readWeights(); renderOdds(); setStatus($('#pk-odds-status'), ''); });
@@ -1514,7 +1818,7 @@
         show() {
             if (!app) return;
             closePack();
-            if (app.state.cards) scan();
+            if (app.state.data) scan();
         },
         changed(what) {
             if (!app) return;
@@ -1524,6 +1828,7 @@
                 return;
             }
             if (what === 'folder') { scan(); return; }
+            if (what === 'addons') { fillAddons(); return; }
             renderList();
             if (ps.edit) renderCardChoice();
         },

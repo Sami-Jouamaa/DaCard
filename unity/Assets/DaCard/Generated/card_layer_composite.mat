@@ -31,20 +31,31 @@ Material:
         m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
-    - _Mask:
+    - _MaskMap:
         m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
-    - _Mask2:
+    - _MetallicMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _NormalMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _RoughnessMap:
         m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
     - _CanBeFoil: 1
+    - _DefaultRoughness: 0.3
     - _Frame: 0
     - _HasMask: 0
-    - _HasMask2: 0
+    - _HasMetallic: 0
+    - _HasNormal: 0
+    - _HasRoughness: 0
     - _Premultiplied: 0
     m_Colors:
     - _LayerU: {r: 1, g: 0, b: 0, a: 0}

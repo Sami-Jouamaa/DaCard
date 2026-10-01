@@ -10,7 +10,6 @@
     <ModInstallSubDir>SPT_Runtime\user\mods\$(ModAuthor)-$(ModName)</ModInstallSubDir>
     <ModDebugDeploySkip>data\*\**</ModDebugDeploySkip>
 
-    <DefaultDataDir>$(MSBuildThisFileDirectory)..\..\unity\Assets\DaCard\_DATA\</DefaultDataDir>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,10 +23,10 @@
     <Content Include="bundles\**" CopyToOutputDirectory="PreserveNewest" />
     <Content Remove="data\**" />
     <Content Include="data\config.json" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="data\skins\**" Condition="!Exists('$(DefaultDataDir)skins')" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="$(DefaultDataDir)**\*" Exclude="$(DefaultDataDir)**\*.meta" Link="data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Update="bundles.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="traders\**" CopyToOutputDirectory="PreserveNewest" />
+    <Content Remove="defaults\**" />
+    <Content Include="defaults\**" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="DaCardDashboard.html" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="creator\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

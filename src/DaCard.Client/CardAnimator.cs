@@ -220,7 +220,7 @@ namespace DaCard.Client
                             anim.Failed = true;
                             yield break;
                         }
-                        track.Frames[index] = Upload(result, url, track.Layer != null ? track.Property != "art" : CardRegistry.IsLinear(track.Property));
+                        track.Frames[index] = Upload(result, url, track.Layer != null ? track.Property != LayerMaps.Albedo : CardRegistry.IsLinear(track.Property));
                         track.Available = index + 1;
                         ahead.Release();
                         cursor++;

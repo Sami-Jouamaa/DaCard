@@ -42,7 +42,7 @@
         layers: null,                       // CardLayerKit editor of the card form (front / back layer lists)
         editingCard: null,                  // a saved card open in the edit window (the card form, moved into it)
         draft: null,                        // the New card form's work while the edit window has the form
-        cardsView: '*',                     // My cards: '*' all, '' no collection, else a collection folder
+        cardsView: '*',                     // Cards: '*' all, '' no collection, else a collection folder
         pictureDirty: false,                // changed since it was opened: written again when saving
         layersDirty: false,
         textAlign: {},
@@ -50,6 +50,7 @@
         collPreview: { folder: null, layers: { front: [], back: [] } },
         collLayers: new Map(),              // collection folder -> Promise of its layers (for previews)
         collections: [],
+        addons: [],
         config: null,
         coll: null,
     };
@@ -171,51 +172,120 @@
     }
 
     async function useFolder(dir) {
-        let root = null, data = null, cards = null;
+        let root = null, data = null;
         const modName = pageFolderPath().split(/[\\/]/).pop();
         const inside = modName && dir.name !== modName ? await getDir(dir, modName) : null;
         if (inside && (await getDir(inside, DATA_FOLDER) || await getFile(inside, PAGE_FILE))) dir = inside;
         if (await getDir(dir, DATA_FOLDER) || await getFile(dir, PAGE_FILE)) {
             root = dir; data = await getDir(dir, DATA_FOLDER, true);
-        } else if (await getFile(dir, CONFIG_FILE)) {
+        } else if (await getFile(dir, CONFIG_FILE) || (await CardAddonKit.scan(dir)).length) {
             data = dir;
         } else {
             for (const f of DATA_SUBFOLDERS) if (await getDir(dir, f)) { data = dir; break; }
         }
-        if (data) {
-            cards = await getDir(data, CARDS_FOLDER, true);
-        } else if (await getDir(dir, DEFAULT_COLLECTION)) {
-            cards = dir;
-        } else {
-            for (const r of RARITIES) if (await getDir(dir, r)) { cards = dir; break; }
-        }
-        if (!cards) {
+        if (!data) {
             toast.err('That isn\'t the mod folder', 'Pick the Guro-DaCard folder (the one with DaCardDashboard.html and data/ in it).');
             return false;
         }
-        state.dir = dir; state.root = root; state.data = data; state.cards = cards;
+        state.dir = dir; state.root = root; state.data = data;
         await idbSet('folder', dir);
         await readConfig();
         updateFolderUi();
+        await rescan();
+        await warnOldLayout();
+        return true;
+    }
+
+    async function defaultSkinsDir() {
+        const defaults = state.root ? await getDir(state.root, 'defaults') : null;
+        return defaults ? getDir(defaults, 'skins') : null;
+    }
+
+    async function migrationRoots() {
+        return { data: state.data, defaults: await defaultSkinsDir() };
+    }
+
+    async function scanAddons() {
+        state.addons = state.data ? await CardAddonKit.scan(state.data) : [];
+        fillAddonSelects();
+        if (window.CCAddons) CCAddons.render();
+        packsChanged('addons');
+    }
+
+    async function rescan({ migrate = false } = {}) {
+        if (migrate) {
+            const found = await CardMigrations.pending(await migrationRoots()).catch(() => []);
+            if (found.length) {
+                const { failed } = await CardMigrations.apply(await migrationRoots(), found).catch((e) => ({ failed: [e.message] }));
+                if (failed.length) toast.err('Some updates failed', failed.join('\n'));
+            }
+        }
+        await checkMigrations();
+        await scanAddons();
         await scanCollections();
         await scanCards();
-        await warnOldLayout();
         packsChanged('folder');
-        return true;
+    }
+
+    const addonName = (folder) => (state.addons.find((a) => a.folder === folder) || { name: folder || CardAddonKit.STARTER }).name;
+    const formAddon = () => (state.editingCard ? state.editingCard.addon : $('#f-addon').value);
+    const collAddon = () => (state.coll && state.coll.source ? state.coll.source.addon : $('#c-addon').value);
+    const addonPath = (folder) => `data/${folder || CardAddonKit.folderFor(CardAddonKit.STARTER)}`;
+
+    function fillAddonSelects() {
+        const options = state.addons.length
+            ? state.addons.map((a) => `<option value="${escapeHtml(a.folder)}">${escapeHtml(a.name)}</option>`).join('')
+            : `<option value="">${escapeHtml(CardAddonKit.STARTER)} (new)</option>`;
+        for (const sel of [$('#f-addon'), $('#c-addon'), $('#b-addon')]) {
+            const value = sel.value;
+            sel.innerHTML = options;
+            if ([...sel.options].some((o) => o.value === value)) sel.value = value;
+            syncSelect(sel);
+        }
+        fillCollectionSelects();
+    }
+
+    let outdated = [];
+
+    async function checkMigrations() {
+        if (!window.CardMigrations) return;
+        const notes = await CardMigrations.unseen(state.data).catch(() => []);
+        for (const r of notes) toast.ok('Data updated', `${r.title} · ${(r.folders || []).length} on server start`);
+        if (notes.length) await CardMigrations.markSeen(state.data).catch(() => {});
+        outdated = await CardMigrations.pending(await migrationRoots()).catch(() => []);
+        const count = new Set(outdated.flatMap((f) => f.folders.map((x) => x.path))).size;
+        const bar = $('#migrate-bar');
+        bar.hidden = !count;
+        $('#migrate-what').textContent = count ? `${count} to update` : '';
+        bar.title = outdated.map((f) => f.migration.title).join('\n');
+    }
+
+    async function runMigrations() {
+        const button = $('#migrate-run');
+        if (button.disabled || !outdated.length) return;
+        button.disabled = true;
+        try {
+            const { records, failed } = await CardMigrations.apply(await migrationRoots(), outdated,
+                (done, total) => { button.textContent = `Updating ${done} / ${total}…`; });
+            const count = records.reduce((n, r) => n + r.folders.length, 0);
+            if (failed.length) toast.err('Some updates failed', failed.join('\n'));
+            if (count) toast.ok('Data updated', `${count} updated`);
+            await rescan();
+        } catch (e) {
+            toast.err('Could not update', e.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = 'Update all';
+        }
     }
 
     async function warnOldLayout() {
         const old = [];
-        for (const r of RARITIES) if (await getDir(state.cards, r)) old.push(`data/${CARDS_FOLDER}/${r}/`);
-        if (state.data)
-            for await (const [name, handle] of state.data.entries())
-                if (handle.kind === 'directory' && !DATA_SUBFOLDERS.includes(name)) old.push(`data/${name}/`);
         if (state.root)
             for (const name of ['cards', 'collections', 'packs', 'skins']) if (await getDir(state.root, name)) old.push(`${name}/`);
         if (state.root && await getFile(state.root, CONFIG_FILE)) old.push(CONFIG_FILE);
         if (old.length)
-            toast.err('Old folder layout', `${old.join(', ')} ${old.length === 1 ? 'is' : 'are'} ignored now: cards go into data/cards/<collection>/<Rarity>/<card>/ ` +
-                `(data/cards/${DEFAULT_COLLECTION}/<Rarity>/<card>/ without a collection), booster packs into data/packs/, skins into data/skins/, the settings into data/config.json. Move them there.`);
+            toast.err('Old folder layout', `${old.join(', ')} ${old.length === 1 ? 'is' : 'are'} ignored: cards, packs and skins go into an addon (Add-ons tab), the settings into data/config.json.`);
     }
 
     async function restoreFolder() {
@@ -245,7 +315,7 @@
 
     function wireConnect() {
         const btn = $('#folder-connect');
-        btn.textContent = state.cards ? 'Change folder…' : 'Connect mod folder…';
+        btn.textContent = state.data ? 'Change folder…' : 'Connect mod folder…';
         btn.onclick = connectFolder;
     }
 
@@ -277,7 +347,7 @@
 
     function updateFolderUi() {
         const pill = $('#folder-pill');
-        const on = !!state.cards;
+        const on = !!state.data;
         pill.textContent = on ? state.dir.name : 'Not connected';
         pill.className = 'facade-pill fx-sm ' + (on ? 'fx-green' : 'fx-grey');
         $('#folder-note').hidden = on;
@@ -299,8 +369,10 @@
         state.urls.forEach(URL.revokeObjectURL);
         state.urls = [];
         const list = [];
-        if (state.cards) {
-            for await (const [collFolder, cdir] of state.cards.entries()) {
+        for (const addon of state.data ? state.addons : []) {
+            const cards = await getDir(addon.dir, CARDS_FOLDER);
+            if (!cards) continue;
+            for await (const [collFolder, cdir] of cards.entries()) {
                 if (cdir.kind !== 'directory' || isRarity(collFolder)) continue;
                 const collection = isDefault(collFolder) ? null : collFolder;
                 for (const rarity of RARITIES) {
@@ -319,7 +391,7 @@
                         const hasFoilMask = !!(await getFile(handle, 'card.foil.png'));
                         const hasNormal = !!(await getFile(handle, 'card.normal.png'));
                         const key = collection ? `${collection}/${name}` : name;
-                        list.push({ key, collection, rarity, folder: name, dir: handle, rdir, data, art, thumb, hasDepth, hasFoilMask, hasNormal });
+                        list.push({ key, collection, rarity, folder: name, dir: handle, rdir, cards, addon: addon.folder, data, art, thumb, hasDepth, hasFoilMask, hasNormal });
                     }
                 }
             }
@@ -329,9 +401,8 @@
         state.list = list;
         renderCardsSide();
         renderCards();
-        renderCollections();
         const count = $('#cards-count');
-        count.hidden = !state.cards;
+        count.hidden = !state.data;
         count.textContent = list.length;
         updateFolderHint();
         packsChanged('cards');
@@ -345,7 +416,7 @@
         const rarity = $('#cards-rarity').value;
         const view = state.cardsView;
         const shown = state.list.filter((c) =>
-            (view === '*' || (view === '' ? !c.collection : sameName(c.collection, view))) &&
+            (view === '*' || (view === '' ? !c.collection : view === '?' ? isOrphan(c) : sameName(c.collection, view))) &&
             (!rarity || c.rarity === rarity) &&
             (!q || (c.data.name || '').toLowerCase().includes(q) || collName(c.collection).toLowerCase().includes(q) || c.folder.includes(q)));
         grid.innerHTML = '';
@@ -364,17 +435,17 @@
                     ${cardType(c) === '3d' ? '<span class="facade-chip fx-purple">3D layer</span>' : ''}
                     ${c.data.animation ? '<span class="facade-chip fx-amber">Animated</span>' : ''}
                 </span>
-                <span class="tile-coll">${escapeHtml(collName(c.collection))}</span>`;
+                <span class="tile-coll">${escapeHtml(collName(c.collection))}${state.addons.length > 1 ? ` · ${escapeHtml(addonName(c.addon))}` : ''}</span>`;
             tile.addEventListener('click', () => openEdit(c));
             grid.appendChild(tile);
         }
         const empty = $('#cards-empty');
         empty.hidden = shown.length > 0;
-        empty.textContent = !state.cards ? 'Connect the mod folder to see your cards.'
+        empty.textContent = !state.data ? 'Connect the mod folder to see your cards.'
             : state.list.length ? 'No card matches.' : 'No cards yet. Make one under New card.';
     }
 
-    // My cards' left column: All cards, every collection (its binder), No collection
+    // Cards' left column: All cards, every collection (its binder), No collection
     function renderCardsSide() {
         const side = $('#cards-side');
         side.innerHTML = '';
@@ -383,24 +454,78 @@
             entries.push({ key: coll.folder, name: coll.data.name, count: state.list.filter((c) => isMember(c, coll)).length, coll });
         const loose = state.list.filter((c) => !c.collection).length;
         if (loose) entries.push({ key: '', name: 'No collection', count: loose });
+        const orphans = state.list.filter(isOrphan).length;
+        if (orphans) entries.push({ key: '?', name: 'Missing collection', count: orphans });
         if (!entries.some((e) => e.key === state.cardsView)) state.cardsView = '*';
+        closeConfirm();
         for (const e of entries) {
-            const item = document.createElement('button');
-            item.type = 'button';
+            const item = document.createElement('div');
+            item.tabIndex = 0;
+            item.setAttribute('role', 'button');
             item.className = 'cards-side-item' + (e.key === state.cardsView ? ' is-on' : '');
             const thumb = document.createElement(e.coll ? 'canvas' : 'span');
             thumb.className = 'cards-side-thumb' + (e.coll ? '' : ' is-icon');
             if (e.coll) drawBinder(thumb, e.coll.stickers);
-            else thumb.textContent = e.key === '*' ? '▦' : '○';
+            else if (e.key === '*') thumb.innerHTML = CardAddonKit.LOGO_SVG;
+            else thumb.textContent = '○';
             item.appendChild(thumb);
             item.insertAdjacentHTML('beforeend', `<span class="cards-side-name">${escapeHtml(e.name)}</span><span class="facade-chip fx-grey cards-side-count">${e.count}</span>`);
-            item.addEventListener('click', () => {
+            if (e.coll) {
+                const actions = document.createElement('span');
+                actions.className = 'cards-side-actions';
+                actions.innerHTML = '<button type="button" class="facade-iconbtn" data-act="edit" title="Edit collection" aria-label="Edit collection">✎</button><button type="button" class="facade-iconbtn cards-side-delete" data-act="delete" title="Delete collection" aria-label="Delete collection">×</button>';
+                actions.querySelector('[data-act="edit"]').addEventListener('click', (ev) => { ev.stopPropagation(); openCollection(e.coll); });
+                actions.querySelector('[data-act="delete"]').addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    const n = state.list.filter((c) => isMember(c, e.coll)).length;
+                    confirmMenu(ev.currentTarget, `Delete "${e.coll.data.name}"?`, n ? `${n} card${n === 1 ? '' : 's'} move to No collection.` : 'It has no cards.', 'Delete', () => deleteCollection(e.coll));
+                });
+                item.appendChild(actions);
+            }
+            const choose = () => {
                 state.cardsView = e.key;
                 for (const el of side.children) el.classList.toggle('is-on', el === item);
                 renderCards();
-            });
+            };
+            item.addEventListener('click', choose);
+            item.addEventListener('keydown', (ev) => { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target === item) { ev.preventDefault(); choose(); } });
             side.appendChild(item);
         }
+        if (state.data) {
+            const add = document.createElement('button');
+            add.type = 'button';
+            add.className = 'facade-btn fx-sm cards-side-new';
+            add.textContent = '+ New collection';
+            add.addEventListener('click', () => openCollection(null));
+            side.appendChild(add);
+        }
+    }
+
+    let confirmEl = null;
+    function closeConfirm() {
+        if (!confirmEl) return;
+        confirmEl.remove();
+        confirmEl = null;
+    }
+
+    function confirmMenu(anchor, title, note, action, run) {
+        closeConfirm();
+        const menu = document.createElement('div');
+        menu.className = 'confirm-menu';
+        menu.setAttribute('role', 'dialog');
+        menu.innerHTML = `<b></b><small></small><div class="confirm-actions"><button type="button" class="facade-btn fx-sm" data-act="no">Cancel</button><button type="button" class="facade-btn fx-sm fx-red fx-on" data-act="yes"></button></div>`;
+        menu.querySelector('b').textContent = title;
+        menu.querySelector('small').textContent = note;
+        menu.querySelector('[data-act="yes"]').textContent = action;
+        menu.querySelector('[data-act="no"]').addEventListener('click', closeConfirm);
+        menu.querySelector('[data-act="yes"]').addEventListener('click', () => { closeConfirm(); run(); });
+        menu.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+        document.body.appendChild(menu);
+        const r = anchor.getBoundingClientRect();
+        menu.style.left = `${Math.max(8, Math.min(r.left + window.scrollX, window.scrollX + document.documentElement.clientWidth - menu.offsetWidth - 8))}px`;
+        menu.style.top = `${r.bottom + window.scrollY + 6}px`;
+        confirmEl = menu;
+        menu.querySelector('[data-act="no"]').focus();
     }
 
     const isRarity = (folder) => RARITIES.some((r) => sameName(r, folder));
@@ -409,7 +534,7 @@
     function collName(folder) {
         if (isDefault(folder)) return 'No collection';
         const coll = state.collections.find((c) => sameName(c.folder, folder));
-        return coll ? coll.data.name : folder;
+        return coll ? coll.data.name : 'Missing collection';
     }
 
     function findCard(collection, folder, except = null) {
@@ -529,7 +654,7 @@
         const hint = $('#f-folder');
         const editing = state.editingCard;
         const coll = $('#f-collection').value;
-        const where = `data/cards/${escapeHtml(coll || DEFAULT_COLLECTION)}/${$('#f-rarity').value}/`;
+        const where = `${escapeHtml(addonPath(formAddon()))}/cards/${escapeHtml(coll || DEFAULT_COLLECTION)}/${$('#f-rarity').value}/`;
         if (!editing) { hint.innerHTML = `Folder: <code>${where}&lt;new id&gt;/</code>`; return; }
         const other = findCard(coll, editing.folder, editing);
         hint.innerHTML = `Folder: <code>${where}${escapeHtml(editing.folder)}/</code>` +
@@ -619,9 +744,11 @@
     }
 
     // The card's layers, the collection's over them, the card's layers marked over the collection
+    const everyCopy = (layers, selected = null, rare = false) => (rare ? layers : layers.filter((l) => l.chance >= 100 || l === selected));
+
     function stackParts(side) {
         const coll = state.collPreview.layers;
-        return CardLayerKit.parts(CardLayerKit.ordered(state.layers[side], coll[side]), playT, formCtx());
+        return CardLayerKit.parts(everyCopy(CardLayerKit.ordered(state.layers[side], coll[side]), state.layers.selected, $('#f-rare').checked), playT, formCtx());
     }
 
     // The chosen collection's layers, for the previews
@@ -737,7 +864,8 @@
         if (!editor) return;
         const r = canvas.getBoundingClientRect();
         const x = ((e.clientX - r.left) / r.width) * CARD_W, y = ((e.clientY - r.top) / r.height) * CARD_H;
-        const hit = CardLayerKit.hitTest(CardLayerKit.ordered(editor[side]), x, y, t);
+        const rare = editor === state.layers ? $('#f-rare').checked : $('#coll-rare').checked;
+        const hit = CardLayerKit.hitTest(everyCopy(CardLayerKit.ordered(editor[side]), editor.selected, rare), x, y, t);
         if (hit !== editor.selected) editor.select(hit, { reveal: true });
     }
 
@@ -1084,7 +1212,9 @@
     let defaultBack = null, defaultBackImg = null;
     function defaultBackImage() {
         return defaultBack ||= (async () => {
-            const file = state.cards && await getFile(state.cards, 'back.png');
+            const addon = state.addons.find((a) => a.folder === (state.coll ? collAddon() : formAddon()));
+            const cards = addon && await getDir(addon.dir, CARDS_FOLDER);
+            const file = cards && await getFile(cards, 'back.png');
             const img = (file && await blobImage(file)) || await loadUrl(DEFAULT_BACK).catch(() => null);
             defaultBackImg = img;
             return img;
@@ -1144,7 +1274,8 @@
 
     // What the 3D view draws (CardView.set): the picture (3D: behind the window) and the stacked layers, like the game
     async function viewInput({ is3d, picture, front, back, holo, rarity }) {
-        const f = CardLayerKit.composite(front), b = CardLayerKit.composite(back);
+        const surface = { surface: true, roughness: window.CardView ? CardView.roughnessOf(is3d ? '3d' : '2d') : CardLayerKit.DEFAULT_ROUGHNESS };
+        const f = CardLayerKit.composite(front, surface), b = CardLayerKit.composite(back, surface);
         const white = CardLayerKit.newCanvas();
         const wg = white.getContext('2d');
         wg.fillStyle = '#fff';
@@ -1154,9 +1285,9 @@
             depth: is3d && picture ? picture.depth : null,
             normal: picture ? picture.normal : null,
             foilMask: picture ? picture.foil || white : null,
-            overlay: f.color, layerFoil: f.foil, layerNormal: f.normal,
+            overlay: f.color, layerFoil: f.foil, layerNormal: f.normal, layerSurface: f.surface,
             back: back.length ? b.color : await defaultBackImage(),
-            backFoil: b.foil, backNormal: b.normal,
+            backFoil: b.foil, backNormal: b.normal, backSurface: b.surface,
             type: is3d ? '3d' : '2d', foil: holo,
             rarityColor: rarityColor(rarity),
         };
@@ -1224,7 +1355,7 @@
             files.push(...out.files);
             managed.layers = out.json.front.length || out.json.back.length ? out.json : null;
             if (!is3d) {
-                // A 2D card's pictures are all layers: card.png is its thumbnail (for My cards), the layers every copy shows
+                // A 2D card's pictures are all layers: card.png is its thumbnail (for Cards), the layers every copy shows
                 managed.animation = null;
                 const always = CardLayerKit.ordered(state.layers.front, state.collPreview.layers.front)
                     .filter((l) => l.chance >= 100).map((l) => ({ ...l, hidden: false }));
@@ -1296,14 +1427,21 @@
     }
 
     async function saveToFolder() {
-        if (!state.cards) { toast.err('No folder connected', 'Connect the mod folder, or use Download .zip.'); return; }
+        if (!state.data) { toast.err('No folder connected', 'Connect the mod folder, or use Download .zip.'); return; }
         const card = await collectCard();
         if (!card) return;
         if (state.editingCard) return saveOpenedCard(card);
         const { f, slug, files } = card;
 
+        let addon;
+        try {
+            addon = await CardAddonKit.ensure(state.data, state.addons, $('#f-addon').value);
+        } catch (e) {
+            toast.err('Could not save the card', e.message);
+            return;
+        }
         const collFolder = f.collection || DEFAULT_COLLECTION;
-        const collDir = await getDir(state.cards, collFolder, true);
+        const collDir = await getDir(await getDir(addon.dir, CARDS_FOLDER, true), collFolder, true);
         for (const r of RARITIES) {
             const rdir = await getDir(collDir, r);
             if (rdir && await getDir(rdir, slug)) {
@@ -1321,12 +1459,13 @@
                 if (files.length > 10) setStatus(`Saving ${i + 1} of ${files.length} files…`);
                 await writePath(cdir, name, await make());
             }
-            const where = `data/cards/${collFolder}/${f.rarity}/${slug}/`;
+            const where = `data/${addon.folder}/cards/${collFolder}/${f.rarity}/${slug}/`;
             toast.ok('Card saved', `${where} · restart the SPT server to get it in game.`);
             setStatus(`Saved to ${where}`, true);
             $('#f-name').value = '';
             $('#f-short').value = '';
             $('#f-desc').value = '';
+            if (!state.addons.some((a) => a.folder === addon.folder)) await scanAddons();
             await scanCards();
         } catch (e) {
             toast.err('Could not save the card', e.message);
@@ -1340,55 +1479,16 @@
         const card = await collectCard();
         if (!card) return;
         const { f, slug, files } = card;
-        const path = `${f.collection || DEFAULT_COLLECTION}/${f.rarity}/${slug}`;
+        const path = `${DEFAULT_COLLECTION}/${f.rarity}/${slug}`;
         const entries = [];
         for (const [i, [name, make]] of files.entries()) {
             if (files.length > 10) setStatus(`Packing ${i + 1} of ${files.length} files…`);
-            entries.push({ name: `${path}/${name}`, data: new Uint8Array(await (await make()).arrayBuffer()) });
+            entries.push({ name: `cards/${path}/${name}`, data: new Uint8Array(await (await make()).arrayBuffer()) });
         }
         const zip = `${slugify(f.name)}.zip`;
-        download(makeZip(entries), zip);
-        toast.ok('Card downloaded', `Extract ${zip} into the mod's data/cards folder, so you get data/cards/${path}/card.json.`);
-        setStatus(`Downloaded ${zip}: extract it into data/cards/`, true);
-    }
-
-    const CRC_TABLE = (() => {
-        const t = new Uint32Array(256);
-        for (let n = 0; n < 256; n++) {
-            let c = n;
-            for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
-            t[n] = c >>> 0;
-        }
-        return t;
-    })();
-    function crc32(data) {
-        let c = 0xFFFFFFFF;
-        for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xFF] ^ (c >>> 8);
-        return (c ^ 0xFFFFFFFF) >>> 0;
-    }
-    function makeZip(entries) {
-        const enc = new TextEncoder();
-        const parts = [], central = [];
-        let offset = 0;
-        for (const e of entries) {
-            const name = enc.encode(e.name), crc = crc32(e.data), size = e.data.length;
-            const local = new DataView(new ArrayBuffer(30));
-            local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true); local.setUint16(6, 0x0800, true);
-            local.setUint32(14, crc, true); local.setUint32(18, size, true); local.setUint32(22, size, true);
-            local.setUint16(26, name.length, true);
-            parts.push(local, name, e.data);
-            const cen = new DataView(new ArrayBuffer(46));
-            cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true); cen.setUint16(8, 0x0800, true);
-            cen.setUint32(16, crc, true); cen.setUint32(20, size, true); cen.setUint32(24, size, true);
-            cen.setUint16(28, name.length, true); cen.setUint32(42, offset, true);
-            central.push(cen, name);
-            offset += 30 + name.length + size;
-        }
-        const censize = central.reduce((n, p) => n + p.byteLength, 0);
-        const end = new DataView(new ArrayBuffer(22));
-        end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
-        end.setUint32(12, censize, true); end.setUint32(16, offset, true);
-        return new Blob([...parts, ...central, end], { type: 'application/zip' });
+        download(CardAddonKit.makeZip(entries), zip);
+        toast.ok('Card downloaded', `${zip} · import it under Add-ons.`);
+        setStatus(`Downloaded ${zip}: import it under Add-ons`, true);
     }
 
     // The edit window: the card form moved into it, with the card's details, picture and layers. The New card form's
@@ -1396,7 +1496,7 @@
     async function openEdit(card) {
         if (state.editingCard) closeEdit();
         state.draft = {
-            fields: Object.fromEntries(['#f-name', '#f-short', '#f-desc', '#f-rarity', '#f-collection'].map((id) => [id, $(id).value])),
+            fields: Object.fromEntries(['#f-name', '#f-short', '#f-desc', '#f-rarity', '#f-addon', '#f-collection'].map((id) => [id, $(id).value])),
             collHidden: state.collHidden,
             use3d: state.use3d, depthRange: state.depthRange, crop: state.crop, show: state.show,
             art: state.art, depth: state.depth, foil: state.foil, normal: state.normal,
@@ -1428,6 +1528,10 @@
         $('#f-desc').value = d.description || '';
         state.textAlign = alignOf(d.textAlign);
         $('#f-rarity').value = card.rarity; syncSelect($('#f-rarity'));
+        $('#f-addon').value = card.addon;
+        $('#f-addon').disabled = true;
+        syncSelect($('#f-addon'));
+        defaultBack = defaultBackImg = null;
         fillCollectionSelects();
         $('#f-collection').value = card.collection || ''; syncSelect($('#f-collection'));
         state.collHidden = d.collectionLayers === false ? 'all' : new Set((d.hideCollectionLayers || []).filter((f) => typeof f === 'string'));
@@ -1451,7 +1555,7 @@
             const back = await CardLayerKit.load(card.dir, 'back', layers.back);
             // A 2D card from before layers: its card.png is its bottom layer (under the collection's frame)
             if (!d.layers && !has3d()) {
-                const fps = { art: fpsOf('art'), foil: fpsOf('foil'), normal: fpsOf('normal') };
+                const fps = { art: fpsOf('art'), mask: fpsOf('mask'), foil: fpsOf('foil'), normal: fpsOf('normal') };
                 front = [...await CardLayerKit.load(card.dir, 'front', [{ file: 'card', canBeFoil: true, fps }]), ...front];
             }
             state.layers.set(front, back);
@@ -1482,8 +1586,14 @@
         state.editingCard = null;
         const d = state.draft;
         state.draft = null;
+        $('#f-addon').disabled = false;
+        defaultBack = defaultBackImg = null;
         if (d) {
-            for (const [id, value] of Object.entries(d.fields)) { $(id).value = value; if ($(id).tagName === 'SELECT') syncSelect($(id)); }
+            for (const [id, value] of Object.entries(d.fields)) {
+                if (id === '#f-collection') fillCollectionSelects();
+                $(id).value = value;
+                if ($(id).tagName === 'SELECT') syncSelect($(id));
+            }
             state.collHidden = d.collHidden;
             Object.assign(state, { crop: d.crop, show: d.show, art: d.art, depth: d.depth, foil: d.foil, normal: d.normal, depthRange: d.depthRange });
             state.layers.set(d.front, d.back);
@@ -1512,9 +1622,9 @@
     async function moveCard(card, collection, rarity) {
         const other = findCard(collection, card.folder, card);
         if (other) throw new Error(`${collName(collection)} already has a card called ${card.folder} (${other.rarity})`);
-        const collDir = await getDir(state.cards, collection || DEFAULT_COLLECTION, true);
+        const collDir = await getDir(card.cards, collection || DEFAULT_COLLECTION, true);
         const target = await getDir(collDir, rarity, true);
-        if (await getDir(target, card.folder)) throw new Error(`data/cards/${collection || DEFAULT_COLLECTION}/${rarity} already has a folder called ${card.folder}`);
+        if (await getDir(target, card.folder)) throw new Error(`data/${card.addon}/cards/${collection || DEFAULT_COLLECTION}/${rarity} already has a folder called ${card.folder}`);
         const dir = await target.getDirectoryHandle(card.folder, { create: true });
         await copyDir(card.dir, dir);
         await card.rdir.removeEntry(card.folder, { recursive: true });
@@ -1530,14 +1640,14 @@
             const file = await getFile(card.dir, 'card.json');
             const data = JSON.parse(await file.text());
             data.name = `${(data.name || card.folder).trim()}_copy`;
-            let folder = newFolder();
-            while (await getDir(card.rdir, folder)) folder = newFolder();
+            delete data.idKey;
+            const folder = await CardAddonKit.freeName(card.rdir);
             const dir = await card.rdir.getDirectoryHandle(folder, { create: true });
             await copyDir(card.dir, dir);
             await writeFile(dir, 'card.json', new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }));
             closeEdit();
             await scanCards();
-            toast.ok('Card duplicated', `${data.name} · data/cards/${card.collection || DEFAULT_COLLECTION}/${card.rarity}/${folder}/. Rename it and save.`);
+            toast.ok('Card duplicated', `${data.name} · data/${card.addon}/cards/${card.collection || DEFAULT_COLLECTION}/${card.rarity}/${folder}/. Rename it and save.`);
             const copy = state.list.find((c) => c.folder === folder && c.rarity === card.rarity && sameColl(c.collection, card.collection));
             if (copy) await openEdit(copy);
         } catch (e) {
@@ -1571,6 +1681,7 @@
 
     const sameName = (a, b) => (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
     const isMember = (card, coll) => !!card.collection && sameName(card.collection, coll.folder);
+    const isOrphan = (card) => !!card.collection && !state.collections.some((c) => isMember(card, c));
 
     // A collection's layers (collection.json "layers"; older collections: overlay.png = frame, back.png), over its cards'.
     // Fresh copies for the editor, cached ones for the previews.
@@ -1597,34 +1708,38 @@
         state.collLayers.clear();
         defaultBack = defaultBackImg = null;
         state.collPreview = { folder: null, layers: { front: [], back: [] } };
-        const parent = state.cards;
-        if (parent) {
+        for (const addon of state.data ? state.addons : []) {
+            const parent = await getDir(addon.dir, CARDS_FOLDER);
+            if (!parent) continue;
             for await (const [name, handle] of parent.entries()) {
                 if (handle.kind !== 'directory' || isDefault(name) || isRarity(name)) continue;
                 const json = await getFile(handle, 'collection.json');
                 let data = {};
-                if (json) try { data = JSON.parse(await json.text()); } catch { data = {}; }
+                if (!json) continue;
+                try { data = JSON.parse(await json.text()); } catch { data = {}; }
                 data.name = data.name || name;
-                state.collections.push({ folder: name, dir: handle, parent, data, stickers: await readStickers(handle, data) });
+                state.collections.push({ folder: name, dir: handle, parent, addon: addon.folder, data, stickers: await readStickers(handle, data) });
             }
         }
         state.collections.sort((a, b) => a.data.name.localeCompare(b.data.name));
-        const count = $('#collections-count');
-        count.hidden = !state.cards;
-        count.textContent = state.collections.length;
         fillCollectionSelects();
-        renderCollections();
+        renderCardsSide();
         packsChanged('collections');
     }
 
     function fillCollectionSelects() {
-        for (const sel of [$('#f-collection')]) {
+        for (const [sel, addon] of [[$('#f-collection'), formAddon()], [$('#b-collection'), $('#b-addon').value]]) {
             const value = sel.value;
+            const own = (c) => (c.addon === addon ? 0 : 1);
+            const list = [...state.collections].sort((a, b) => own(a) - own(b) || a.data.name.localeCompare(b.data.name));
+            const current = sel.id === 'f-collection' && state.editingCard && state.editingCard.collection;
             sel.innerHTML = ['<option value="">No collection</option>']
-                .concat(state.collections.map((c) => `<option value="${escapeHtml(c.folder)}">${escapeHtml(c.data.name)}</option>`)).join('');
+                .concat(list.map((c) => `<option value="${escapeHtml(c.folder)}">${escapeHtml(c.data.name)}${c.addon !== addon ? ` · ${escapeHtml(addonName(c.addon))}` : ''}</option>`))
+                .concat(current && !list.some((c) => sameName(c.folder, current)) ? [`<option value="${escapeHtml(current)}">Missing collection</option>`] : []).join('');
             sel.value = [...sel.options].some((o) => o.value === value) ? value : '';
             syncSelect(sel);
         }
+        if (window.CCBatch) CCBatch.collectionsChanged();
     }
 
     const BINDER_SIZE = '1 × 2';
@@ -1689,29 +1804,6 @@
         }
     }
 
-    function renderCollections() {
-        const grid = $('#coll-grid');
-        grid.innerHTML = '';
-        for (const coll of state.collections) {
-            const members = state.list.filter((c) => isMember(c, coll));
-            const tile = document.createElement('button');
-            tile.type = 'button';
-            tile.className = 'coll-tile';
-            const canvas = document.createElement('canvas');
-            tile.appendChild(canvas);
-            tile.insertAdjacentHTML('beforeend', `
-                <span class="tile-name">${escapeHtml(coll.data.name)}</span>
-                <span class="tile-coll">${members.length ? `${members.length} card${members.length === 1 ? '' : 's'} · binder ${BINDER_SIZE}` : 'No cards yet: no binder in game'}</span>`);
-            drawBinder(canvas, coll.stickers);
-            tile.addEventListener('click', () => openCollection(coll));
-            grid.appendChild(tile);
-        }
-        const empty = $('#coll-empty');
-        empty.hidden = state.collections.length > 0;
-        empty.textContent = !state.cards ? 'Connect the mod folder to see your collections.'
-            : 'No collections yet. Make one with New collection.';
-    }
-
     function openCollection(coll) {
         const data = coll ? structuredClone(coll.data) : {};
         state.coll = {
@@ -1736,17 +1828,18 @@
             drawCollPreview();
         });
         $('#coll-editor-title').textContent = coll ? coll.data.name : 'New collection';
+        if (coll) $('#c-addon').value = coll.addon;
+        $('#c-addon').disabled = !!coll;
+        syncSelect($('#c-addon'));
+        defaultBack = defaultBackImg = null;
         $('#c-name').value = data.name || '';
         $('#c-short').value = data.shortName || '';
         $('#c-desc').value = data.description || '';
-        $('#c-delete').hidden = !coll;
-        delete $('#c-delete').dataset.armed;
-        $('#c-delete').textContent = 'Delete collection';
+        $('#coll-modal').hidden = false;
+        $('#coll-editor').scrollTop = 0;
         layoutStage();
         renderStickers();
         if (coll) loadStickers(coll.stickers);
-        $('#collections-list-view').hidden = true;
-        $('#coll-editor').hidden = false;
         updateCollFolder();
         renderCollCards();
         $('#c-name').focus();
@@ -1754,15 +1847,13 @@
 
     function closeCollection() {
         state.coll = null;
-        $('#coll-editor').hidden = true;
-        $('#collections-list-view').hidden = false;
+        $('#coll-modal').hidden = true;
     }
 
     function updateCollFolder() {
         const name = $('#c-name').value.trim();
         const src = state.coll && state.coll.source;
-        $('#c-folder').innerHTML = src ? `Folder <code>data/cards/${escapeHtml(src.folder)}/</code>`
-            : name ? `Folder <code>data/cards/${slugify(name)}/</code>` : 'Binder name in game.';
+        $('#c-folder').innerHTML = src ? `Folder <code>data/${escapeHtml(src.addon)}/cards/${escapeHtml(src.folder)}/</code>` : 'Binder name in game.';
     }
 
     function stickerFrame() {
@@ -2096,7 +2187,7 @@
     });
 
     function thumbnail({ picture, front, collFront, ctx }) {
-        const shown = CardLayerKit.ordered(front.filter((l) => l.chance > 0), collFront.filter((l) => l.chance >= 100))
+        const shown = CardLayerKit.ordered(front.filter((l) => l.chance >= 100), collFront.filter((l) => l.chance >= 100))
             .map((l) => ({ ...l, hidden: false }));
         const parts = [...(picture ? [{ art: picture, canBeFoil: false, frame: false }] : []), ...CardLayerKit.parts(shown, 0, ctx)];
         const full = CardLayerKit.composite(parts, { foil: false, normal: false }).color;
@@ -2338,9 +2429,10 @@
         const ctx = s ? savedCtx(s.card) : {
             vars: cardVars({ name: 'Card Name', description: 'The card\'s description goes here. Longer descriptions wrap onto more lines.', rarity: 'Rare', collection: state.coll && state.coll.source ? state.coll.source.folder : null }),
         };
-        if (side === 'back') return CardLayerKit.parts(CardLayerKit.ordered(s ? s.back : [], collEditor.back), 0, ctx);
-        if (!s) return [blankPart(), ...CardLayerKit.parts(collEditor.front, 0, ctx)];
-        return CardLayerKit.parts(CardLayerKit.ordered(s.front, collEditor.front), 0, ctx);
+        const sel = collEditor.selected, rare = $('#coll-rare').checked;
+        if (side === 'back') return CardLayerKit.parts(CardLayerKit.ordered(everyCopy(s ? s.back : [], null, rare), everyCopy(collEditor.back, sel, rare)), 0, ctx);
+        if (!s) return [blankPart(), ...CardLayerKit.parts(everyCopy(collEditor.front, sel, rare), 0, ctx)];
+        return CardLayerKit.parts(CardLayerKit.ordered(everyCopy(s.front, null, rare), everyCopy(collEditor.front, sel, rare)), 0, ctx);
     }
 
     let collPreviewDrawQueued = false;
@@ -2396,6 +2488,7 @@
         if (!window.CardView || !window.CardView.available()) $('#coll-view button[data-view="3d"]').disabled = true;
         $('#coll-sample').addEventListener('change', () => setCollSample($('#coll-sample').value));
         $('#coll-holo').addEventListener('change', drawCollPreview);
+        $('#coll-rare').addEventListener('change', drawCollPreview);
         const collMoved = (layer) => {
             if (state.coll) state.coll.layersDirty = true;
             collEditor.refreshTransform(layer);
@@ -2452,37 +2545,34 @@
     async function saveCollection() {
         const coll = state.coll;
         if (!coll) return;
-        if (!state.cards) { toast.err('Connect the mod folder first'); return; }
+        if (!state.data) { toast.err('Connect the mod folder first'); return; }
         if (!coll.layersLoaded) { toast.err('Still opening the collection', 'Wait for its layers to load, then save.'); return; }
         const name = $('#c-name').value.trim();
         if (!name) { toast.err('The collection needs a name'); $('#c-name').focus(); return; }
-        const folder = coll.source ? coll.source.folder : slugify(name);
-        if (!coll.source && (folder === 'default' || isRarity(folder))) {
-            toast.err(`"${name}" can't be a collection name`, `data/cards/${folder}/ would clash with data/cards/${DEFAULT_COLLECTION}/ or the rarity folders. Pick another name.`);
-            return;
-        }
-        const clash = state.collections.find((c) => c !== coll.source && (sameName(c.data.name, name) || sameName(c.folder, folder)));
+        const clash = state.collections.find((c) => c !== coll.source && sameName(c.data.name, name));
         if (clash) { toast.err(`"${name}" already exists`, 'Pick another name.'); return; }
-
-        const moves = [];
-        for (const card of state.list) {
-            const want = coll.members.has(card.key);
-            const was = coll.source ? isMember(card, coll.source) : false;
-            if (want && !was) moves.push({ card, to: folder });
-            else if (!want && was) moves.push({ card, to: null });
-        }
 
         const button = $('#c-save'), label = button.textContent;
         button.disabled = true;
         try {
-            checkMoves(moves);
             const broken = coll.layersDirty ? await CardLayerKit.unreadable([...collEditor.front, ...collEditor.back]) : [];
             if (broken.length) throw new Error(`Its files for ${broken.join(', ')} can't be read any more (changed on disk since the collection was opened), so nothing was changed. Close the collection, reload this page and open it again.`);
             let dir = coll.source ? coll.source.dir : null;
+            let folder = coll.source ? coll.source.folder : null;
             if (!dir) {
-                if (await getDir(state.cards, folder)) throw new Error(`data/cards/${folder} already exists`);
-                dir = await state.cards.getDirectoryHandle(folder, { create: true });
+                const addon = await CardAddonKit.ensure(state.data, state.addons, $('#c-addon').value);
+                const cardsDir = await getDir(addon.dir, CARDS_FOLDER, true);
+                folder = await CardAddonKit.freeName(cardsDir);
+                dir = await cardsDir.getDirectoryHandle(folder, { create: true });
             }
+            const moves = [];
+            for (const card of state.list) {
+                const want = coll.members.has(card.key);
+                const was = coll.source ? isMember(card, coll.source) : false;
+                if (want && !was) moves.push({ card, to: folder });
+                else if (!want && was) moves.push({ card, to: null });
+            }
+            checkMoves(moves);
 
             const data = Object.assign({}, coll.data, { name });
             for (const [key, value] of [['shortName', $('#c-short').value.trim()], ['description', $('#c-desc').value.trim()]]) {
@@ -2530,7 +2620,9 @@
             for (const fileName of doomed) await dir.removeEntry(fileName).catch(() => {});
 
             for (const m of moves) await moveCard(m.card, m.to, m.card.rarity);
+            if (coll.source) await pruneReferences(coll.source.folder);
 
+            if (!state.addons.some((a) => a.folder === collAddon())) await scanAddons();
             await scanCollections();
             await scanCards();
             const movedOut = new Set(moves.filter((m) => !m.to).map((m) => `${m.card.rarity}/${m.card.folder}`.toLowerCase()));
@@ -2547,24 +2639,17 @@
         }
     }
 
-    async function deleteCollection() {
-        const coll = state.coll && state.coll.source;
-        const btn = $('#c-delete');
+    async function deleteCollection(coll) {
         if (!coll) return;
-        if (!btn.dataset.armed) {
-            btn.dataset.armed = '1';
-            btn.textContent = 'Click again to delete';
-            setTimeout(() => { if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = 'Delete collection'; } }, 3000);
-            return;
-        }
         try {
             const moves = state.list.filter((c) => isMember(c, coll)).map((card) => ({ card, to: null }));
             checkMoves(moves);
             for (const m of moves) await moveCard(m.card, null, m.card.rarity);
             await coll.parent.removeEntry(coll.folder, { recursive: true });
+            await pruneReferences(coll.folder);
             toast.ok('Collection deleted', `${coll.data.name}: its binder is gone after the server restarts.` +
-                (moves.length ? ` Its ${moves.length} card${moves.length === 1 ? '' : 's'} moved to data/cards/${DEFAULT_COLLECTION}/ (no collection).` : ''));
-            closeCollection();
+                (moves.length ? ` Its ${moves.length} card${moves.length === 1 ? '' : 's'} moved to data/${coll.addon}/cards/${DEFAULT_COLLECTION}/ (no collection).` : ''));
+            if (state.coll && state.coll.source === coll) closeCollection();
             await scanCollections();
             await scanCards();
             const movedOut = new Set(moves.map((m) => `${m.card.rarity}/${m.card.folder}`.toLowerCase()));
@@ -2574,6 +2659,22 @@
         } catch (e) {
             toast.err('Could not delete the collection', e.message);
             await scanCards();
+        }
+    }
+
+    async function pruneReferences(folder) {
+        const hasCards = async (dir) => {
+            for await (const [name, handle] of dir.entries()) {
+                if (handle.kind !== 'directory') continue;
+                if (await getFile(handle, 'card.json') || await hasCards(handle)) return true;
+            }
+            return false;
+        };
+        for (const addon of state.addons) {
+            const cards = await getDir(addon.dir, CARDS_FOLDER);
+            const dir = cards && await getDir(cards, folder);
+            if (!dir || await getFile(dir, 'collection.json') || await hasCards(dir)) continue;
+            await cards.removeEntry(folder, { recursive: true }).catch(() => {});
         }
     }
 
@@ -2593,13 +2694,16 @@
     }
 
     function wireCollections() {
-        $('#coll-new').addEventListener('click', () => {
-            if (!state.cards) { toast.err('Connect the mod folder first', 'Collections are saved into its data folder.'); return; }
-            openCollection(null);
-        });
         $('#c-cancel').addEventListener('click', closeCollection);
+        $('#coll-close').addEventListener('click', closeCollection);
+        $('#coll-modal').addEventListener('mousedown', (e) => { if (e.target.id === 'coll-modal') closeCollection(); });
         $('#c-save').addEventListener('click', saveCollection);
-        $('#c-delete').addEventListener('click', deleteCollection);
+        document.addEventListener('pointerdown', closeConfirm);
+        window.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            if (confirmEl) closeConfirm();
+            else if (!$('#coll-modal').hidden) closeCollection();
+        });
         $('#c-name').addEventListener('input', updateCollFolder);
         wireStickerEditor();
     }
@@ -2620,9 +2724,7 @@
         const config = state.config;
         $('#s-form').hidden = !config;
         $('#s-empty').hidden = !!config;
-        $('#s-empty').innerHTML = !state.cards ? 'Connect the <b>Guro-DaCard</b> folder.'
-            : !state.data ? 'Connect <b>Guro-DaCard</b> or its <b>data</b> folder.'
-            : 'data/config.json can\'t be read.';
+        $('#s-empty').innerHTML = !state.data ? 'Connect the <b>Guro-DaCard</b> folder.' : 'data/config.json can\'t be read.';
         setSettingsStatus('');
         if (!config) return;
 
@@ -2710,7 +2812,7 @@
             await writeFile(state.data, CONFIG_FILE, new Blob([prettyJson(config) + '\n'], { type: 'application/json' }));
             await readConfig();
             refreshPrices();
-            renderCollections();
+            renderCardsSide();
             toast.ok('Settings saved', 'Restart the SPT server to use them.');
             setSettingsStatus('Saved to data/config.json', true);
         } catch (e) {
@@ -2728,7 +2830,7 @@
     }
 
     // The tabs are pages: #new, #cards, #collections, #settings (a refresh stays on the tab; Back / Forward move between them)
-    const PANES = ['new', 'cards', 'collections', 'packs', 'settings'];
+    const PANES = ['new', 'cards', 'packs', 'addons', 'settings'];
     const paneFromHash = () => (PANES.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'new');
 
     function showPane(name, fromHistory = false) {
@@ -2736,9 +2838,9 @@
         if (!fromHistory && location.hash.slice(1) !== name) history.pushState(null, '', '#' + name);
         for (const item of $$('.nav-item')) item.classList.toggle('active', item.dataset.pane === name);
         for (const pane of $$('.pane')) pane.classList.toggle('active', pane.id === 'pane-' + name);
-        if (name === 'cards' && state.cards) scanCards();
-        if (name === 'collections') { closeCollection(); if (state.cards) scanCollections().then(scanCards); }
+        if (name === 'cards' && state.data) scanCards();
         if (name === 'packs' && window.CCPacks) window.CCPacks.show();
+        if (name === 'addons' && window.CCAddons) window.CCAddons.render();
     }
 
     function boot() {
@@ -2784,6 +2886,7 @@
         wireCollectionLayers();
         $('#normal-clear').addEventListener('click', () => clearMedia('normal'));
         $('#f-holo').addEventListener('change', () => drawCrop());
+        $('#f-rare').addEventListener('change', () => drawCrop());
         $('#foil-clear').addEventListener('click', () => clearMedia('foil'));
         wireCrop();
         wireDepthRange();
@@ -2793,7 +2896,7 @@
 
         $('#cards-search').addEventListener('input', renderCards);
         $('#cards-rarity').addEventListener('change', renderCards);
-        $('#cards-refresh').addEventListener('click', () => (state.cards ? scanCards() : connectFolder()));
+        $('#cards-refresh').addEventListener('click', () => (state.data ? scanCards() : connectFolder()));
         $('#folder-path-copy').addEventListener('click', async () => {
             try {
                 await navigator.clipboard.writeText(pageFolderPath());
@@ -2803,6 +2906,19 @@
             }
         });
 
+        $('#migrate-run').addEventListener('click', runMigrations);
+        $('#f-addon').addEventListener('change', () => {
+            defaultBack = defaultBackImg = null;
+            fillCollectionSelects();
+            updateFolderHint();
+            ensureCollPreview().then(() => drawCrop());
+        });
+        $('#c-addon').addEventListener('change', () => {
+            if (state.coll && !state.coll.source) state.coll.members.clear();
+            defaultBack = defaultBackImg = null;
+            renderCollCards();
+            drawCollPreview();
+        });
         $('#edit-close').addEventListener('click', closeEdit);
         $('#edit-cancel').addEventListener('click', closeEdit);
         $('#edit-delete').addEventListener('click', deleteCard);
@@ -2823,9 +2939,14 @@
             if (b && !b.disabled) b.click();
         }
         if (window.CCPacks) window.CCPacks.init({
-            state, toast, getDir, getFile, writeFile, slugify, escapeHtml, paintRarity, rarityColor,
-            enhanceSelect, setRange, prettyJson, readConfig, collName,
+            state, toast, getDir, getFile, writeFile, slugify, newFolder, escapeHtml, paintRarity, rarityColor,
+            enhanceSelect, setRange, prettyJson, readConfig, collName, addonName, scanAddons, syncSelect, defaultSkinsDir, confirmMenu,
         });
+        if (window.CCBatch) window.CCBatch.init({
+            state, toast, getDir, writePath, newFolder, enhanceSelect, sameName, collectionLayers, cardVars, cardJson, thumbnail, pngBlob,
+            scanCards, scanAddons, fillCollectionSelects, THUMB_FILE,
+        });
+        if (window.CCAddons) window.CCAddons.init({ state, toast, escapeHtml, download, rescan });
         const pane = paneFromHash();
         history.replaceState(null, '', '#' + pane);
         showPane(pane, true);

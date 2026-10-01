@@ -72,6 +72,7 @@ Material:
     - _FoilStrength: 0.6
     - _GlossyReflections: 1
     - _NormalStrength: 0.2
+    - _Roughness: 0.3
     - _SpecularHighlights: 1
     - _WorldGlow: 0.1
     m_Colors: []

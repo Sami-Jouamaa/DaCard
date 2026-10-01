@@ -32,6 +32,7 @@ Shader "AmplifyCardShader3D"
 		_LayerNormal( "Layer Normal", 2D ) = "bump" {}
 		_BackNormal( "Back Normal", 2D ) = "bump" {}
 		_WorldGlow( "Glow in the world", Range( 0, 1 ) ) = 0.1
+		_Roughness( "Roughness", Range( 0, 1 ) ) = 1
 
 
 		//_TransmissionShadow( "Transmission Shadow", Range( 0, 1 ) ) = 0.5
@@ -324,6 +325,7 @@ Shader "AmplifyCardShader3D"
 				uniform sampler2D _BackNormal;
 				uniform float _DaCardWorld;
 				uniform float _WorldGlow;
+				uniform float _Roughness;
 
 
 				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, out float3 hit )
@@ -461,21 +463,26 @@ Shader "AmplifyCardShader3D"
 				
 				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask )
 				{
-					// Where the foil version is foil. Front: the card layers' foil (_LayerFoil.r, stacked by the client from the layers that
-					// can be foil) over the 3D picture's own foil area (baseFoil: card.foil.png) where no layer covers it (layers = coverage).
-					// Back: the back layers' foil (_BackFoil.r).
 					float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers );
-					float f = lerp( backFoil.r, front, saturate( frontMask ) );
-					return float4( f, f, f, 1 );
+					float k = saturate( frontMask );
+					float4 surface = lerp( backFoil, layerFoil, k );
+					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
 				}
 				
 				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
 				{
-					// Holographic foil is a metal film: how metallic the card is here. Light glancing off metal comes back
-					// in the metal's colour (the albedo, see CardFoilAlbedo), so the foil's highlights are rainbow instead of white.
-					// Only on the foil version (strength > 0), in the same area as CardFoil.
-					float area = foilMask.r;   // CardLayerFoil: layers and picture, front and back
-					return area * saturate(strength * 1.5);
+					return foilMask.r * saturate( strength * 1.5 );
+				}
+				
+				float CardSmoothness132( float4 surface, float strength, float roughness )
+				{
+					float rough = lerp( roughness, surface.g, surface.a );
+					return lerp( 1.0 - rough, 0.9, surface.r * saturate( strength * 1.5 ) );
+				}
+				
+				float CardMetallic154( float4 surface, float foilMetal )
+				{
+					return max( surface.b, foilMetal );
 				}
 				
 				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift )
@@ -801,7 +808,13 @@ Shader "AmplifyCardShader3D"
 					sampler2D backNormal126 = _BackNormal;
 					float3 localCardNormal126 = CardNormal126( hit126 , uv126 , normalMap126 , strength126 , frontMask126 , border126 , layerNormal126 , backNormal126 );
 					
-					float lerpResult132 = lerp( 0.0 , 0.9 , localCardFoilMetal130);
+					float4 surface132 = localCardLayerFoil144;
+					float strength132 = _FoilStrength;
+					float roughness132 = _Roughness;
+					float localCardSmoothness132 = CardSmoothness132( surface132 , strength132 , roughness132 );
+					float4 surface154 = localCardLayerFoil144;
+					float foilMetal154 = localCardFoilMetal130;
+					float localCardMetallic154 = CardMetallic154( surface154 , foilMetal154 );
 					
 					float2 uv120 = texCoord95;
 					float3 viewTS120 = ase_viewDirTS;
@@ -823,8 +836,8 @@ Shader "AmplifyCardShader3D"
 					o.Normal = localCardNormal126;
 
 					half3 Specular = half3( 0, 0, 0 );
-					half Metallic = localCardFoilMetal130;
-					half Smoothness = lerpResult132;
+					half Metallic = localCardMetallic154;
+					half Smoothness = localCardSmoothness132;
 					half Occlusion = 1;
 
 					#if defined(ASE_LIGHTING_SIMPLE)
@@ -1136,6 +1149,7 @@ Shader "AmplifyCardShader3D"
 				uniform sampler2D _BackNormal;
 				uniform float _DaCardWorld;
 				uniform float _WorldGlow;
+				uniform float _Roughness;
 
 
 				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, out float3 hit )
@@ -1273,21 +1287,26 @@ Shader "AmplifyCardShader3D"
 				
 				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask )
 				{
-					// Where the foil version is foil. Front: the card layers' foil (_LayerFoil.r, stacked by the client from the layers that
-					// can be foil) over the 3D picture's own foil area (baseFoil: card.foil.png) where no layer covers it (layers = coverage).
-					// Back: the back layers' foil (_BackFoil.r).
 					float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers );
-					float f = lerp( backFoil.r, front, saturate( frontMask ) );
-					return float4( f, f, f, 1 );
+					float k = saturate( frontMask );
+					float4 surface = lerp( backFoil, layerFoil, k );
+					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
 				}
 				
 				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
 				{
-					// Holographic foil is a metal film: how metallic the card is here. Light glancing off metal comes back
-					// in the metal's colour (the albedo, see CardFoilAlbedo), so the foil's highlights are rainbow instead of white.
-					// Only on the foil version (strength > 0), in the same area as CardFoil.
-					float area = foilMask.r;   // CardLayerFoil: layers and picture, front and back
-					return area * saturate(strength * 1.5);
+					return foilMask.r * saturate( strength * 1.5 );
+				}
+				
+				float CardSmoothness132( float4 surface, float strength, float roughness )
+				{
+					float rough = lerp( roughness, surface.g, surface.a );
+					return lerp( 1.0 - rough, 0.9, surface.r * saturate( strength * 1.5 ) );
+				}
+				
+				float CardMetallic154( float4 surface, float foilMetal )
+				{
+					return max( surface.b, foilMetal );
 				}
 				
 				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift )
@@ -1596,7 +1615,13 @@ Shader "AmplifyCardShader3D"
 					sampler2D backNormal126 = _BackNormal;
 					float3 localCardNormal126 = CardNormal126( hit126 , uv126 , normalMap126 , strength126 , frontMask126 , border126 , layerNormal126 , backNormal126 );
 					
-					float lerpResult132 = lerp( 0.0 , 0.9 , localCardFoilMetal130);
+					float4 surface132 = localCardLayerFoil144;
+					float strength132 = _FoilStrength;
+					float roughness132 = _Roughness;
+					float localCardSmoothness132 = CardSmoothness132( surface132 , strength132 , roughness132 );
+					float4 surface154 = localCardLayerFoil144;
+					float foilMetal154 = localCardFoilMetal130;
+					float localCardMetallic154 = CardMetallic154( surface154 , foilMetal154 );
 					
 					float2 uv120 = texCoord95;
 					float3 viewTS120 = ase_viewDirTS;
@@ -1618,8 +1643,8 @@ Shader "AmplifyCardShader3D"
 					o.Normal = localCardNormal126;
 
 					half3 Specular = half3( 0, 0, 0 );
-					half Metallic = localCardFoilMetal130;
-					half Smoothness = lerpResult132;
+					half Metallic = localCardMetallic154;
+					half Smoothness = localCardSmoothness132;
 					half Occlusion = 1;
 
 					#if defined(ASE_LIGHTING_SIMPLE)
@@ -1870,6 +1895,7 @@ Shader "AmplifyCardShader3D"
 				uniform sampler2D _BackNormal;
 				uniform float _DaCardWorld;
 				uniform float _WorldGlow;
+				uniform float _Roughness;
 
 
 				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, out float3 hit )
@@ -2007,21 +2033,26 @@ Shader "AmplifyCardShader3D"
 				
 				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask )
 				{
-					// Where the foil version is foil. Front: the card layers' foil (_LayerFoil.r, stacked by the client from the layers that
-					// can be foil) over the 3D picture's own foil area (baseFoil: card.foil.png) where no layer covers it (layers = coverage).
-					// Back: the back layers' foil (_BackFoil.r).
 					float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers );
-					float f = lerp( backFoil.r, front, saturate( frontMask ) );
-					return float4( f, f, f, 1 );
+					float k = saturate( frontMask );
+					float4 surface = lerp( backFoil, layerFoil, k );
+					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
 				}
 				
 				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
 				{
-					// Holographic foil is a metal film: how metallic the card is here. Light glancing off metal comes back
-					// in the metal's colour (the albedo, see CardFoilAlbedo), so the foil's highlights are rainbow instead of white.
-					// Only on the foil version (strength > 0), in the same area as CardFoil.
-					float area = foilMask.r;   // CardLayerFoil: layers and picture, front and back
-					return area * saturate(strength * 1.5);
+					return foilMask.r * saturate( strength * 1.5 );
+				}
+				
+				float CardSmoothness132( float4 surface, float strength, float roughness )
+				{
+					float rough = lerp( roughness, surface.g, surface.a );
+					return lerp( 1.0 - rough, 0.9, surface.r * saturate( strength * 1.5 ) );
+				}
+				
+				float CardMetallic154( float4 surface, float foilMetal )
+				{
+					return max( surface.b, foilMetal );
 				}
 				
 				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift )
@@ -2337,7 +2368,13 @@ Shader "AmplifyCardShader3D"
 					sampler2D backNormal126 = _BackNormal;
 					float3 localCardNormal126 = CardNormal126( hit126 , uv126 , normalMap126 , strength126 , frontMask126 , border126 , layerNormal126 , backNormal126 );
 					
-					float lerpResult132 = lerp( 0.0 , 0.9 , localCardFoilMetal130);
+					float4 surface132 = localCardLayerFoil144;
+					float strength132 = _FoilStrength;
+					float roughness132 = _Roughness;
+					float localCardSmoothness132 = CardSmoothness132( surface132 , strength132 , roughness132 );
+					float4 surface154 = localCardLayerFoil144;
+					float foilMetal154 = localCardFoilMetal130;
+					float localCardMetallic154 = CardMetallic154( surface154 , foilMetal154 );
 					
 					float2 uv120 = texCoord95;
 					float3 viewTS120 = ase_viewDirTS;
@@ -2359,8 +2396,8 @@ Shader "AmplifyCardShader3D"
 					o.Normal = localCardNormal126;
 
 					half3 Specular = half3( 0, 0, 0 );
-					half Metallic = localCardFoilMetal130;
-					half Smoothness = lerpResult132;
+					half Metallic = localCardMetallic154;
+					half Smoothness = localCardSmoothness132;
 					half Occlusion = 1;
 
 					#if defined(ASE_LIGHTING_SIMPLE)
@@ -2737,21 +2774,15 @@ Shader "AmplifyCardShader3D"
 				
 				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask )
 				{
-					// Where the foil version is foil. Front: the card layers' foil (_LayerFoil.r, stacked by the client from the layers that
-					// can be foil) over the 3D picture's own foil area (baseFoil: card.foil.png) where no layer covers it (layers = coverage).
-					// Back: the back layers' foil (_BackFoil.r).
 					float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers );
-					float f = lerp( backFoil.r, front, saturate( frontMask ) );
-					return float4( f, f, f, 1 );
+					float k = saturate( frontMask );
+					float4 surface = lerp( backFoil, layerFoil, k );
+					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
 				}
 				
 				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
 				{
-					// Holographic foil is a metal film: how metallic the card is here. Light glancing off metal comes back
-					// in the metal's colour (the albedo, see CardFoilAlbedo), so the foil's highlights are rainbow instead of white.
-					// Only on the foil version (strength > 0), in the same area as CardFoil.
-					float area = foilMask.r;   // CardLayerFoil: layers and picture, front and back
-					return area * saturate(strength * 1.5);
+					return foilMask.r * saturate( strength * 1.5 );
 				}
 				
 				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift )
@@ -3819,14 +3850,16 @@ Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, 
 Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;126;176,1520;Inherit;False;// Bump detail, tangent space (OpenGL / Unity convention: green = up), so the card catches the game's lights. Front: the$// card layers' normals (_LayerNormal, stacked by the client, on the glass) over the picture's normal map at the parallax$// hit (hit = ParallaxWindow's hit, xy: UV, z: how much art, not box wall, is seen there@ flat on the walls) where no layer$// covers it (border = the layers' coverage). Back: the back layers' (_BackNormal). Default textures "bump" = flat.$float3 base = tex2Dgrad( normalMap, hit.xy, ddx( uv ), ddy( uv ) ).xyz * 2.0 - 1.0@$base = lerp( float3( 0, 0, 1 ), base, saturate( hit.z ) )@$float3 layer = tex2D( layerNormal, uv ).xyz * 2.0 - 1.0@$float3 back = tex2D( backNormal, uv ).xyz * 2.0 - 1.0@$float3 n = lerp( back, lerp( base, layer, border ), saturate( frontMask ) )@$n.xy *= strength@$return normalize( n )@;3;Create;8;False;hit;FLOAT3;0,0,0;In;;Inherit;False;False;uv;FLOAT2;0,0;In;;Inherit;False;False;normalMap;SAMPLER2D;_Sampler2126;In;;Inherit;False;False;strength;FLOAT;1;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;False;border;FLOAT;0;In;;Inherit;False;False;layerNormal;SAMPLER2D;_Sampler6126;In;;Inherit;False;False;backNormal;SAMPLER2D;_Sampler7126;In;;Inherit;False;CardNormal;True;False;0;;False;8;0;FLOAT3;0,0,0;False;1;FLOAT2;0,0;False;2;SAMPLER2D;_Sampler2126;False;3;FLOAT;1;False;4;FLOAT;1;False;5;FLOAT;0;False;6;SAMPLER2D;_Sampler6126;False;7;SAMPLER2D;_Sampler7126;False;1;FLOAT3;0
 Node;AmplifyShaderEditor.TexturePropertyNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;127;-480,1520;Inherit;True;Property;_NormalMap;Normal Map;21;0;Create;True;0;0;0;False;0;False;None;None;False;bump;Auto;Texture2D;False;-1;0;2;SAMPLER2D;0;SAMPLERSTATE;1
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;128;-160,1600;Inherit;False;Property;_NormalStrength;Normal Strength;22;0;Create;True;0;0;0;False;0;False;1;1;0;2;0;1;FLOAT;0
-Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;130;448,1040;Inherit;False;// Holographic foil is a metal film: how metallic the card is here. Light glancing off metal comes back$// in the metal's colour (the albedo, see CardFoilAlbedo), so the foil's highlights are rainbow instead of white.$// Only on the foil version (strength > 0), in the same area as CardFoil.$float area = foilMask.r@   // CardLayerFoil: layers and picture, front and back$return area * saturate(strength * 1.5)@;1;Create;4;False;frontMask;FLOAT;1;In;;Inherit;False;False;foilMask;FLOAT4;1,1,1,1;In;;Inherit;False;False;border;FLOAT;0;In;;Inherit;False;False;strength;FLOAT;0.6;In;;Inherit;False;CardFoilMetal;True;False;0;;False;4;0;FLOAT;1;False;1;FLOAT4;1,1,1,1;False;2;FLOAT;0;False;3;FLOAT;0.6;False;1;FLOAT;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;130;448,1040;Inherit;False;return foilMask.r * saturate( strength * 1.5 )@;1;Create;4;False;frontMask;FLOAT;1;In;;Inherit;False;False;foilMask;FLOAT4;1,1,1,1;In;;Inherit;False;False;border;FLOAT;0;In;;Inherit;False;False;strength;FLOAT;0.6;In;;Inherit;False;CardFoilMetal;True;False;0;;False;4;0;FLOAT;1;False;1;FLOAT4;1,1,1,1;False;2;FLOAT;0;False;3;FLOAT;0.6;False;1;FLOAT;0
 Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;131;512,224;Inherit;False;// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its$// reflections, so this gives the lights' highlights and the reflections the same sliding rainbow bands as CardFoil.$float3 v = normalize(viewTS)@$float2 tilt = v.xy / max(v.z, 0.25)@$float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)))@$float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06@$float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)))@$float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35)@$return lerp(albedo.rgb, foil, metal)@;3;Create;6;False;albedo;FLOAT4;0,0,0,0;In;;Inherit;False;False;metal;FLOAT;0;In;;Inherit;False;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;scale;FLOAT;1.5;In;;Inherit;False;False;tiltShift;FLOAT;1.5;In;;Inherit;False;CardFoilAlbedo;True;False;0;;False;6;0;FLOAT4;0,0,0,0;False;1;FLOAT;0;False;2;FLOAT2;0,0;False;3;FLOAT3;0,0,0;False;4;FLOAT;1.5;False;5;FLOAT;1.5;False;1;FLOAT3;0
-Node;AmplifyShaderEditor.LerpOp, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;132;512,768;Inherit;False;3;0;FLOAT;0;False;1;FLOAT;0.9;False;2;FLOAT;0;False;1;FLOAT;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;132;512,768;Inherit;False;float rough = lerp( roughness, surface.g, surface.a )@$return lerp( 1.0 - rough, 0.9, surface.r * saturate( strength * 1.5 ) )@;1;Create;3;False;surface;FLOAT4;0,0,0,0;In;;Inherit;False;False;strength;FLOAT;0.6;In;;Inherit;False;False;roughness;FLOAT;1;In;;Inherit;False;CardSmoothness;True;False;0;;False;3;0;FLOAT4;0,0,0,0;False;1;FLOAT;0.6;False;2;FLOAT;1;False;1;FLOAT;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;154;640,1040;Inherit;False;return max( surface.b, foilMetal )@;1;Create;2;False;surface;FLOAT4;0,0,0,0;In;;Inherit;False;False;foilMetal;FLOAT;0;In;;Inherit;False;CardMetallic;True;False;0;;False;2;0;FLOAT4;0,0,0,0;False;1;FLOAT;0;False;1;FLOAT;0
+Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;153;256,768;Inherit;False;Property;_Roughness;Roughness;28;0;Create;True;0;0;0;False;0;False;1;1;0;1;0;1;FLOAT;0
 Node;AmplifyShaderEditor.SamplerNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;140;-480,1200;Inherit;True;Property;_LayerFoil;Layer Foil;23;0;Create;True;0;0;0;False;0;False;-1;None;None;True;0;False;black;Auto;False;Object;-1;Auto;Texture2D;False;8;0;SAMPLER2D;;False;1;FLOAT2;0,0;False;2;FLOAT;0;False;3;FLOAT2;0,0;False;4;FLOAT2;0,0;False;5;FLOAT;1;False;6;FLOAT;0;False;7;SAMPLERSTATE;;False;6;COLOR;0;FLOAT;1;FLOAT;2;FLOAT;3;FLOAT;4;FLOAT3;5
 Node;AmplifyShaderEditor.SamplerNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;141;-480,1360;Inherit;True;Property;_BackFoil;Back Foil;24;0;Create;True;0;0;0;False;0;False;-1;None;None;True;0;False;black;Auto;False;Object;-1;Auto;Texture2D;False;8;0;SAMPLER2D;;False;1;FLOAT2;0,0;False;2;FLOAT;0;False;3;FLOAT2;0,0;False;4;FLOAT2;0,0;False;5;FLOAT;1;False;6;FLOAT;0;False;7;SAMPLERSTATE;;False;6;COLOR;0;FLOAT;1;FLOAT;2;FLOAT;3;FLOAT;4;FLOAT3;5
 Node;AmplifyShaderEditor.TexturePropertyNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;142;-480,1680;Inherit;True;Property;_LayerNormal;Layer Normal;25;0;Create;True;0;0;0;False;0;False;None;None;False;bump;Auto;Texture2D;False;-1;0;2;SAMPLER2D;0;SAMPLERSTATE;1
 Node;AmplifyShaderEditor.TexturePropertyNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;143;-480,1840;Inherit;True;Property;_BackNormal;Back Normal;26;0;Create;True;0;0;0;False;0;False;None;None;False;bump;Auto;Texture2D;False;-1;0;2;SAMPLER2D;0;SAMPLERSTATE;1
-Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;144;-128,1120;Inherit;False;// Where the foil version is foil. Front: the card layers' foil (_LayerFoil.r, stacked by the client from the layers that$// can be foil) over the 3D picture's own foil area (baseFoil: card.foil.png) where no layer covers it (layers = coverage).$// Back: the back layers' foil (_BackFoil.r).$float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers )@$float f = lerp( backFoil.r, front, saturate( frontMask ) )@$return float4( f, f, f, 1 )@;4;Create;5;False;baseFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;layerFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;layers;FLOAT;0;In;;Inherit;False;False;backFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;CardLayerFoil;True;False;0;;False;5;0;FLOAT4;0,0,0,0;False;1;FLOAT4;0,0,0,0;False;2;FLOAT;0;False;3;FLOAT4;0,0,0,0;False;4;FLOAT;1;False;1;FLOAT4;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;144;-128,1120;Inherit;False;float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers )@$float k = saturate( frontMask )@$float4 surface = lerp( backFoil, layerFoil, k )@$return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) )@;4;Create;5;False;baseFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;layerFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;layers;FLOAT;0;In;;Inherit;False;False;backFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;CardLayerFoil;True;False;0;;False;5;0;FLOAT4;0,0,0,0;False;1;FLOAT4;0,0,0,0;False;2;FLOAT;0;False;3;FLOAT4;0,0,0,0;False;4;FLOAT;1;False;1;FLOAT4;0
 Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;145;-352,864;Inherit;False;// Which glow: 0 = the art's (Art Glow), 1 = a frame's (Border Glow). Collection layers count as frame: the client stacks$// that into the G channel of _LayerFoil / _BackFoil.$return lerp( backFoil.g, layerFoil.g, saturate( frontMask ) )@;1;Create;3;False;layerFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;backFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;CardLayerGlow;True;False;0;;False;3;0;FLOAT4;0,0,0,0;False;1;FLOAT4;0,0,0,0;False;2;FLOAT;1;False;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;150;256,896;Inherit;False;Global;_DaCardWorld;DaCard World;40;0;Create;True;0;0;0;False;0;False;0;0;0;1;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;151;256,976;Inherit;False;Property;_WorldGlow;Glow in the world;27;0;Create;True;0;0;0;False;0;False;0.1;0.1;0;1;0;1;FLOAT;0
@@ -3900,7 +3933,6 @@ WireConnection;131;2;95;0
 WireConnection;131;3;88;0
 WireConnection;131;4;123;0
 WireConnection;131;5;124;0
-WireConnection;132;2;130;0
 WireConnection;140;1;69;0
 WireConnection;141;1;43;0
 WireConnection;144;0;125;0
@@ -3914,9 +3946,14 @@ WireConnection;145;2;41;1
 WireConnection;152;0;121;0
 WireConnection;152;1;150;0
 WireConnection;152;2;151;0
+WireConnection;132;0;144;0
+WireConnection;132;1;122;0
+WireConnection;132;2;153;0
 WireConnection;1;0;131;0
 WireConnection;1;1;126;0
-WireConnection;1;4;130;0
+WireConnection;154;0;144;0
+WireConnection;154;1;130;0
+WireConnection;1;4;154;0
 WireConnection;1;5;132;0
 WireConnection;1;2;152;0
 ASEEND*/

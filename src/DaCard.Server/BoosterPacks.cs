@@ -16,7 +16,10 @@ using Path = System.IO.Path;
 
 namespace DaCard.Server;
 
-public record PackEntry(string Key, string Id, PackFile Data, string Dir, Dictionary<string, string> Maps, string MapsOwner);
+public record PackEntry(string Key, string Id, PackFile Data, string Dir, Dictionary<string, string> Maps, string MapsOwner)
+{
+    public string Addon { get; init; } = "";
+}
 
 [Injectable(InjectionType.Singleton)]
 public class BoosterPacks(
@@ -28,8 +31,8 @@ public class BoosterPacks(
     CardStickers stickers)
 {
     public const string BundlePath = "dacard/item_pack.bundle";
-    public const string PacksFolder = "data/packs";
-    public const string SkinsFolder = "data/skins";
+    public const string DefaultSkinsFolder = "defaults/skins";
+    public const string FallbackSkin = "escape_from_tarkov";
     public const string DataFile = "pack.json";
     public const string SkinDataFile = "skin.json";
 
@@ -60,22 +63,39 @@ public class BoosterPacks(
     public List<(string Tpl, double Percent)> Loot { get; } = new();
     public Dictionary<string, double> Offers { get; } = new();
 
-    public List<PackEntry> Scan(string modPath)
+    public List<PackEntry> Scan(IReadOnlyList<AddonEntry> addons, string modPath)
     {
         var found = new List<PackEntry>();
-        var dir = Path.Combine(modPath, PacksFolder);
-        if (!Directory.Exists(dir))
-            return found;
+        var skins = addons.ToDictionary(a => a.Folder, a => ScanSkins(Path.Combine(a.Dir, Addons.Skins)), StringComparer.OrdinalIgnoreCase);
+        _defaults = ScanSkins(Path.Combine(modPath, DefaultSkinsFolder));
+        var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var addon in addons)
+        {
+            var dir = Path.Combine(addon.Dir, Addons.Packs);
+            if (Directory.Exists(dir))
+                found.AddRange(ScanAddon(addon, dir, skins, ids, keys));
+        }
+        return found;
+    }
 
-        var skins = ScanSkins(Path.Combine(modPath, SkinsFolder));
+    private IEnumerable<PackEntry> ScanAddon(AddonEntry addon, string dir, Dictionary<string, Dictionary<string, Dictionary<string, string>>> skins,
+        Dictionary<string, string> ids, HashSet<string> keys)
+    {
+        var packsPath = addon.Where(Addons.Packs);
         foreach (var packDir in Directory.GetDirectories(dir).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
         {
             var key = Path.GetFileName(packDir);
-            var where = $"{PacksFolder}/{key}/{DataFile}";
+            var where = $"{packsPath}/{key}/{DataFile}";
             var json = Path.Combine(packDir, DataFile);
             if (!File.Exists(json))
             {
-                logger.Warning($"[DaCard] {PacksFolder}/{key} has no {DataFile}; skipping.");
+                logger.Warning($"[DaCard] {packsPath}/{key} has no {DataFile}; skipping.");
+                continue;
+            }
+            if (!keys.Add(key))
+            {
+                logger.Error($"[DaCard] {packsPath}/{key}: another booster pack has the same folder name; skipping it.");
                 continue;
             }
 
@@ -97,21 +117,37 @@ public class BoosterPacks(
             var owner = "pack:" + key;
             if (!string.IsNullOrWhiteSpace(data.Skin))
             {
-                if (skins.TryGetValue(data.Skin.Trim(), out var skin))
+                var name = data.Skin.Trim();
+                var skin = skins[addon.Folder].GetValueOrDefault(name) ?? skins.Values.Select(s => s.GetValueOrDefault(name)).FirstOrDefault(s => s != null)
+                           ?? _defaults.GetValueOrDefault(name);
+                if (skin == null)
+                {
+                    logger.Error($"[DaCard] {where}: its skin {addon.Describe("skin", name)} is not installed; it uses the default skin '{FallbackSkin}' until it is.");
+                    name = FallbackSkin;
+                    skin = _defaults.GetValueOrDefault(name);
+                }
+                if (skin != null)
                 {
                     maps = skin;
-                    owner = "skin:" + data.Skin.Trim().ToLowerInvariant();
-                }
-                else
-                {
-                    logger.Warning($"[DaCard] {where}: skin '{data.Skin}' is not in {SkinsFolder}/; the pack uses its own pictures (or the plain template).");
+                    owner = "skin:" + name.ToLowerInvariant();
                 }
             }
 
-            found.Add(new PackEntry(key, CardCatalog.IdFor("pack:" + key), data, packDir, maps, owner));
+            var id = IdOf(key, data);
+            if (ids.TryGetValue(id, out var first))
+            {
+                logger.Error($"[DaCard] {where}: same \"id\" as booster pack {first} (a copied pack folder?); skipping it. Remove its \"id\" to make it a pack of its own.");
+                continue;
+            }
+            ids[id] = key;
+            yield return new PackEntry(key, id, data, packDir, maps, owner) { Addon = addon.Folder };
         }
-        return found;
     }
+
+    private Dictionary<string, Dictionary<string, string>> _defaults = new(StringComparer.OrdinalIgnoreCase);
+
+    public static string IdOf(string folder, PackFile data) =>
+        MongoId.IsValidMongoId(data.Id?.Trim() ?? "") ? data.Id!.Trim().ToLowerInvariant() : CardCatalog.IdFor("pack:" + folder);
 
     private Dictionary<string, Dictionary<string, string>> ScanSkins(string dir)
     {
@@ -144,7 +180,7 @@ public class BoosterPacks(
             var members = PoolOf(pack, cards);
             if (members.Count == 0)
             {
-                logger.Warning($"[DaCard] Booster pack '{pack.Data.Name}' ({PacksFolder}/{pack.Key}) has no cards (none match its card choice); no pack.");
+                logger.Warning($"[DaCard] Booster pack '{pack.Data.Name}' (data/{pack.Addon}/{Addons.Packs}/{pack.Key}) has no cards (none match its card choice); no pack.");
                 continue;
             }
 
@@ -196,7 +232,12 @@ public class BoosterPacks(
         var collections = (choice.Collections ?? []).Select(c => c.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var singles = (choice.Cards ?? []).Select(c => c.Trim().Replace('\\', '/')).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var rarities = (choice.Rarities ?? []).Where(CardCatalog.IsRarity).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return cards.Where(c => choice.All || collections.Contains(c.Collection ?? CardCatalog.DefaultCollection) || singles.Contains(c.Key))
+        bool SameAddon(CardEntry c) => c.Addon.Equals(pack.Addon, StringComparison.OrdinalIgnoreCase);
+        bool Chosen(CardEntry c) =>
+            (choice.All && SameAddon(c))
+            || (c.Collection != null ? collections.Contains(c.Collection) : collections.Contains(CardCatalog.DefaultCollection) && SameAddon(c))
+            || singles.Contains(c.Key);
+        return cards.Where(Chosen)
             .Where(c => rarities.Count == 0 || rarities.Contains(c.Rarity))
             .ToList();
     }

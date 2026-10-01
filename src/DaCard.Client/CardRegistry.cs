@@ -61,7 +61,7 @@ namespace DaCard.Client
                 Cards[card.Tpl] = card;
                 foreach (var layer in (card.Front ?? new List<CardLayer>()).Concat(card.Back ?? new List<CardLayer>()))
                     if (layer?.Sticker != null && !StickerArt.ContainsKey(layer.Sticker))
-                        StickerArt[layer.Sticker] = layer.Textures != null && layer.Textures.TryGetValue("art", out var art) ? art : null;
+                        StickerArt[layer.Sticker] = layer.Textures != null && layer.Textures.TryGetValue(LayerMaps.Albedo, out var art) ? art : null;
             }
             foreach (var binder in manifest.Binders ?? new List<BinderManifestEntry>())
                 Binders[binder.Tpl] = binder;

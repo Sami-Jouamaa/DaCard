@@ -13,6 +13,12 @@
 </head>
 <body>
 <main class="shell">
+    <div class="migrate-bar" id="migrate-bar" hidden>
+        <div class="wrap">
+            <span><b>Outdated data</b> <span id="migrate-what"></span></span>
+            <button type="button" class="facade-btn fx-sm" id="migrate-run">Update all</button>
+        </div>
+    </div>
     <header class="masthead">
         <div class="masthead-main">
             <div class="wrap">
@@ -22,9 +28,9 @@
                 </h1>
                 <nav class="side-nav" aria-label="Sections">
                     <button class="nav-item active" data-pane="new" type="button">New card</button>
-                    <button class="nav-item" data-pane="cards" type="button">My cards <span class="facade-chip fx-grey" id="cards-count" hidden>0</span></button>
-                    <button class="nav-item" data-pane="collections" type="button">Collections <span class="facade-chip fx-grey" id="collections-count" hidden>0</span></button>
+                    <button class="nav-item" data-pane="cards" type="button">Cards <span class="facade-chip fx-grey" id="cards-count" hidden>0</span></button>
                     <button class="nav-item" data-pane="packs" type="button">Booster packs <span class="facade-chip fx-grey" id="packs-count" hidden>0</span></button>
+                    <button class="nav-item" data-pane="addons" type="button">Add-ons <span class="facade-chip fx-grey" id="addons-count" hidden>0</span></button>
                     <button class="nav-item" data-pane="settings" type="button">Settings</button>
                 </nav>
                 <span class="facade-pill fx-sm fx-grey" id="folder-pill">Not connected</span>
@@ -45,6 +51,10 @@
             <section class="pane active" id="pane-new">
                 <p class="crumbs"><span>DaCard</span><span>New card</span></p>
                 <h2 class="pane-title">New card</h2>
+                <div class="view-toggle new-mode" id="new-mode">
+                    <button type="button" class="facade-btn fx-sm fx-on" data-mode="single">Single</button>
+                    <button type="button" class="facade-btn fx-sm" data-mode="batch">Batch</button>
+                </div>
 
                 <div id="card-form-home"></div>
                 <div id="card-form">
@@ -68,6 +78,10 @@
                                             <option>Common</option><option>Uncommon</option><option selected>Rare</option><option>Epic</option><option>Legendary</option>
                                         </select>
                                         <small class="field-note" id="f-price"></small>
+                                    </label>
+                                    <label class="field">
+                                        <span>Addon</span>
+                                        <select class="facade-select" id="f-addon"></select>
                                     </label>
                                     <label class="field">
                                         <span>Collection</span>
@@ -203,6 +217,7 @@
                                     <button type="button" class="facade-btn fx-sm fx-on" data-view="place" title="The card flat: click a layer to select it, drag to move it">2D</button>
                                 </div>
                                 <label class="facade-check-row" title="Show the card's foil version: every card also drops as a foil card (chance in Settings)"><input type="checkbox" class="facade-switch" id="f-holo"><span>Holo</span></label>
+                                <label class="facade-check-row" title="Show layers with a chance under 100%"><input type="checkbox" class="facade-switch" id="f-rare"><span>Rare layers</span></label>
                             </div>
                             <canvas id="crop" width="490" height="684" aria-label="Card preview"></canvas>
                             <canvas class="card-3d" id="card-3d" hidden aria-label="3D preview of the card"></canvas>
@@ -213,11 +228,39 @@
                         </div>
                     </aside>
                 </div>
+                <div id="batch" hidden>
+                    <fieldset class="card">
+                        <legend class="card-title">Batch</legend>
+                        <div class="card-body batch-head">
+                            <label class="field">
+                                <span>Addon</span>
+                                <select class="facade-select" id="b-addon"></select>
+                            </label>
+                            <label class="field">
+                                <span>Collection</span>
+                                <select class="facade-select" id="b-collection"><option value="">No collection</option></select>
+                            </label>
+                            <label class="facade-check-row" title="Show the collection's layers on these cards"><input type="checkbox" class="facade-switch" id="b-coll-layers" checked disabled><span>Collection layers</span></label>
+                        </div>
+                    </fieldset>
+                    <fieldset class="card">
+                        <legend class="card-title">Cards <span class="facade-chip fx-grey" id="b-count">0</span></legend>
+                        <div class="card-body">
+                            <div class="batch-labels"><span>Albedo</span><span>Name</span><span>Rarity</span><span>Description</span></div>
+                            <div class="batch-rows" id="b-rows"></div>
+                            <button type="button" class="facade-btn batch-add" id="b-add">Add new card</button>
+                        </div>
+                    </fieldset>
+                    <div class="save-bar">
+                        <span class="facade-status" id="b-status" hidden></span>
+                        <button type="button" class="facade-btn fx-lg fx-blue fx-on" id="b-save">Save cards</button>
+                    </div>
+                </div>
             </section>
 
             <section class="pane" id="pane-cards">
-                <p class="crumbs"><span>DaCard</span><span>My cards</span></p>
-                <h2 class="pane-title">My cards</h2>
+                <p class="crumbs"><span>DaCard</span><span>Cards</span></p>
+                <h2 class="pane-title">Cards</h2>
                 <div class="cards-layout">
                 <nav class="cards-side" id="cards-side" aria-label="Collections"></nav>
                 <div class="cards-main">
@@ -232,117 +275,6 @@
                 <div class="empty" id="cards-empty">Connect the mod folder to see your cards.</div>
                 <p class="field-note">Restart SPT to apply.</p>
                 </div>
-                </div>
-            </section>
-
-            <section class="pane" id="pane-collections">
-                <p class="crumbs"><span>DaCard</span><span>Collections</span></p>
-                <h2 class="pane-title">Collections</h2>
-
-                <div id="collections-list-view">
-                    <p class="hint first">One binder per collection.</p>
-                    <div class="cards-toolbar coll-toolbar">
-                        <span></span>
-                        <button type="button" class="facade-btn fx-blue fx-on" id="coll-new">New collection</button>
-                    </div>
-                    <div class="coll-grid" id="coll-grid"></div>
-                    <div class="empty" id="coll-empty">Connect the mod folder to see your collections.</div>
-                </div>
-
-                <div id="coll-editor" hidden>
-                    <fieldset class="card">
-                        <legend class="card-title" id="coll-editor-title">New collection</legend>
-                        <div class="card-body form-grid">
-                            <label class="field">
-                                <span>Name</span>
-                                <input type="text" class="facade-input" id="c-name" maxlength="60" autocomplete="off" placeholder="e.g. League of Legends">
-                                <small class="field-note" id="c-folder"></small>
-                            </label>
-                            <label class="field">
-                                <span>Short name</span>
-                                <input type="text" class="facade-input" id="c-short" maxlength="24" autocomplete="off" placeholder="Shown on the inventory cell">
-                            </label>
-                            <label class="field span-2">
-                                <span>Description</span>
-                                <textarea class="facade-input" id="c-desc" rows="2" placeholder="Empty = says which collection it is and how many cards it holds"></textarea>
-                            </label>
-                        </div>
-                    </fieldset>
-
-                    <fieldset class="card">
-                        <legend class="card-title">Stickers</legend>
-                        <div class="card-body sticker-editor">
-                            <div class="sticker-controls">
-                                <div class="sticker-layers" id="sticker-layers"></div>
-                                <div class="drop drop-sm" id="drop-sticker" tabindex="0">
-                                    <b>Add a sticker</b>
-                                    <span>Drop or click.</span>
-                                    <small>PNG with transparency works best</small>
-                                </div>
-                                <input type="file" id="file-sticker" accept="image/*" hidden>
-                                <div class="sticker-tools" id="sticker-tools">
-                                    <label class="range-row"><span>Size</span><input type="range" class="facade-range" id="st-size" min="0.03" max="1.2" step="0.005" value="0.6"></label>
-                                    <label class="range-row"><span>Turn</span><input type="range" class="facade-range" id="st-rot" min="-180" max="180" step="1" value="0"></label>
-                                    <div class="guide-actions">
-                                        <button type="button" class="facade-btn fx-sm fx-grey" id="st-center">Centre</button>
-                                        <button type="button" class="facade-btn fx-sm fx-grey" id="st-straight">Straighten</button>
-                                        <button type="button" class="facade-btn fx-sm fx-red" id="st-remove">Remove sticker</button>
-                                    </div>
-                                </div>
-                                <p class="field-note">Drag to move, corner to resize.</p>
-                            </div>
-                            <div class="binder-view">
-                                <div class="view-toggle" id="st-view">
-                                    <button type="button" class="facade-btn fx-sm" data-view="3d">3D</button>
-                                    <button type="button" class="facade-btn fx-sm fx-on" data-view="2d">Front</button>
-                                </div>
-                                <div class="binder-stage" id="binder-stage">
-                                    <img id="binder-img" alt="" draggable="false">
-                                    <div class="binder-cover" id="binder-cover"></div>
-                                </div>
-                                <canvas class="binder-3d" id="binder-3d" hidden></canvas>
-                                <small class="field-note" id="st-3d-note" hidden></small>
-                            </div>
-                        </div>
-                    </fieldset>
-
-                    <fieldset class="card">
-                        <legend class="card-title">Card layers</legend>
-                        <div class="card-body back-editor">
-                            <div class="picture-inputs">
-                                <div id="coll-layers"></div>
-                                <p class="field-note">On every card in the collection.</p>
-                            </div>
-                            <div class="crop-wrap">
-                                <div class="preview-head">
-                                    <div class="view-toggle" id="coll-view">
-                                        <button type="button" class="facade-btn fx-sm" data-view="3d" title="The card as it looks in game">3D</button>
-                                        <button type="button" class="facade-btn fx-sm fx-on" data-view="place" title="The side of the Front / Back tab, flat: click a layer to select it, drag to move it">2D</button>
-                                    </div>
-                                    <label class="facade-check-row" title="Show the card's foil version"><input type="checkbox" class="facade-switch" id="coll-holo"><span>Holo</span></label>
-                                </div>
-                                <canvas class="card-preview" id="coll-preview" width="490" height="684" aria-label="Card preview"></canvas>
-                                <canvas class="card-3d" id="coll-3d" hidden aria-label="3D preview of a card"></canvas>
-                                <label class="field coll-sample"><span>Preview on</span><select class="facade-select" id="coll-sample"></select></label>
-                                <small class="field-note preview-note">Drag to move, double-click to fill.</small>
-                            </div>
-                        </div>
-                    </fieldset>
-
-                    <fieldset class="card">
-                        <legend class="card-title">Cards <span class="facade-chip fx-grey" id="c-count">0</span></legend>
-                        <div class="card-body">
-                            <div class="coll-cards" id="c-cards"></div>
-                            <p class="field-note" id="c-size-note"></p>
-                        </div>
-                    </fieldset>
-
-                    <div class="save-bar">
-                        <button type="button" class="facade-btn fx-lg fx-red" id="c-delete" hidden>Delete collection</button>
-                        <span class="spacer"></span>
-                        <button type="button" class="facade-btn fx-lg" id="c-cancel">Back</button>
-                        <button type="button" class="facade-btn fx-lg fx-blue fx-on" id="c-save">Save collection</button>
-                    </div>
                 </div>
             </section>
 
@@ -388,19 +320,23 @@
                                     <small class="field-note" id="pk-folder"></small>
                                 </label>
                                 <label class="field">
+                                    <span>Addon</span>
+                                    <select class="facade-select" id="pk-addon"></select>
+                                </label>
+                                <label class="field pk-pack-only">
                                     <span>Short name</span>
                                     <input type="text" class="facade-input" id="pk-short" maxlength="24" autocomplete="off" placeholder="Shown on the inventory cell">
                                 </label>
-                                <label class="field span-2">
+                                <label class="field span-2 pk-pack-only">
                                     <span>Description</span>
                                     <textarea class="facade-input" id="pk-desc" rows="2" placeholder="Empty = says how many cards it holds"></textarea>
                                 </label>
-                                <label class="field">
+                                <label class="field pk-pack-only">
                                     <span>Cards per pack</span>
                                     <input type="number" class="facade-input" id="pk-count" min="1" max="10" step="1" inputmode="numeric">
                                     <small class="field-note">Needs this many free cells.</small>
                                 </label>
-                                <label class="field">
+                                <label class="field pk-pack-only">
                                     <span>Price ₽</span>
                                     <input type="number" class="facade-input" id="pk-price" min="1" step="500" inputmode="numeric">
                                     <small class="field-note">Buy and sell value.</small>
@@ -408,7 +344,7 @@
                             </div>
                         </fieldset>
 
-                        <fieldset class="card">
+                        <fieldset class="card pk-pack-only">
                             <legend class="card-title">Where to get it</legend>
                             <div class="card-body form-grid">
                                 <div class="field">
@@ -423,10 +359,10 @@
                             </div>
                         </fieldset>
 
-                        <fieldset class="card">
+                        <fieldset class="card pk-pack-only">
                             <legend class="card-title">Cards in the pack <span class="facade-chip fx-grey" id="pk-pool-count">0</span></legend>
                             <div class="card-body pack-cards">
-                                <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="pk-all"><span>All cards (every collection, new cards too)</span></label>
+                                <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="pk-all"><span>All cards in its addon</span></label>
                                 <div class="field" id="pk-colls-field">
                                     <span>Whole collections</span>
                                     <div class="chip-toggles" id="pk-colls"></div>
@@ -448,7 +384,7 @@
                             <legend class="card-title">Look</legend>
                             <div class="card-body pack-look">
                                 <div class="look-choice" role="radiogroup" aria-label="How the pack looks">
-                                    <button type="button" class="look-tile" data-look="preset" role="radio">
+                                    <button type="button" class="look-tile pk-pack-only" data-look="preset" role="radio">
                                         <span class="look-name">Preset skin</span>
                                         <span class="look-desc">Shared preset.</span>
                                     </button>
@@ -473,10 +409,9 @@
                                         <div class="skin-grid" id="pk-bases"></div>
                                         <small class="field-note">Under the layers.</small>
                                     </div>
-                                    <div class="drop drop-sm" id="pk-layer-drop" tabindex="0">
-                                        <b>Add a picture</b>
-                                        <span>Drop or click.</span>
-                                        <small>PNG with transparency works best</small>
+                                    <div class="pack-layers-head">
+                                        <span>Layers</span>
+                                        <div class="media-pick layer-add" id="pk-layer-add"></div>
                                     </div>
                                     <input type="file" id="pk-layer-file" accept="image/*" multiple hidden>
                                     <div class="pack-layers" id="pk-layers"></div>
@@ -489,7 +424,7 @@
                                     <p class="field-note">Empty = template's.</p>
                                 </div>
 
-                                <div class="skin-save">
+                                <div class="skin-save pk-pack-only">
                                     <input type="text" class="facade-input" id="pk-skin-name" maxlength="40" autocomplete="off" placeholder="Preset name">
                                     <button type="button" class="facade-btn" id="pk-skin-save">Save as preset</button>
                                 </div>
@@ -524,6 +459,20 @@
                         <small class="field-note preview-note" id="pk-preview-note"></small>
                     </aside>
                 </div>
+            </section>
+
+            <section class="pane" id="pane-addons">
+                <p class="crumbs"><span>DaCard</span><span>Add-ons</span></p>
+                <h2 class="pane-title">Add-ons</h2>
+                <p class="hint first">Shareable cards, binders and packs.</p>
+                <div class="cards-toolbar coll-toolbar addon-toolbar">
+                    <span></span>
+                    <button type="button" class="facade-btn" id="addon-import">Import .zip…</button>
+                    <button type="button" class="facade-btn fx-blue fx-on" id="addon-create">Create addon</button>
+                    <input type="file" id="addon-file" accept=".zip,application/zip" hidden>
+                </div>
+                <div class="addon-grid" id="addon-grid"></div>
+                <div class="empty" id="addon-empty">Connect the mod folder.</div>
             </section>
 
             <section class="pane" id="pane-settings">
@@ -624,6 +573,129 @@
     </div>
 </div>
 
+<div class="facade-overlay cc-overlay" id="coll-modal" hidden>
+    <div class="facade-modal cc-modal cc-modal-wide" role="dialog" aria-modal="true" aria-labelledby="coll-editor-title">
+        <header>
+            <span id="coll-editor-title">New collection</span>
+            <button type="button" class="facade-iconbtn" id="coll-close" aria-label="Close">×</button>
+        </header>
+        <div class="cc-modal-body coll-modal-body" id="coll-editor">
+            <fieldset class="card">
+                <legend class="card-title">Details</legend>
+                <div class="card-body form-grid">
+                    <label class="field">
+                        <span>Name</span>
+                        <input type="text" class="facade-input" id="c-name" maxlength="60" autocomplete="off" placeholder="e.g. League of Legends">
+                        <small class="field-note" id="c-folder"></small>
+                    </label>
+                    <label class="field">
+                        <span>Addon</span>
+                        <select class="facade-select" id="c-addon"></select>
+                    </label>
+                    <label class="field">
+                        <span>Short name</span>
+                        <input type="text" class="facade-input" id="c-short" maxlength="24" autocomplete="off" placeholder="Shown on the inventory cell">
+                    </label>
+                    <label class="field span-2">
+                        <span>Description</span>
+                        <textarea class="facade-input" id="c-desc" rows="2" placeholder="Empty = says which collection it is and how many cards it holds"></textarea>
+                    </label>
+                </div>
+            </fieldset>
+
+            <fieldset class="card">
+                <legend class="card-title">Stickers</legend>
+                <div class="card-body sticker-editor">
+                    <div class="sticker-controls">
+                        <div class="sticker-layers" id="sticker-layers"></div>
+                        <div class="drop drop-sm" id="drop-sticker" tabindex="0">
+                            <b>Add a sticker</b>
+                            <span>Drop or click.</span>
+                            <small>PNG with transparency works best</small>
+                        </div>
+                        <input type="file" id="file-sticker" accept="image/*" hidden>
+                        <div class="sticker-tools" id="sticker-tools">
+                            <label class="range-row"><span>Size</span><input type="range" class="facade-range" id="st-size" min="0.03" max="1.2" step="0.005" value="0.6"></label>
+                            <label class="range-row"><span>Turn</span><input type="range" class="facade-range" id="st-rot" min="-180" max="180" step="1" value="0"></label>
+                            <div class="guide-actions">
+                                <button type="button" class="facade-btn fx-sm fx-grey" id="st-center">Centre</button>
+                                <button type="button" class="facade-btn fx-sm fx-grey" id="st-straight">Straighten</button>
+                                <button type="button" class="facade-btn fx-sm fx-red" id="st-remove">Remove sticker</button>
+                            </div>
+                        </div>
+                        <p class="field-note">Drag to move, corner to resize.</p>
+                    </div>
+                    <div class="binder-view">
+                        <div class="view-toggle" id="st-view">
+                            <button type="button" class="facade-btn fx-sm" data-view="3d">3D</button>
+                            <button type="button" class="facade-btn fx-sm fx-on" data-view="2d">Front</button>
+                        </div>
+                        <div class="binder-stage" id="binder-stage">
+                            <img id="binder-img" alt="" draggable="false">
+                            <div class="binder-cover" id="binder-cover"></div>
+                        </div>
+                        <canvas class="binder-3d" id="binder-3d" hidden></canvas>
+                        <small class="field-note" id="st-3d-note" hidden></small>
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset class="card">
+                <legend class="card-title">Card layers</legend>
+                <div class="card-body back-editor">
+                    <div class="picture-inputs">
+                        <div id="coll-layers"></div>
+                        <p class="field-note">On every card in the collection.</p>
+                    </div>
+                    <div class="crop-wrap">
+                        <div class="preview-head">
+                            <div class="view-toggle" id="coll-view">
+                                <button type="button" class="facade-btn fx-sm" data-view="3d" title="The card as it looks in game">3D</button>
+                                <button type="button" class="facade-btn fx-sm fx-on" data-view="place" title="The side of the Front / Back tab, flat: click a layer to select it, drag to move it">2D</button>
+                            </div>
+                            <label class="facade-check-row" title="Show the card's foil version"><input type="checkbox" class="facade-switch" id="coll-holo"><span>Holo</span></label>
+                            <label class="facade-check-row" title="Show layers with a chance under 100%"><input type="checkbox" class="facade-switch" id="coll-rare"><span>Rare layers</span></label>
+                        </div>
+                        <canvas class="card-preview" id="coll-preview" width="490" height="684" aria-label="Card preview"></canvas>
+                        <canvas class="card-3d" id="coll-3d" hidden aria-label="3D preview of a card"></canvas>
+                        <label class="field coll-sample"><span>Preview on</span><select class="facade-select" id="coll-sample"></select></label>
+                        <small class="field-note preview-note">Drag to move, double-click to fill.</small>
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset class="card">
+                <legend class="card-title">Cards <span class="facade-chip fx-grey" id="c-count">0</span></legend>
+                <div class="card-body">
+                    <div class="coll-cards" id="c-cards"></div>
+                    <p class="field-note" id="c-size-note"></p>
+                </div>
+            </fieldset>
+        </div>
+        <footer>
+            <span class="spacer"></span>
+            <button type="button" class="facade-btn fx-sm" id="c-cancel">Cancel</button>
+            <button type="button" class="facade-btn fx-sm fx-blue fx-on" id="c-save">Save collection</button>
+        </footer>
+    </div>
+</div>
+
+<div class="facade-overlay cc-overlay" id="addon-modal" hidden>
+    <div class="facade-modal cc-modal addon-modal" role="dialog" aria-modal="true" aria-labelledby="addon-modal-title">
+        <header>
+            <span id="addon-modal-title">Addon</span>
+            <button type="button" class="facade-iconbtn" id="addon-modal-close" aria-label="Close">×</button>
+        </header>
+        <div class="cc-modal-body" id="addon-modal-body"></div>
+        <footer>
+            <span class="facade-status" id="addon-modal-status"></span>
+            <span class="spacer"></span>
+            <button type="button" class="facade-btn fx-sm" id="addon-modal-cancel">Cancel</button>
+            <button type="button" class="facade-btn fx-sm fx-blue fx-on" id="addon-modal-ok">OK</button>
+        </footer>
+    </div>
+</div>
+
 <script>
     window.chrome = window.chrome || {};
     if (!chrome.storage) chrome.storage = {
@@ -643,7 +715,10 @@
 <script src="creator/media.mjs"></script>
 <script src="creator/text.mjs"></script>
 <script src="creator/layers.mjs"></script>
+<script src="creator/addons.mjs"></script>
+<script src="creator/migrations.mjs"></script>
 <script src="creator/packs.mjs"></script>
+<script src="creator/batch.mjs"></script>
 <script src="creator/app.mjs"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@ namespace DaCard.Server;
 
 public record CardFile
 {
+    [JsonPropertyName("idKey")] public string? IdKey { get; set; }
     [JsonPropertyName("name")] public string? Name { get; set; }
 
     [JsonPropertyName("type")] public string? Type { get; set; }
@@ -146,6 +147,7 @@ public record GlowManifestEntry
 
 public record CollectionFile
 {
+    [JsonPropertyName("idKey")] public string? IdKey { get; set; }
     [JsonPropertyName("name")] public string? Name { get; set; }
     [JsonPropertyName("shortName")] public string? ShortName { get; set; }
     [JsonPropertyName("description")] public string? Description { get; set; }
@@ -291,6 +293,7 @@ public record PackSettings
 
 public record PackFile
 {
+    [JsonPropertyName("id")] public string? Id { get; set; }
     [JsonPropertyName("name")] public string? Name { get; set; }
     [JsonPropertyName("shortName")] public string? ShortName { get; set; }
     [JsonPropertyName("description")] public string? Description { get; set; }

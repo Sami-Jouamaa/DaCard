@@ -159,9 +159,14 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
         return names.Count <= 10 ? string.Join(", ", names) : string.Join(", ", names.Take(10)) + $" and {names.Count - 10} more";
     }
 
+    private static IEnumerable<string> Roots(string modPath)
+    {
+        var data = Path.Combine(modPath, "data");
+        return Addons.Dirs(data).Prepend(data);
+    }
+
     private static bool SourceExists(LedgerItem item, string modPath)
     {
-        var data = Path.Combine(modPath, CardCatalog.CardsFolder);
         switch (item.Kind)
         {
             case Card:
@@ -169,11 +174,11 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
                 var cut = item.Key.IndexOf('/');
                 var collection = cut < 0 ? CardCatalog.DefaultCollection : item.Key[..cut];
                 var name = cut < 0 ? item.Key : item.Key[(cut + 1)..];
-                return CardCatalog.RarityOrder.Any(r => Directory.Exists(Path.Combine(data, collection, r, name)));
+                return Roots(modPath).Any(root => CardCatalog.RarityOrder.Any(r => Directory.Exists(Path.Combine(root, Addons.Cards, collection, r, name))));
             case Binder:
-                return Directory.Exists(Path.Combine(data, item.Key));
+                return Roots(modPath).Any(root => Directory.Exists(Path.Combine(root, Addons.Cards, item.Key)));
             case Pack:
-                return Directory.Exists(Path.Combine(modPath, BoosterPacks.PacksFolder, item.Key));
+                return Roots(modPath).Any(root => Directory.Exists(Path.Combine(root, Addons.Packs, item.Key)));
             default:
                 return true;
         }
@@ -184,7 +189,7 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
         var cut = item.Key.LastIndexOf(':');
         var owner = cut < 0 ? item.Key : item.Key[..cut];
         if (owner.StartsWith("collection:"))
-            return Directory.Exists(Path.Combine(modPath, CardCatalog.CardsFolder, owner["collection:".Length..]));
+            return SourceExists(new LedgerItem { Kind = Binder, Key = owner["collection:".Length..] }, modPath);
         return !owner.StartsWith("card:") || SourceExists(new LedgerItem { Kind = Card, Key = owner["card:".Length..] }, modPath);
     }
 

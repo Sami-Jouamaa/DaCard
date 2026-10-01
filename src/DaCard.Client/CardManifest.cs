@@ -82,7 +82,6 @@ namespace DaCard.Client
         [JsonProperty("canBeFoil")] public bool CanBeFoil;
         [JsonProperty("frame")] public bool Frame;
 
-        // "art", "foil", "normal" -> image url
         [JsonProperty("textures")] public Dictionary<string, string> Textures = new Dictionary<string, string>();
         [JsonProperty("animation")] public Dictionary<string, CardAnimationTrack> Animation;
         [JsonProperty("transform")] public LayerTransform Transform;

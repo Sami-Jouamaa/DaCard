@@ -25,6 +25,6 @@ MonoBehaviour:
   packPreviewScale: 1
   cardEdgeColor: {r: 0.93, g: 0.92, b: 0.9, a: 1}
   cardEdgeSmoothness: 0.3
-  installAfterBuild: 0
+  installAfterBuild: 1
   modsFolder: D:\Games\EFT\SPT\Game\SPT_Runtime\user\mods
   sourceMaterial: {fileID: 0}

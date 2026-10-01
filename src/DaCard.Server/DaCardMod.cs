@@ -32,6 +32,7 @@ public class DaCardMod(
     BoosterPacks boosterPacks,
     ItemLedger ledger,
     CardStickers stickers,
+    DataMigrations migrations,
     RagfairConfig ragfairConfig) : IOnLoad
 {
     public static string DefaultBundle(string type) => $"dacard/item_card_{type}.bundle";
@@ -60,14 +61,17 @@ public class DaCardMod(
     public Task OnLoadAsync(CancellationToken cancellationToken)
     {
         var modPath = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
+        var dataDir = Path.Combine(modPath, "data");
+        migrations.Run(dataDir);
         var config = LoadConfig(modPath);
         ledger.Load();
 
         var slots = config.Textures.Count > 0 ? config.Textures : DefaultSlots;
         if (slots.All(s => s.Suffix != ""))
             slots.Insert(0, new TextureSlot { Suffix = "", Property = "_MainTex", Required = true });
-        var dataDir = DataFolder(modPath, out var oldLayout);
-        catalog.Scan(dataDir, slots);
+        var oldLayout = OldLayout(modPath);
+        var addons = Addons.Scan(dataDir, jsonUtil.Deserialize<AddonFile>);
+        catalog.Scan(addons, slots);
 
         var manifest = new CardManifest
         {
@@ -79,17 +83,24 @@ public class DaCardMod(
         var cardTypes = AvailableTypes(modPath, configuredTypes);
         _stickerBundle = cardTypes.Select(t => t.Value.Bundle ?? DefaultBundle(t.Key.ToLowerInvariant())).First();
 
-        var defaultBack = catalog.BackImagePath != null
-            ? CardLayers.FromFiles(dataDir, "back", "default-back", 100, false, false, null, 12)
-            : null;
-        var defaultBackEntry = defaultBack != null ? RegisterLayer("default", defaultBack) : null;
+        var defaultBacks = new Dictionary<string, LayerManifestEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (addon, path) in catalog.BackImages)
+            if (CardLayers.FromFiles(Path.GetDirectoryName(path)!, "back", "default-back", 100, false, false, null, 12) is { } back)
+                defaultBacks[addon] = RegisterLayer("default:" + addon, back);
 
-        var collections = binders.Scan(dataDir);
+        var collections = binders.Scan(addons);
         StickerOwner OwnerOf(CollectionEntry c) => new("collection:" + c.Key, c.Data.Name!);
-        var collectionLayers = collections.ToDictionary(c => c.Key,
+        var collectionLayers = collections.ToDictionary(c => c.Id,
             c => (Front: c.Front.Select(l => (l.SourceFile, Entry: RegisterLayer(c.Id, l, OwnerOf(c)))).ToList(),
                   Back: c.Back.Select(l => (l.SourceFile, Entry: RegisterLayer(c.Id, l, OwnerOf(c)))).ToList()));
-        var collectionText = collections.ToDictionary(c => c.Key, CollectionText);
+        var collectionText = collections.ToDictionary(c => c.Id, CollectionText);
+        foreach (var group in catalog.Cards.Where(card => card.Collection != null && !collections.Any(c => CollectionBinders.IsMember(card, c)))
+                     .GroupBy(card => (card.Addon, card.Collection!)))
+        {
+            var addon = addons.First(a => a.Folder.Equals(group.Key.Addon, StringComparison.OrdinalIgnoreCase));
+            logger.Error($"[DaCard] {addon.Where(Addons.Cards, group.Key.Item2)}: {group.Count()} card(s) of the addon '{addon.Name}' belong to the collection " +
+                         $"{addon.Describe("collection", group.Key.Item2)}, which is not installed. They have no binder until it is.");
+        }
 
         var shownAs = new Dictionary<string, int>();
         var created = new List<CardEntry>();
@@ -105,8 +116,8 @@ public class DaCardMod(
                 .Select(l => AlignedFor(l.Entry, card.Data.TextAlign))
                 .Select((entry, i) => card.Data.CollectionLayers == false || hiddenLayers.Contains(layers[i].File) ? entry with { Chance = 0 } : entry)
                 .ToList();
-            var collFront = collection != null ? CollectionPart(collectionLayers[collection.Key].Front) : [];
-            var collBack = collection != null ? CollectionPart(collectionLayers[collection.Key].Back) : [];
+            var collFront = collection != null ? CollectionPart(collectionLayers[collection.Id].Front) : [];
+            var collBack = collection != null ? CollectionPart(collectionLayers[collection.Id].Back) : [];
 
             // Bottom to top: the card's layers, the collection's layers, the card's layers marked "over".
             // card.png: a 3D card's picture behind the window (with its depth map). A 2D card from before layers (or a
@@ -121,8 +132,8 @@ public class DaCardMod(
             var front = Card(picture != null ? [picture] : []).Concat(Card(card.Front.Where(l => !l.Over)))
                 .Concat(collFront).Concat(Card(card.Front.Where(l => l.Over))).ToList();
             var back = Card(card.Back.Where(l => !l.Over)).Concat(collBack).Concat(Card(card.Back.Where(l => l.Over))).ToList();
-            if (back.Count == 0 && defaultBackEntry != null)
-                back.Add(defaultBackEntry);
+            if (back.Count == 0 && defaultBacks.TryGetValue(card.Addon, out var defaultBack))
+                back.Add(defaultBack);
 
             var foilTpl = CardCatalog.FoilIdFor(card);
             foreach (var layer in front.Concat(back))
@@ -153,7 +164,7 @@ public class DaCardMod(
                 Collection = collection?.Data.Name,
                 Front = front,
                 Back = back,
-                Text = collection != null ? collectionText[collection.Key]?.WithAlign(card.Data.TextAlign) : null,
+                Text = collection != null ? collectionText[collection.Id]?.WithAlign(card.Data.TextAlign) : null,
                 Animation = usesDepth ? RegisterFrames(card, slots) : null
             };
             manifest.Cards.Add(entry);
@@ -168,7 +179,7 @@ public class DaCardMod(
             logger.Error($"[DaCard] bundles/{CollectionBinders.BundlePath} is missing, binders will have no model. Build the bundles in Unity.");
         manifest.Binders = binders.CreateBinders(collections, created, config.Binders, RegisterImage);
 
-        var packs = boosterPacks.Scan(modPath);
+        var packs = boosterPacks.Scan(addons, modPath);
         if (packs.Count > 0 && !File.Exists(Path.Combine(modPath, "bundles", BoosterPacks.BundlePath)))
             logger.Error($"[DaCard] bundles/{BoosterPacks.BundlePath} is missing, booster packs will have no model. Build the bundles in Unity.");
         var foilOf = manifest.Cards.Where(c => c.Foil && c.BaseTpl != null).ToDictionary(c => c.BaseTpl!, c => c.Tpl);
@@ -197,7 +208,8 @@ public class DaCardMod(
         var perRarity = string.Join(", ", CardCatalog.RarityOrder.Select(r => $"{r} {regular.Count(c => c.Rarity == r)}"));
         var perType = string.Join(", ", regular.GroupBy(c => c.Type).Select(g => $"{g.Count()} {g.Key.ToUpperInvariant()}"));
         logger.Success($"[DaCard] 1.0.0 loaded {regular.Count} card(s) + their foil versions ({FoilShare(config):0.#%} of cards found): " +
-                       $"{perRarity} ({perType}); {manifest.Binders.Count} collection binder(s); {manifest.Packs.Count} booster pack(s)");
+                       $"{perRarity} ({perType}); {manifest.Binders.Count} collection binder(s); {manifest.Packs.Count} booster pack(s); " +
+                       $"{addons.Count} addon(s){(addons.Count > 0 ? ": " + string.Join(", ", addons.Select(a => a.Name)) : "")}");
         return Task.CompletedTask;
     }
 
@@ -251,21 +263,17 @@ public class DaCardMod(
 
     public const string ConfigFile = "data/config.json";
 
-    private string DataFolder(string modPath, out bool oldLayout)
+    private bool OldLayout(string modPath)
     {
         var data = Path.Combine(modPath, "data");
-        var known = new[] { CardCatalog.CardsFolder, BoosterPacks.PacksFolder, BoosterPacks.SkinsFolder }.Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var old = new[] { "cards", "collections", "packs", "skins" }.Where(f => Directory.Exists(Path.Combine(modPath, f))).Select(f => f + "/").ToList();
         if (File.Exists(Path.Combine(modPath, Path.GetFileName(ConfigFile))))
             old.Add(Path.GetFileName(ConfigFile));
-        if (Directory.Exists(data))
-            old.AddRange(Directory.GetDirectories(data).Select(Path.GetFileName).Where(f => !known.Contains(f!)).Select(f => $"data/{f}/"));
-        oldLayout = old.Count > 0;
-        if (oldLayout)
-            logger.Warning($"[DaCard] {string.Join(", ", old)} {(old.Count == 1 ? "is" : "are")} the old layout and ignored: cards go into " +
-                           $"{CardCatalog.CardsFolder}/<collection>/<Rarity>/<card>/, booster packs into {BoosterPacks.PacksFolder}/, " +
-                           $"skins into {BoosterPacks.SkinsFolder}/, the settings into {ConfigFile}. Until they are moved, nothing is removed from profiles.");
-        return Path.Combine(modPath, CardCatalog.CardsFolder);
+        old.AddRange(Addons.Contents.Where(f => Directory.Exists(Path.Combine(data, f))).Select(f => $"data/{f}/"));
+        if (old.Count > 0)
+            logger.Warning($"[DaCard] {string.Join(", ", old)} {(old.Count == 1 ? "is" : "are")} the old layout and ignored: cards, booster packs and skins go into " +
+                           $"an addon (data/<addon>/{Addons.Cards}/, {Addons.Packs}/, {Addons.Skins}/), the settings into {ConfigFile}. Until they are moved, nothing is removed from profiles.");
+        return old.Count > 0;
     }
 
     private static double CardPrice(RaritySettings rarity) => rarity.Price > 0 ? rarity.Price : 1000;
@@ -309,7 +317,7 @@ public class DaCardMod(
             ItemTplToClone = CollectionBinders.CloneTpl,
             ParentId = CollectionBinders.ParentCompoundItem,
             NewId = new MongoId(foil ? CardCatalog.FoilIdFor(card) : card.Id),
-            NewItemName = "dacard_" + card.Key.ToLowerInvariant().Replace('/', '_') + (foil ? "_foil" : ""),
+            NewItemName = "dacard_" + card.IdKey.ToLowerInvariant().Replace('/', '_') + (foil ? "_foil" : ""),
             FleaPriceRoubles = price,
             HandbookPriceRoubles = price,
             HandbookParentId = HandbookValuables,
@@ -463,7 +471,7 @@ public class DaCardMod(
             var path = Path.Combine(collection.Dir, file);
             if (!File.Exists(path))
             {
-                logger.Warning($"[DaCard] {CardCatalog.CardsFolder}/{collection.Key}/{file} (the cards' {what} font) is missing: the default font is used.");
+                logger.Warning($"[DaCard] data/{collection.Addon}/{Addons.Cards}/{collection.Key}/{file} (the cards' {what} font) is missing: the default font is used.");
                 return style with { Font = null };
             }
             return style with { Font = RegisterFont(path) };

@@ -1,20 +1,15 @@
 (() => {
     'use strict';
 
-    // Card layers: pictures stacked on a card (front and back lists, bottom first), each with an art, an optional foil
-    // area and normal map (image, image sequence or video / GIF: CardMedia), a chance (% of copies that show it: rolled
-    // per copy in game), Can Be Foil and a transform (centre, scale, turn). A card's layers sit under its collection's
-    // layers, or over them ("over"). Used by the card form and the collection editor. Files, as the server reads them:
-    // <file>.png, <file>.foil.png, <file>.normal.png, frames.<file>[.foil|.normal]/frame_000.png ... (the pictures as they
-    // are: the game places them with the transform, like the preview here).
-
     const CARD_W = 490, CARD_H = 684;
     const MAX_SIDE = 1600;          // saved pictures are at most this big (a layer can be scaled up on the card)
-    const MAPS = ['art', 'foil', 'normal', 'normalmask'];
-    const MAP_LABEL = { art: 'Picture', foil: 'Foil area', normal: 'Normal map', normalmask: 'Normal mask' };
-    const MAP_EMPTY = { art: 'Required', foil: 'None: foil on all of it', normal: 'None: flat', normalmask: 'None: normal map on all of it' };
-    // Masks (white = yes): the foil area, and where the normal map shows
-    const IS_MASK = { foil: true, normalmask: true };
+    const MAPS = ['art', 'normal', 'roughness', 'metallic', 'mask'];
+    const MAP_LABEL = { art: 'Albedo', normal: 'Normal', roughness: 'Roughness', metallic: 'Metallic', mask: 'Mask' };
+    const MAP_EMPTY = { art: 'Required', normal: 'None', roughness: 'Default', metallic: 'None', mask: 'Albedo alpha' };
+    const IS_MASK = { mask: true };
+    const IS_GREY = { roughness: true, metallic: true };
+    const LEGACY_MAP = { mask: 'foil' };
+    const DEFAULT_ROUGHNESS = 0.3;
     const KIND_LABEL = { image: 'Image', sequence: 'Image sequence', video: 'Video', gif: 'GIF' };
     const PICK = {
         image: { accept: 'image/png,image/jpeg,image/webp,image/bmp,image/avif', multiple: false },
@@ -22,8 +17,8 @@
         video: { accept: 'video/*,image/gif,.gif', multiple: false },
     };
     const LAYER_NAME = String.raw`((front|back)_\d+|layer_[0-9a-f]{10})`;
-    const LAYER_FILE = new RegExp(String.raw`^${LAYER_NAME}(\.(foil|normal|normalmask))?\.png$`, 'i');
-    const LAYER_FRAMES = new RegExp(String.raw`^frames\.${LAYER_NAME}(\.(foil|normal|normalmask))?$`, 'i');
+    const LAYER_FILE = new RegExp(String.raw`^${LAYER_NAME}(\.(normal|roughness|metallic|mask|foil|normalmask))?\.png$`, 'i');
+    const LAYER_FRAMES = new RegExp(String.raw`^frames\.${LAYER_NAME}(\.(normal|roughness|metallic|mask|foil|normalmask))?$`, 'i');
     const LAYER_FONT = new RegExp(String.raw`^${LAYER_NAME}\.(ttf|otf)$`, 'i');
     const IDENTITY = { x: 0.5, y: 0.5, scale: 1, rotation: 0 };
     const MAX_NAME = 60;
@@ -71,7 +66,7 @@
             canBeFoil: defaults.canBeFoil ?? side === 'front',
             frame: kind !== 'text' && !!defaults.frame,
             over: false,
-            maps: { art: null, foil: null, normal: null, normalmask: null },
+            maps: Object.fromEntries(MAPS.map((m) => [m, null])),
             transform: { ...IDENTITY },
             hidden: false,
             name: '',
@@ -144,7 +139,6 @@
         return canvas;
     }
 
-    // A foil area as saved: opaque grey, white = foil. From its transparency if it has any, else its brightness.
     function toMask(canvas, preview = false) {
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -160,6 +154,20 @@
         return canvas;
     }
 
+    function toGrey(canvas) {
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const px = image.data;
+        for (let i = 0; i < px.length; i += 4) {
+            px[i] = px[i + 1] = px[i + 2] = Math.round(0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]);
+            px[i + 3] = 255;
+        }
+        ctx.putImageData(image, 0, 0);
+        return canvas;
+    }
+
+    const asSaved = (map, canvas) => (IS_MASK[map] ? toMask(canvas) : IS_GREY[map] ? toGrey(canvas) : canvas);
+
     const artSize = (layer) => ({ w: layer.maps.art.width, h: layer.maps.art.height });
 
     // The scale that just covers the card (scale 1 fits inside it)
@@ -169,13 +177,23 @@
         return Math.max(CARD_W / w, CARD_H / h) / Math.min(CARD_W / w, CARD_H / h);
     }
 
-    // One map of a layer at time t (seconds), placed on the card
     function mapCanvas(layer, map, t) {
         const media = layer.maps[map];
         if (!media || !layer.maps.art) return null;
         const size = artSize(layer), img = media.frameAt(t);
-        if (IS_MASK[map]) return drawPlaced(toMask(drawNatural(img, size)), layer.transform, size);
+        if (IS_MASK[map] || IS_GREY[map]) return drawPlaced(asSaved(map, drawNatural(img, size)), layer.transform, size);
         return drawPlaced(img, layer.transform, size);
+    }
+
+    function visibleArt(layer, t) {
+        const art = mapCanvas(layer, 'art', t), mask = layer.maps.mask;
+        if (!art || !mask) return art;
+        const size = artSize(layer);
+        const g = art.getContext('2d');
+        g.globalCompositeOperation = 'destination-in';
+        g.drawImage(drawPlaced(toMask(drawNatural(mask.frameAt(t), size), true), layer.transform, size), 0, 0);
+        g.globalCompositeOperation = 'source-over';
+        return art;
     }
 
     // Bottom to top: the card's layers, the collection's, the card's layers marked over them
@@ -186,60 +204,69 @@
         return CardText.ALIGNS.includes(align) ? { ...layer.text, align } : layer.text;
     };
 
-    // What the preview stacks: [{ art, foil, normal, canBeFoil, frame, turn }] (card-sized canvases)
     function parts(layers, t, ctx = {}) {
         return layers.filter((l) => hasContent(l) && !l.hidden).map((l) => {
             if (isText(l)) {
                 const art = CardText.render(textStyle(l, ctx), ctx.vars || {});
-                return art && { art, foil: null, normal: null, normalMask: null, canBeFoil: l.canBeFoil, frame: l.frame, turn: 0 };
+                return art && { art, canBeFoil: l.canBeFoil, frame: l.frame, turn: 0 };
             }
             return {
-                art: mapCanvas(l, 'art', t), foil: mapCanvas(l, 'foil', t), normal: mapCanvas(l, 'normal', t), normalMask: mapCanvas(l, 'normalmask', t),
+                art: visibleArt(l, t), normal: mapCanvas(l, 'normal', t),
+                roughness: mapCanvas(l, 'roughness', t), metallic: mapCanvas(l, 'metallic', t),
                 canBeFoil: l.canBeFoil, frame: l.frame, turn: l.transform.rotation * Math.PI / 180,
             };
         }).filter(Boolean);
     }
 
-    // The same stack the client builds on the GPU (CardLayers.cs / CardLayerComposite.shader): colour (straight alpha),
-    // foil (R: foil, G: frame glow) and normal map (flat where nothing covers; turned with its layer).
-    // opts.foil / opts.normal false: skip those (the colour is cheap, they are per-pixel work)
     function composite(list, opts = {}) {
-        const color = newCanvas(), foil = newCanvas(), normal = newCanvas();
+        const color = newCanvas(), foil = newCanvas(), normal = newCanvas(), surface = newCanvas();
         const cg = color.getContext('2d');
         for (const p of list) cg.drawImage(p.art, 0, 0);
-        const wantFoil = opts.foil !== false, wantNormal = opts.normal !== false;
-        if (!wantFoil && !wantNormal) return { color, foil: null, normal: null };
-        const fg = foil.getContext('2d', { willReadFrequently: true }), ng = normal.getContext('2d', { willReadFrequently: true });
-        const fImg = fg.createImageData(CARD_W, CARD_H), nImg = ng.createImageData(CARD_W, CARD_H);
-        const fd = fImg.data, nd = nImg.data;
-        for (let i = 0; i < fd.length; i += 4) { fd[i + 3] = 255; nd[i] = 128; nd[i + 1] = 128; nd[i + 2] = 255; nd[i + 3] = 255; }
-        const read = (c) => (c ? c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, CARD_W, CARD_H).data : null);
+        const wantFoil = opts.foil !== false, wantNormal = opts.normal !== false, wantSurface = opts.surface === true;
+        if (!wantFoil && !wantNormal && !wantSurface) return { color, foil: null, normal: null, surface: null };
+        const rough0 = Math.round(255 * (opts.roughness ?? DEFAULT_ROUGHNESS));
+        const context = (c) => c.getContext('2d', { willReadFrequently: true });
+        const fg = context(foil), ng = context(normal), sg = context(surface);
+        const fImg = fg.createImageData(CARD_W, CARD_H), nImg = ng.createImageData(CARD_W, CARD_H), sImg = sg.createImageData(CARD_W, CARD_H);
+        const fd = fImg.data, nd = nImg.data, sd = sImg.data;
+        for (let i = 0; i < fd.length; i += 4) {
+            fd[i + 3] = 255;
+            nd[i] = 128; nd[i + 1] = 128; nd[i + 2] = 255; nd[i + 3] = 255;
+            sd[i] = rough0; sd[i + 3] = 255;
+        }
+        const read = (c) => (c ? context(c).getImageData(0, 0, CARD_W, CARD_H).data : null);
         for (const p of list) {
-            const a = read(p.art), m = read(p.foil), n = wantNormal ? read(p.normal) : null, nm = n ? read(p.normalMask) : null;
+            const a = read(p.art), m = wantFoil ? read(p.foil) : null, n = wantNormal ? read(p.normal) : null;
+            const r = wantSurface ? read(p.roughness) : null, mt = wantSurface ? read(p.metallic) : null;
             const frameValue = p.frame ? 255 : 0;
             const c = Math.cos(p.turn || 0), s = Math.sin(p.turn || 0);
             for (let i = 0; i < fd.length; i += 4) {
                 const al = a[i + 3] / 255;
                 if (al === 0) continue;
-                const f = p.canBeFoil ? (m ? m[i] : 255) : 0;
-                fd[i] += (f - fd[i]) * al;
-                fd[i + 1] += (frameValue - fd[i + 1]) * al;
+                if (wantFoil) {
+                    const f = p.canBeFoil ? (m ? m[i] : 255) : 0;
+                    fd[i] += (f - fd[i]) * al;
+                    fd[i + 1] += (frameValue - fd[i + 1]) * al;
+                }
+                if (wantSurface) {
+                    sd[i] += ((r ? r[i] : rough0) - sd[i]) * al;
+                    sd[i + 1] += ((mt ? mt[i] : 0) - sd[i + 1]) * al;
+                }
                 if (!wantNormal) continue;
                 let nx = 0, ny = 0, nz = 255;
                 if (n) {
-                    // Its normal mask: flat where it is black
-                    const k = nm ? nm[i] / 255 : 1;
-                    const x = (n[i] / 127.5 - 1) * k, y = (n[i + 1] / 127.5 - 1) * k;
-                    nx = (c * x + s * y) * 127.5; ny = (-s * x + c * y) * 127.5; nz = 255 + (n[i + 2] - 255) * k;
+                    const x = n[i] / 127.5 - 1, y = n[i + 1] / 127.5 - 1;
+                    nx = (c * x + s * y) * 127.5; ny = (-s * x + c * y) * 127.5; nz = n[i + 2];
                 }
                 nd[i] += (nx + 127.5 - nd[i]) * al;
                 nd[i + 1] += (ny + 127.5 - nd[i + 1]) * al;
                 nd[i + 2] += (nz - nd[i + 2]) * al;
             }
         }
-        fg.putImageData(fImg, 0, 0);
-        ng.putImageData(nImg, 0, 0);
-        return { color, foil: wantFoil ? foil : null, normal: wantNormal ? normal : null };
+        if (wantFoil) fg.putImageData(fImg, 0, 0);
+        if (wantNormal) ng.putImageData(nImg, 0, 0);
+        if (wantSurface) sg.putImageData(sImg, 0, 0);
+        return { color, foil: wantFoil ? foil : null, normal: wantNormal ? normal : null, surface: wantSurface ? surface : null };
     }
 
     function hitTest(layers, x, y, t = 0) {
@@ -251,7 +278,7 @@
                 continue;
             }
             if (x < 0 || y < 0 || x >= CARD_W || y >= CARD_H) continue;
-            const c = mapCanvas(l, 'art', t);
+            const c = visibleArt(l, t);
             if (c && c.getContext('2d', { willReadFrequently: true }).getImageData(Math.floor(x), Math.floor(y), 1, 1).data[3] > 16) return l;
         }
         return null;
@@ -349,8 +376,7 @@
                         continue;
                     }
                     if (kept) clear.add(framesFolder(file, map));
-                    // The picture as it is (its maps at its size); the game places it with the transform
-                    const render = (img) => pngBlob(IS_MASK[map] ? toMask(drawNatural(img, size)) : drawNatural(img, size));
+                    const render = (img) => pngBlob(asSaved(map, drawNatural(img, size)));
                     out.push([mapFile(file, map), () => media.withFrame(0, render)]);
                     if (animated) {
                         for (let f = 0; f < media.count; f++)
@@ -386,7 +412,6 @@
         try { return kind === 'directory' ? await dir.getDirectoryHandle(name) : await dir.getFileHandle(name); } catch { return null; }
     }
 
-    // One map from disk: its frames folder (an image sequence) or its picture
     const inMemory = async (file) => new File([await file.arrayBuffer()], file.name, { type: file.type, lastModified: file.lastModified });
 
     async function loadMap(dir, file, map, fps, opts = {}) {
@@ -406,7 +431,6 @@
         return handle ? CardMedia.open('image', [await read(handle)]) : null;
     }
 
-    // entries: card.json / collection.json layer list entries ({ file, chance, canBeFoil, over, transform, fps })
     async function load(dir, side, entries, defaults = {}, opts = {}) {
         const layers = [];
         for (const entry of entries || []) {
@@ -428,10 +452,17 @@
             if (entry.canBeFoil != null) layer.canBeFoil = !!entry.canBeFoil;
             layer.over = !!entry.over;
             if (entry.transform) layer.transform = { ...IDENTITY, ...entry.transform };
+            const legacy = [];
             if (!isText(layer))
-                for (const map of MAPS)
-                    layer.maps[map] = await loadMap(dir, entry.file, map, entry.fps && entry.fps[map], opts).catch(() => null);
+                for (const map of MAPS) {
+                    const fps = (m) => entry.fps && entry.fps[m];
+                    layer.maps[map] = await loadMap(dir, entry.file, map, fps(map), opts).catch(() => null);
+                    if (layer.maps[map] || !LEGACY_MAP[map]) continue;
+                    layer.maps[map] = await loadMap(dir, entry.file, LEGACY_MAP[map], fps(LEGACY_MAP[map]), opts).catch(() => null);
+                    if (layer.maps[map]) legacy.push(map);
+                }
             layer.saved = savedState(layer);
+            for (const map of legacy) layer.saved[map] = null;
             if (hasContent(layer)) layers.push(layer);
         }
         return layers;
@@ -718,7 +749,7 @@
                     <div class="layer-props">
                         <label class="layer-chance" title="% of copies of the card that show this layer (rolled per copy in game)"><span>Chance</span><input type="number" class="facade-input" min="0" max="100" step="0.1" inputmode="decimal" value="${layer.chance}"><span>%</span></label>
                         <label class="layer-chance layer-price" title="A layer under 100% chance is a sticker on the copies that roll it: this is what it adds to the copy's price (in roubles)."><span>Sticker</span><input type="number" class="facade-input" min="0" max="100000000" step="100" inputmode="numeric" value="${layer.price}"><span>₽</span></label>
-                        <label class="facade-check-row" title="The foil version puts its foil on this layer (inside its foil area). Off: never foil, and it covers the foil under it."><input type="checkbox" class="facade-switch" data-k="foil" ${layer.canBeFoil ? 'checked' : ''}><span>Can Be Foil</span></label>
+                        <label class="facade-check-row" title="Foil version shines here"><input type="checkbox" class="facade-switch" data-k="foil" ${layer.canBeFoil ? 'checked' : ''}><span>Can Be Foil</span></label>
                     </div>
                     ${isText(layer) ? '<div class="layer-text"></div>' : `<div class="layer-maps"></div>
                     <div class="layer-transform">
@@ -1116,7 +1147,7 @@
     }
 
     window.CardLayerKit = {
-        CARD_W, CARD_H, MAPS, IDENTITY,
+        CARD_W, CARD_H, MAPS, IDENTITY, DEFAULT_ROUGHNESS,
         newLayer, textLayer, setFont, isText, hasContent, unreadable, createEditor, load, loadMap, files, removeFiles, splitAll, smoothResize,
         ordered, parts, composite, animated, mediaOf, outline, layerBox, fillScale, hitTest,
         drawPlaced, drawNatural, toMask, newCanvas, cropRect, drawCropped,
