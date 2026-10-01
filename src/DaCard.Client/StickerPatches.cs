@@ -50,7 +50,8 @@ namespace DaCard.Client
         [PatchPrefix]
         private static bool Prefix(ContainerCollection containerCollection, ref Task __result)
         {
-            if (!CardRegistry.IsCard(containerCollection?.StringTemplateId))
+            var templateId = containerCollection?.StringTemplateId;
+            if (!CardRegistry.IsCard(templateId) && !CardRegistry.IsBinder(templateId))
                 return true;
             __result = Task.CompletedTask;
             return false;

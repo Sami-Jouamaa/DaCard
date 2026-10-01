@@ -12,7 +12,7 @@ namespace DaCard.Client
 {
     internal static class CardRegistry
     {
-        private static readonly string[] Rarities = { "Common", "Uncommon", "Rare", "Epic", "Legendary" };
+        public static readonly string[] Rarities = { "Common", "Uncommon", "Rare", "Epic", "Legendary" };
 
 
         private static readonly Dictionary<string, CardManifestEntry> Cards = new Dictionary<string, CardManifestEntry>();
