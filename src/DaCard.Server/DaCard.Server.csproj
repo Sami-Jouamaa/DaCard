@@ -76,7 +76,7 @@
     <Copy SourceFiles="@(NodesFiles)" DestinationFiles="@(NodesFiles->'$(NodesStage)DaCardCrop\%(RecursiveDir)%(Filename)%(Extension)')" />
     <MakeDir Directories="$(TargetDir)creator\downloads" />
     <ZipDirectory SourceDirectory="$(NodesStage)" DestinationFile="$(TargetDir)creator\downloads\DaCardCrop.zip" Overwrite="true" />
-    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\..\comfyui\workflows\3DCardGen.json" DestinationFolder="$(TargetDir)creator\downloads" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\..\comfyui\workflows\CardGen.json" DestinationFolder="$(TargetDir)creator\downloads" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

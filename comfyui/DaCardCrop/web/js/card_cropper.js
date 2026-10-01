@@ -3,6 +3,7 @@ const { api } = window.comfyAPI.api;
 
 const VIDEO_RE = /\.(mp4|webm|mov|mkv|avi|m4v)$/i;
 const PREVIEW_HEIGHT = 300;
+const MODES = ["maintain resolution", "resize"];
 
 function cropBox(W, H, outW, outH, zoom, ox, oy) {
     const aspect = outW / outH;
@@ -73,12 +74,9 @@ function setupCropper(node) {
             const origin = link && app.graph.getNodeById(link.origin_id);
             const w = origin?.widgets?.find((w) => ["file", "video", "image"].includes(w.name) && typeof w.value === "string" && w.value);
             if (w) return viewUrl(w.value);
-            if (node._ccExecutedSource) return node._ccExecutedSource;
-            return null;
+            return node._ccExecutedSource ?? null;
         }
-        const file = widget("file")?.value;
-        if (file && file !== "(none)") return viewUrl(file);
-        return node._ccExecutedSource ?? null;
+        return null;
     }
 
     function loadSource() {
@@ -127,7 +125,7 @@ function setupCropper(node) {
         if (!media) {
             view = null;
             ctx.fillStyle = "#777"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
-            ctx.fillText(mediaUrl ? "loading…" : "pick a file or connect Load Image / Load Video", cw / 2, ch / 2);
+            ctx.fillText(mediaUrl ? "loading…" : "connect Load Image / Load Video", cw / 2, ch / 2);
             hint.textContent = "";
             return;
         }
@@ -208,13 +206,13 @@ function setupCropper(node) {
         app.graph.setDirtyCanvas(true, false);
     });
 
-    for (const name of ["mode", "zoom", "offset_x", "offset_y", "width", "height", "file"]) {
+    for (const name of ["mode", "zoom", "offset_x", "offset_y", "width", "height"]) {
         const w = widget(name);
         if (!w) continue;
         const cb = w.callback;
         w.callback = function () {
             const r = cb?.apply(this, arguments);
-            if (name === "file") loadSource(); else draw();
+            draw();
             return r;
         };
     }
@@ -239,6 +237,18 @@ app.registerExtension({
     name: "DaCardCrop.CardCropper",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "DaCardCrop") return;
+
+        const configure = nodeType.prototype.configure;
+        nodeType.prototype.configure = function (info) {
+            const values = info?.widgets_values;
+            if (Array.isArray(values) && !MODES.includes(values[0]) && MODES.includes(values[1]))
+                info.widgets_values = [...values.slice(1, 9), ...values.slice(10)];
+            if (info?.widgets_values_named) {
+                delete info.widgets_values_named.file;
+                delete info.widgets_values_named.upload;
+            }
+            return configure.apply(this, arguments);
+        };
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {

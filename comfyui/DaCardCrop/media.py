@@ -1,15 +1,9 @@
 import io
-import os
 
 import av
 import numpy as np
 import torch
-from PIL import Image, ImageOps
-
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga", ".tif", ".tiff"}
-ANIMATED_EXTS = {".gif"}
-VIDEO_EXTS = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"}
-MEDIA_EXTS = IMAGE_EXTS | ANIMATED_EXTS | VIDEO_EXTS
+from PIL import Image
 
 
 def crop_box(src_w, src_h, out_w, out_h, zoom, offset_x, offset_y):
@@ -110,16 +104,6 @@ def _decode_av(source, fps, max_seconds, crop, start=0.0, duration=0.0):
                 yield t, dur, frame.to_image()
 
         return _resample(frames(), fps, max_seconds, crop)
-
-
-def load_file(path, fps, max_seconds, crop):
-    ext = os.path.splitext(path)[1].lower()
-    if ext in VIDEO_EXTS or ext in ANIMATED_EXTS:
-        frames = _decode_av(path, fps, max_seconds, crop)
-    else:
-        with Image.open(path) as img:
-            frames = [crop(ImageOps.exif_transpose(img))]
-    return frames
 
 
 def load_video_input(video, fps, max_seconds, crop):
