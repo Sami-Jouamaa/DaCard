@@ -3,8 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
-using System.Threading.Tasks;
-using Newtonsoft.Json;
 using SPT.Common.Http;
 using TMPro;
 using UnityEngine;
@@ -15,14 +13,6 @@ namespace DaCard.Client
     {
         private static readonly Dictionary<string, TMP_FontAsset> Assets = new Dictionary<string, TMP_FontAsset>();
         private static readonly Dictionary<int, (TMP_FontAsset Font, Material Material)> Defaults = new Dictionary<int, (TMP_FontAsset, Material)>();
-        private static Task<Dictionary<string, string>> _files;
-
-        public static void Prefetch()
-        {
-            _files = Task.Run(() => JsonConvert.DeserializeObject<Dictionary<string, string>>(RequestHandler.GetJson("/dacard/fonts"))
-                                    ?? new Dictionary<string, string>());
-        }
-
         public static void Use(TMP_Text text, string id)
         {
             var key = text.GetInstanceID();
@@ -49,14 +39,13 @@ namespace DaCard.Client
             Assets[id] = null;
             try
             {
-                if (_files == null)
-                    Prefetch();
-                if (!_files.Result.TryGetValue(id, out var data))
+                var data = RequestHandler.GetData(id);
+                if (data == null || data.Length == 0)
                 {
                     Plugin.Log.LogWarning($"The server has no font {id}");
                     return null;
                 }
-                asset = Create(id, Convert.FromBase64String(data), fallback, template);
+                asset = Create(id, data, fallback, template);
                 Assets[id] = asset;
                 return asset;
             }

@@ -2,35 +2,6 @@ using System.Text.Json.Serialization;
 
 namespace DaCard.Server;
 
-public record CardFile
-{
-    [JsonPropertyName("idKey")] public string? IdKey { get; set; }
-    [JsonPropertyName("name")] public string? Name { get; set; }
-
-    [JsonPropertyName("type")] public string? Type { get; set; }
-
-    [JsonPropertyName("shortName")] public string? ShortName { get; set; }
-    [JsonPropertyName("description")] public string? Description { get; set; }
-
-    [JsonPropertyName("locales")] public Dictionary<string, CardText>? Locales { get; set; }
-
-    [JsonPropertyName("holo")] public HoloSettings? Holo { get; set; }
-
-    [JsonPropertyName("glow")] public GlowSettings? Glow { get; set; }
-
-    [JsonPropertyName("animation")] public AnimationInfo? Animation { get; set; }
-
-    [JsonPropertyName("floats")] public Dictionary<string, double>? Floats { get; set; }
-
-    [JsonPropertyName("layers")] public LayerLists? Layers { get; set; }
-
-    [JsonPropertyName("textAlign")] public Dictionary<string, string>? TextAlign { get; set; }
-
-    [JsonPropertyName("collectionLayers")] public bool? CollectionLayers { get; set; }
-
-    [JsonPropertyName("hideCollectionLayers")] public List<string>? HideCollectionLayers { get; set; }
-}
-
 public record AnimationInfo
 {
     [JsonPropertyName("fps")] public double Fps { get; set; } = 12;
@@ -145,24 +116,6 @@ public record GlowManifestEntry
     [JsonPropertyName("speed")] public double Speed { get; set; }
 }
 
-public record CollectionFile
-{
-    [JsonPropertyName("idKey")] public string? IdKey { get; set; }
-    [JsonPropertyName("name")] public string? Name { get; set; }
-    [JsonPropertyName("shortName")] public string? ShortName { get; set; }
-    [JsonPropertyName("description")] public string? Description { get; set; }
-
-    [JsonPropertyName("locales")] public Dictionary<string, CardText>? Locales { get; set; }
-
-    [JsonPropertyName("stickers")] public List<StickerLayer>? Stickers { get; set; }
-
-    [JsonPropertyName("sticker")] public StickerPlacement? Sticker { get; set; }
-
-    [JsonPropertyName("cardText")] public CardTextSettings? CardText { get; set; }
-
-    [JsonPropertyName("layers")] public LayerLists? Layers { get; set; }
-}
-
 public record CardTextSettings
 {
     [JsonPropertyName("name")] public TextStyle? Name { get; set; }
@@ -200,11 +153,6 @@ public record StickerPlacement
     [JsonPropertyName("width")] public double Width { get; set; } = 0.6;
     [JsonPropertyName("height")] public double Height { get; set; } = 0.3;
     [JsonPropertyName("rotation")] public double Rotation { get; set; }
-}
-
-public record StickerLayer : StickerPlacement
-{
-    [JsonPropertyName("file")] public string? File { get; set; }
 }
 
 public record BinderStickerEntry
@@ -291,43 +239,6 @@ public record PackSettings
     };
 }
 
-public record PackFile
-{
-    [JsonPropertyName("id")] public string? Id { get; set; }
-    [JsonPropertyName("name")] public string? Name { get; set; }
-    [JsonPropertyName("shortName")] public string? ShortName { get; set; }
-    [JsonPropertyName("description")] public string? Description { get; set; }
-
-    [JsonPropertyName("locales")] public Dictionary<string, CardText>? Locales { get; set; }
-
-    [JsonPropertyName("skin")] public string? Skin { get; set; }
-
-    [JsonPropertyName("cards")] public PackCards Cards { get; set; } = new();
-
-    [JsonPropertyName("cardCount")] public int CardCount { get; set; } = 3;
-
-    [JsonPropertyName("price")] public double Price { get; set; } = 25000;
-
-    [JsonPropertyName("purchasable")] public bool Purchasable { get; set; } = true;
-
-    [JsonPropertyName("lootPercent")] public double LootPercent { get; set; }
-
-    [JsonPropertyName("background")] public string? Background { get; set; }
-}
-
-public record PackCards
-{
-    [JsonPropertyName("all")] public bool All { get; set; }
-    [JsonPropertyName("collections")] public List<string>? Collections { get; set; }
-    [JsonPropertyName("cards")] public List<string>? Cards { get; set; }
-    [JsonPropertyName("rarities")] public List<string>? Rarities { get; set; }
-}
-
-public record SkinFile
-{
-    [JsonPropertyName("name")] public string? Name { get; set; }
-}
-
 public record PackManifestEntry
 {
     [JsonPropertyName("tpl")] public required string Tpl { get; set; }
@@ -385,16 +296,6 @@ public record RaritySettings
     [JsonPropertyName("holo")] public HoloSettings Holo { get; set; } = new();
 
     [JsonPropertyName("glow")] public GlowSettings? Glow { get; set; }
-}
-
-public record CardManifest
-{
-    [JsonPropertyName("backProperty")] public string BackProperty { get; set; } = "_CARD_BACK";
-    [JsonPropertyName("overlayProperty")] public string OverlayProperty { get; set; } = "_CARD_FRONT_BORDER";
-    [JsonPropertyName("slots")] public List<TextureSlot> Slots { get; set; } = new();
-    [JsonPropertyName("cards")] public List<CardManifestEntry> Cards { get; set; } = new();
-    [JsonPropertyName("binders")] public List<BinderManifestEntry> Binders { get; set; } = new();
-    [JsonPropertyName("packs")] public List<PackManifestEntry> Packs { get; set; } = new();
 }
 
 public record CardManifestEntry

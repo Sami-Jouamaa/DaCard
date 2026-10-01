@@ -6,7 +6,7 @@ namespace DaCard.Client
 {
     internal static class LayerMaps
     {
-        public const string Albedo = "art", Normal = "normal", Roughness = "roughness", Metallic = "metallic", Mask = "mask";
+        public const string Albedo = "albedo", Normal = "normal", Roughness = "roughness", Metallic = "metallic", Mask = "mask";
     }
 
     internal static class CardLayers
@@ -344,8 +344,8 @@ namespace DaCard.Client
                         Albedo = albedo,
                         Mask = Current(card, layers, i, side, LayerMaps.Mask),
                         Normal = Current(card, layers, i, side, LayerMaps.Normal),
-                        Roughness = Current(card, layers, i, side, LayerMaps.Roughness),
-                        Metallic = Current(card, layers, i, side, LayerMaps.Metallic)
+                        Roughness = Current(card, layers, i, side, LayerMaps.Roughness) ?? Solid(layers[i].Roughness),
+                        Metallic = Current(card, layers, i, side, LayerMaps.Metallic) ?? Solid(layers[i].Metallic)
                     });
             }
 
@@ -353,6 +353,29 @@ namespace DaCard.Client
             Composite(color, ColorPass, NoColor, parts);
             Composite(surface, SurfacePass, new Color(0, 0, stack.Roughness, 0), parts);
             Composite(normal, NormalPass, Flat, parts);
+        }
+
+        private static readonly Dictionary<int, Texture2D> SolidTextures = new Dictionary<int, Texture2D>();
+
+        private static Texture Solid(float? value)
+        {
+            if (value == null)
+                return null;
+            var level = Mathf.RoundToInt(Mathf.Clamp01(value.Value) * 255f);
+            if (SolidTextures.TryGetValue(level, out var texture) && texture != null)
+                return texture;
+            texture = new Texture2D(1, 1, TextureFormat.RGBA32, false, true)
+            {
+                name = "dacard solid " + level,
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Point,
+                hideFlags = HideFlags.DontUnloadUnusedAsset
+            };
+            var b = (byte)level;
+            texture.SetPixels32(new[] { new Color32(b, b, b, 255) });
+            texture.Apply(false, true);
+            SolidTextures[level] = texture;
+            return texture;
         }
 
         private class Part

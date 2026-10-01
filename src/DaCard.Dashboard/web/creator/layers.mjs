@@ -10,13 +10,16 @@
     const IS_GREY = { roughness: true, metallic: true };
     const LEGACY_MAP = { mask: 'foil' };
     const DEFAULT_ROUGHNESS = 0.3;
+    const DEFAULT_METALLIC = 0;
+    const MATERIAL_DEFAULT = { roughness: DEFAULT_ROUGHNESS, metallic: DEFAULT_METALLIC };
+    const clamp01 = (v) => Math.min(1, Math.max(0, v));
     const KIND_LABEL = { image: 'Image', sequence: 'Image sequence', video: 'Video', gif: 'GIF' };
     const PICK = {
         image: { accept: 'image/png,image/jpeg,image/webp,image/bmp,image/avif', multiple: false },
         sequence: { accept: 'image/*', multiple: true },
         video: { accept: 'video/*,image/gif,.gif', multiple: false },
     };
-    const LAYER_NAME = String.raw`((front|back)_\d+|layer_[0-9a-f]{10})`;
+    const LAYER_NAME = String.raw`((front|back)_\d+|layer_[0-9a-f]{10}|[0-9a-f]{12})`;
     const LAYER_FILE = new RegExp(String.raw`^${LAYER_NAME}(\.(normal|roughness|metallic|mask|foil|normalmask))?\.png$`, 'i');
     const LAYER_FRAMES = new RegExp(String.raw`^frames\.${LAYER_NAME}(\.(normal|roughness|metallic|mask|foil|normalmask))?$`, 'i');
     const LAYER_FONT = new RegExp(String.raw`^${LAYER_NAME}\.(ttf|otf)$`, 'i');
@@ -68,6 +71,8 @@
             over: false,
             maps: Object.fromEntries(MAPS.map((m) => [m, null])),
             transform: { ...IDENTITY },
+            roughness: null,
+            metallic: null,
             hidden: false,
             name: '',
             collapsed: false,
@@ -77,13 +82,122 @@
 
     const savedState = (layer) => ({ ...layer.maps, font: layer.text ? layer.text.font : null });
     const STABLE_FILE = new RegExp(`^${LAYER_NAME}$`, 'i');
-    const newLayerFile = () => 'layer_' + Array.from(crypto.getRandomValues(new Uint8Array(5)), (b) => b.toString(16).padStart(2, '0')).join('');
+    const newLayerFile = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, '0')).join('');
 
     const newCanvas = (w = CARD_W, h = CARD_H) => {
         const c = document.createElement('canvas');
         c.width = w; c.height = h;
         return c;
     };
+
+    // ---------- Number fields: type a value, or drag the grip on their left ----------
+
+    // o: { value(), set(v), min, max, scale, decimals, unit, perPixel, title, isDefault(), disabled(), clear() }
+    const measureCanvas = document.createElement('canvas');
+
+    function scrubField(label, o) {
+        const scale = o.scale ?? 1, decimals = o.decimals ?? 0;
+        const el = document.createElement('div');
+        el.className = 'scrub';
+        if (o.title) el.title = o.title;
+        el.innerHTML = '<span class="scrub-label"></span><span class="scrub-grip" aria-hidden="true"></span>' +
+            '<input type="text" class="facade-input scrub-input" inputmode="decimal" spellcheck="false" autocomplete="off"><span class="scrub-unit"></span>';
+        el.querySelector('.scrub-label').textContent = label;
+        el.querySelector('.scrub-unit').textContent = o.unit || '';
+        const input = el.querySelector('.scrub-input'), grip = el.querySelector('.scrub-grip');
+        input.setAttribute('aria-label', label);
+        const format = (v) => {
+            const n = Math.round(v * scale * 10 ** decimals) / 10 ** decimals;
+            return (Object.is(n, -0) ? 0 : n).toFixed(decimals);
+        };
+        const limit = (v) => Math.min(o.max ?? Infinity, Math.max(o.min ?? -Infinity, v));
+        const samples = [o.min, o.max].filter((v) => Number.isFinite(v)).map(format).concat(['000']);
+        const longest = Math.max(...samples.map((t) => t.length));
+        input.style.width = `calc(${longest + 1}ch + 16px)`;
+        let sized = false;
+        const fit = () => {
+            if (sized || !input.isConnected) return;
+            const css = getComputedStyle(input);
+            if (!css.fontFamily) return;
+            const g = measureCanvas.getContext('2d');
+            let widest = 0;
+            for (const style of ['normal', 'italic']) {
+                g.font = `${style} ${css.fontWeight} ${css.fontSize} ${css.fontFamily}`;
+                for (const text of samples) widest = Math.max(widest, g.measureText(text).width);
+            }
+            input.style.width = `${Math.ceil(widest + parseFloat(css.paddingLeft) + parseFloat(css.paddingRight) + parseFloat(css.borderLeftWidth) + parseFloat(css.borderRightWidth) + 6)}px`;
+            sized = true;
+        };
+        requestAnimationFrame(fit);
+        if (document.fonts) document.fonts.ready.then(() => { sized = false; fit(); });
+        const off = () => !!(o.disabled && o.disabled());
+        const update = () => {
+            fit();
+            if (document.activeElement !== input) input.value = format(o.value());
+            const disabled = off();
+            el.classList.toggle('is-default', !!(o.isDefault && o.isDefault()));
+            el.classList.toggle('is-off', disabled);
+            input.disabled = disabled;
+        };
+        const commit = (display) => {
+            o.set(limit(Math.round(display * 10 ** decimals) / 10 ** decimals / scale));
+            update();
+        };
+        let drag = null;
+        grip.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || off()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (document.activeElement === input) input.blur();
+            grip.setPointerCapture(e.pointerId);
+            drag = { x: e.clientX, start: o.value() * scale };
+            el.classList.add('is-dragging');
+            document.body.classList.add('is-scrubbing');
+        });
+        grip.addEventListener('pointermove', (e) => {
+            if (!drag) return;
+            const step = (o.perPixel ?? 1) * (e.shiftKey ? 0.1 : 1);
+            commit(drag.start + (e.clientX - drag.x) * step);
+        });
+        const end = () => {
+            if (!drag) return;
+            drag = null;
+            el.classList.remove('is-dragging');
+            document.body.classList.remove('is-scrubbing');
+        };
+        grip.addEventListener('pointerup', end);
+        grip.addEventListener('pointercancel', end);
+        grip.addEventListener('dblclick', () => { if (o.clear && !off()) { o.clear(); update(); } });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') input.blur();
+            if (e.key === 'Escape') { input.value = format(o.value()); input.blur(); }
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault();
+                const step = (o.perPixel ?? 1) * (e.shiftKey ? 10 : 1);
+                commit(o.value() * scale + (e.key === 'ArrowUp' ? step : -step));
+            }
+        });
+        input.addEventListener('change', () => {
+            const text = input.value.trim().replace(',', '.');
+            if (!text && o.clear) { o.clear(); update(); return; }
+            const v = text ? Number(text) : NaN;
+            if (Number.isFinite(v)) commit(v);
+            else update();
+        });
+        let selectOnUp = false;
+        input.addEventListener('focus', () => { input.select(); selectOnUp = true; });
+        input.addEventListener('mouseup', (e) => {
+            if (!selectOnUp) return;
+            selectOnUp = false;
+            if (input.selectionStart === input.selectionEnd) {
+                e.preventDefault();
+                input.select();
+            }
+        });
+        input.addEventListener('blur', update);
+        update();
+        return { el, update };
+    }
 
     // ---------- Placing a picture on the card ----------
 
@@ -213,6 +327,7 @@
             return {
                 art: visibleArt(l, t), normal: mapCanvas(l, 'normal', t),
                 roughness: mapCanvas(l, 'roughness', t), metallic: mapCanvas(l, 'metallic', t),
+                roughnessValue: l.roughness, metallicValue: l.metallic,
                 canBeFoil: l.canBeFoil, frame: l.frame, turn: l.transform.rotation * Math.PI / 180,
             };
         }).filter(Boolean);
@@ -239,6 +354,8 @@
             const a = read(p.art), m = wantFoil ? read(p.foil) : null, n = wantNormal ? read(p.normal) : null;
             const r = wantSurface ? read(p.roughness) : null, mt = wantSurface ? read(p.metallic) : null;
             const frameValue = p.frame ? 255 : 0;
+            const roughValue = typeof p.roughnessValue === 'number' ? Math.round(255 * clamp01(p.roughnessValue)) : rough0;
+            const metalValue = typeof p.metallicValue === 'number' ? Math.round(255 * clamp01(p.metallicValue)) : 0;
             const c = Math.cos(p.turn || 0), s = Math.sin(p.turn || 0);
             for (let i = 0; i < fd.length; i += 4) {
                 const al = a[i + 3] / 255;
@@ -249,8 +366,8 @@
                     fd[i + 1] += (frameValue - fd[i + 1]) * al;
                 }
                 if (wantSurface) {
-                    sd[i] += ((r ? r[i] : rough0) - sd[i]) * al;
-                    sd[i + 1] += ((mt ? mt[i] : 0) - sd[i + 1]) * al;
+                    sd[i] += ((r ? r[i] : roughValue) - sd[i]) * al;
+                    sd[i + 1] += ((mt ? mt[i] : metalValue) - sd[i + 1]) * al;
                 }
                 if (!wantNormal) continue;
                 let nx = 0, ny = 0, nz = 255;
@@ -363,6 +480,8 @@
                 }
                 const t = layer.transform;
                 if (!isIdentity(t)) entry.transform = { x: round(t.x), y: round(t.y), scale: round(t.scale), rotation: round(t.rotation, 100) };
+                for (const key of ['roughness', 'metallic'])
+                    if (typeof layer[key] === 'number') entry[key] = round(clamp01(layer[key]), 1000);
                 const size = capped(artSize(layer));
                 const fps = {};
                 for (const map of MAPS) {
@@ -452,6 +571,8 @@
             if (entry.canBeFoil != null) layer.canBeFoil = !!entry.canBeFoil;
             layer.over = !!entry.over;
             if (entry.transform) layer.transform = { ...IDENTITY, ...entry.transform };
+            for (const key of ['roughness', 'metallic'])
+                if (typeof entry[key] === 'number' && Number.isFinite(entry[key])) layer[key] = clamp01(entry[key]);
             const legacy = [];
             if (!isText(layer))
                 for (const map of MAPS) {
@@ -753,8 +874,7 @@
                     </div>
                     ${isText(layer) ? '<div class="layer-text"></div>' : `<div class="layer-maps"></div>
                     <div class="layer-transform">
-                        <label class="range-row"><span>Size</span><input type="range" class="facade-range" data-t="scale" min="0.05" max="4" step="0.01" value="${t.scale}"><output>${Math.round(t.scale * 100)}%</output></label>
-                        <label class="range-row"><span>Turn</span><input type="range" class="facade-range" data-t="rotation" min="-180" max="180" step="1" value="${t.rotation}"><output>${Math.round(t.rotation)}°</output></label>
+                        <div class="scrub-grid"></div>
                         <div class="guide-actions">
                             <button type="button" class="facade-btn fx-sm fx-grey" data-tr="centre" title="Put it in the middle of the card">Centre</button>
                             <button type="button" class="facade-btn fx-sm fx-grey" data-tr="straight" title="No turn">Straighten</button>
@@ -767,8 +887,8 @@
                 const maps = card.querySelector('.layer-maps');
                 for (const map of MAPS) maps.appendChild(mediaBlock(layer, map));
                 thumb(card.querySelector('.layer-thumb'), () => layer.maps.art, layer);
+                transformFields(card, layer);
             }
-            for (const input of card.querySelectorAll('.facade-range')) window.setRange && window.setRange(input);
             const summaryEl = card.querySelector('.layer-summary');
             const showSummary = () => { summaryEl.textContent = summary(layer); };
             showSummary();
@@ -835,11 +955,6 @@
                 render();
                 changed('layers', layer);
             });
-            for (const input of card.querySelectorAll('[data-t]')) input.addEventListener('input', () => {
-                layer.transform[input.dataset.t] = +input.value;
-                showTransform(card, layer);
-                changed('transform', layer);
-            });
             for (const b of card.querySelectorAll('[data-tr]')) b.addEventListener('click', () => {
                 const tr = layer.transform;
                 if (b.dataset.tr === 'centre') Object.assign(tr, { x: 0.5, y: 0.5 });
@@ -852,15 +967,31 @@
             return card;
         }
 
+        const TRANSFORM_FIELDS = [
+            { key: 'x', label: 'X', scale: 100, unit: '%', decimals: 1, min: -0.5, max: 1.5, perPixel: 0.25, title: 'Across the card: 0% left edge, 100% right edge (its middle)' },
+            { key: 'y', label: 'Y', scale: 100, unit: '%', decimals: 1, min: -0.5, max: 1.5, perPixel: 0.25, title: 'Down the card: 0% top edge, 100% bottom edge (its middle)' },
+            { key: 'scale', label: 'Scale', scale: 100, unit: '%', decimals: 0, min: 0.05, max: 4, perPixel: 0.5, title: '100%: the picture just fits inside the card' },
+            { key: 'rotation', label: 'Rotation', unit: '°', decimals: 1, min: -180, max: 180, perPixel: 0.5, title: 'Clockwise' },
+        ];
+
+        function transformFields(card, layer) {
+            const grid = card.querySelector('.scrub-grid');
+            card._scrubs = TRANSFORM_FIELDS.map((f) => {
+                const field = scrubField(f.label, {
+                    ...f,
+                    value: () => layer.transform[f.key],
+                    set: (v) => {
+                        layer.transform[f.key] = v;
+                        changed('transform', layer);
+                    },
+                });
+                grid.appendChild(field.el);
+                return field;
+            });
+        }
+
         function showTransform(card, layer) {
-            const t = layer.transform;
-            for (const input of card.querySelectorAll('[data-t]')) {
-                input.value = t[input.dataset.t];
-                if (window.setRange) window.setRange(input);
-            }
-            const out = card.querySelectorAll('.layer-transform output');
-            out[0].textContent = `${Math.round(t.scale * 100)}%`;
-            out[1].textContent = `${Math.round(t.rotation)}°`;
+            for (const field of card._scrubs || []) field.update();
         }
 
         // Up / down in the stack; past the collection's layers (card editor) it goes under or over them
@@ -886,6 +1017,16 @@
             changed('layers', layer);
         }
 
+        const TEXT_FIELDS = [
+            { key: 'x', label: 'X', scale: 100, unit: '%', decimals: 1, min: -0.5, max: 1.5, perPixel: 0.25, fallback: 0.5, title: 'The middle of the text box, across the card' },
+            { key: 'y', label: 'Y', scale: 100, unit: '%', decimals: 1, min: 0, max: 0.98, perPixel: 0.25, fallback: 0.05, title: 'The top of the text box, down the card' },
+            { key: 'size', label: 'Font size', scale: CARD_H, unit: 'px', decimals: 0, min: 0.015, max: 0.2, perPixel: 0.5, fallback: 0.05, title: 'Line height on the card' },
+            { key: 'rotation', label: 'Rotation', unit: '°', decimals: 1, min: -180, max: 180, perPixel: 0.5, fallback: 0, title: 'Clockwise' },
+            { key: 'width', label: 'Width', scale: 100, unit: '%', decimals: 0, min: 0.05, max: 1, perPixel: 0.5, fallback: 0.84, title: 'Of the card' },
+            { key: 'height', label: 'Height', scale: 100, unit: '%', decimals: 1, min: 0.02, max: 1, perPixel: 0.25, fallback: 0.1, title: 'Of the card' },
+            { key: 'opacity', label: 'Opacity', scale: 100, unit: '%', decimals: 0, min: 0, max: 1, perPixel: 0.5, fallback: 1 },
+        ];
+
         const ALIGN_LABEL = { left: 'Left', center: 'Centre', right: 'Right' };
         const VALIGN_LABEL = { top: 'Top', middle: 'Middle', bottom: 'Bottom' };
 
@@ -894,11 +1035,7 @@
             box.innerHTML = `
                 <label class="text-value"><span>Text</span><textarea class="facade-input" rows="2" spellcheck="false" data-x="value"></textarea></label>
                 <div class="text-vars"><span>Insert</span>${CardText.VARIABLES.map((v, i) => `<button type="button" class="facade-btn fx-sm fx-grey" data-var="${i}" title="${escapeHtml(v.title)}">${escapeHtml(v.label)}</button>`).join('')}</div>
-                <label class="range-row"><span>Font size</span><input type="range" class="facade-range" data-x="size" min="0.015" max="0.2" step="0.001"><output data-v="size"></output></label>
-                <label class="range-row"><span>Width</span><input type="range" class="facade-range" data-x="width" min="0.05" max="1" step="0.01"><output data-v="width"></output></label>
-                <label class="range-row"><span>Height</span><input type="range" class="facade-range" data-x="height" min="0.02" max="1" step="0.005"><output data-v="height"></output></label>
-                <label class="range-row"><span>Opacity</span><input type="range" class="facade-range" data-x="opacity" min="0" max="1" step="0.01"><output data-v="opacity"></output></label>
-                <label class="range-row"><span>Turn</span><input type="range" class="facade-range" data-x="rotation" min="-180" max="180" step="1"><output data-v="rotation"></output></label>
+                <div class="scrub-grid text-scrubs"></div>
                 <div class="style-row">
                     <div class="align-buttons">${CardText.ALIGNS.map((a) => `<button type="button" class="facade-btn fx-sm" data-align="${a}">${ALIGN_LABEL[a]}</button>`).join('')}</div>
                     <div class="align-buttons">${CardText.VALIGNS.map((a) => `<button type="button" class="facade-btn fx-sm" data-valign="${a}" title="Where the lines sit in the text box">${VALIGN_LABEL[a]}</button>`).join('')}</div>
@@ -929,11 +1066,19 @@
                 t.value = value.value;
                 edited();
             });
-            for (const key of ['size', 'width', 'height', 'opacity', 'rotation']) box.querySelector(`[data-x="${key}"]`).addEventListener('input', (e) => {
-                t[key] = +e.target.value;
-                if (key === 'height') t.height = Math.min(t.height, 1 - t.y);
-                if (key === 'width') t.width = Math.min(t.width, 1);
-                edited(key === 'opacity' ? 'text' : 'transform');
+            const grid = box.querySelector('.text-scrubs');
+            box._scrubs = TEXT_FIELDS.map((f) => {
+                const field = scrubField(f.label, {
+                    ...f,
+                    value: () => t[f.key] ?? f.fallback,
+                    set: (v) => {
+                        t[f.key] = v;
+                        if (f.key === 'height' || f.key === 'y') t.height = Math.max(0.02, Math.min(t.height, 1 - t.y));
+                        edited(f.key === 'opacity' ? 'text' : 'transform');
+                    },
+                });
+                grid.appendChild(field.el);
+                return field;
             });
             for (const b of box.querySelectorAll('[data-align]')) b.addEventListener('click', () => { t.align = b.dataset.align; edited(); });
             for (const b of box.querySelectorAll('[data-valign]')) b.addEventListener('click', () => { t.valign = b.dataset.valign; edited(); });
@@ -964,16 +1109,7 @@
 
         function showText(box, layer) {
             const t = layer.text;
-            for (const key of ['size', 'width', 'height', 'opacity', 'rotation']) {
-                const input = box.querySelector(`[data-x="${key}"]`);
-                input.value = t[key] ?? (key === 'rotation' ? 0 : 1);
-                if (window.setRange) window.setRange(input);
-            }
-            box.querySelector('[data-v="size"]').textContent = Math.round(CardText.layout(t, CARD_H).size) + ' px';
-            box.querySelector('[data-v="width"]').textContent = Math.round(t.width * 100) + ' %';
-            box.querySelector('[data-v="height"]').textContent = Math.round(t.height * 100) + ' %';
-            box.querySelector('[data-v="opacity"]').textContent = Math.round((t.opacity ?? 1) * 100) + ' %';
-            box.querySelector('[data-v="rotation"]').textContent = Math.round(t.rotation || 0) + '°';
+            for (const field of box._scrubs || []) field.update();
             box.querySelector('[data-x="uppercase"]').checked = !!t.uppercase;
             box.querySelector('[data-x="autoSize"]').checked = !!t.autoSize;
             const rarity = t.color === 'rarity';
@@ -1007,6 +1143,20 @@
                 </div>
                 <div class="guide-actions media-actions"><button type="button" class="facade-btn fx-sm fx-grey media-clear">Remove</button></div>
                 <input type="file" class="media-file" hidden>`;
+            let valueField = null;
+            if (map in MATERIAL_DEFAULT) {
+                valueField = scrubField('Value', {
+                    decimals: 2, min: 0, max: 1, perPixel: 0.005,
+                    title: `This layer's ${MAP_LABEL[map].toLowerCase()} without a texture (double-click the grip or clear the number for the default)`,
+                    value: () => (typeof layer[map] === 'number' ? layer[map] : MATERIAL_DEFAULT[map]),
+                    set: (v) => { layer[map] = v; changed('media', layer); },
+                    clear: () => { layer[map] = null; changed('media', layer); },
+                    isDefault: () => typeof layer[map] !== 'number',
+                    disabled: () => !!layer.maps[map],
+                });
+                valueField.el.classList.add('media-value');
+                box.querySelector('.drop .media-name').after(valueField.el);
+            }
             const zone = box.querySelector('.drop'), input = box.querySelector('.media-file');
             const preview = box.querySelector('.media-thumb');
             const pick = (kind) => {
@@ -1028,6 +1178,7 @@
                 const anim = box.querySelector('.media-anim');
                 anim.hidden = !media || !media.animated;
                 box.querySelector('.media-actions').hidden = !media || media.animated;
+                if (valueField) valueField.update();
                 if (anim.hidden) return;
                 box.querySelector('.media-fps').value = media.fps;
                 const split = box.querySelector('.media-split');
@@ -1059,7 +1210,7 @@
                 changed('media', layer);
             };
 
-            zone.addEventListener('click', (e) => { if (!e.target.closest('button')) pick(picker.kind); });
+            zone.addEventListener('click', (e) => { if (!e.target.closest('button, .scrub')) pick(picker.kind); });
             input.addEventListener('change', () => { set(input.dataset.kind, [...input.files]); input.value = ''; });
             zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('is-over'); });
             zone.addEventListener('dragleave', () => zone.classList.remove('is-over'));

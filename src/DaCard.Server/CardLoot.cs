@@ -1,4 +1,5 @@
 using System.Reflection;
+using DaCard.Server.Storage;
 using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Reflection.Patching;
@@ -17,27 +18,24 @@ namespace DaCard.Server;
 // containers that get a card of that rarity); a hit adds a random card of the rarity (its foil version at the foil chance)
 // into a free cell, if there is one.
 [Injectable(InjectionType.Singleton)]
-public class CardLoot(ISptLogger<CardLoot> logger, ItemHelper itemHelper, InventoryHelper inventoryHelper, CardStickers stickers)
+public class CardLoot(ISptLogger<CardLoot> logger, ItemHelper itemHelper, InventoryHelper inventoryHelper, CardStickers stickers, CardStore store, CardIndex index)
 {
     private static CardLoot? _instance;
     private static bool _patched;
 
     private HashSet<MongoId> _containers = new();
-    private List<(string Rarity, double Percent, List<(string Tpl, string? FoilTpl)> Cards)> _rarities = new();
+    private List<(string Rarity, double Percent)> _rarities = new();
     private double _foilShare;
     private List<(string Tpl, double Percent)> _packs = new();
 
-    public void Configure(DaCardConfig config, CardManifest manifest, double foilShare, IEnumerable<(string Tpl, double Percent)> packs)
+    public void Configure(DaCardConfig config, IReadOnlyList<CreatedCard> cards, double foilShare, IEnumerable<(string Tpl, double Percent)> packs)
     {
         _packs = packs.Where(p => p.Percent > 0).ToList();
         _containers = config.Containers.Select(c => new MongoId(c)).ToHashSet();
         _foilShare = foilShare;
-        var foilOf = manifest.Cards.Where(c => c.Foil && c.BaseTpl != null).ToDictionary(c => c.BaseTpl!, c => c.Tpl);
         _rarities = CardCatalog.RarityOrder
-            .Select(r => (Rarity: r,
-                Percent: Math.Clamp(config.Rarities.GetValueOrDefault(r)?.LootPercent ?? 0, 0, 100),
-                Cards: manifest.Cards.Where(c => !c.Foil && c.Rarity == r).Select(c => (c.Tpl, foilOf.GetValueOrDefault(c.Tpl))).ToList()))
-            .Where(r => r.Percent > 0 && r.Cards.Count > 0)
+            .Select(r => (Rarity: r, Percent: Math.Clamp(config.Rarities.GetValueOrDefault(r)?.LootPercent ?? 0, 0, 100)))
+            .Where(r => r.Percent > 0 && cards.Any(c => c.Rarity == r.Rarity))
             .ToList();
 
         _instance = this;
@@ -101,12 +99,14 @@ public class CardLoot(ISptLogger<CardLoot> logger, ItemHelper itemHelper, Invent
                 return true;
             }
 
-            foreach (var (_, percent, cards) in _rarities)
+            foreach (var (rarity, percent) in _rarities)
             {
                 if (Random.Shared.NextDouble() * 100 >= percent)
                     continue;
-                var (tpl, foilTpl) = cards[Random.Shared.Next(cards.Count)];
-                if (!Put(foilTpl != null && Random.Shared.NextDouble() < _foilShare ? foilTpl : tpl))
+                var card = PickCard(rarity);
+                if (card == null)
+                    continue;
+                if (!Put(card.HasFoil && Random.Shared.NextDouble() < _foilShare ? card.FoilId : card.Id))
                     break;
                 added++;
             }
@@ -127,6 +127,19 @@ public class CardLoot(ISptLogger<CardLoot> logger, ItemHelper itemHelper, Invent
         }
 
         logger.Info($"[DaCard] {locationId}: {added} card(s) and {packsAdded} booster pack(s) added to {filled} container(s)");
+    }
+
+    private CreatedCard? PickCard(string rarity)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var row = store.RandomCard(rarity);
+            if (row == null)
+                return null;
+            if (index.Find(row.Id) is { } created)
+                return created;
+        }
+        return null;
     }
 
     private void LogError(string message) => logger.Error(message);

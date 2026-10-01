@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.Models.Common;
@@ -14,18 +15,19 @@ namespace DaCard.Server;
 
 public enum RetiredMode
 {
-    Keep,
     Refund,
     Remove
 }
 
 [Injectable(InjectionType.Singleton)]
-public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, CustomItemService customItemService, LocaleTable locales, RagfairConfig ragfairConfig)
+public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, CustomItemService customItemService, LocaleTable locales, RagfairConfig ragfairConfig,
+    TemplateTable templates, TradersTable traders)
 {
     public const string Card = "card", Foil = "foil", Binder = "binder", Pack = "pack", Sticker = "sticker";
 
     public static readonly string Folder = Path.Combine("user", "dacard");
     private static readonly string FilePath = Path.Combine(Folder, "ledger.json");
+    private static readonly string ProfilesFolder = Path.Combine("user", "profiles");
 
     private LedgerFile _file = new();
     private readonly HashSet<string> _seen = new(StringComparer.OrdinalIgnoreCase);
@@ -61,7 +63,7 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
         }
         catch (Exception e)
         {
-            logger.Error($"[DaCard] {Path.GetFullPath(FilePath)} can't be read ({e.Message}). Deleted cards, binders and booster packs can't be kept or " +
+            logger.Error($"[DaCard] {Path.GetFullPath(FilePath)} can't be read ({e.Message}). Deleted cards, binders and booster packs can't be " +
                          "cleaned up from profiles until it's fixed or deleted. Nothing in the profiles is changed.");
         }
         return Ready;
@@ -92,9 +94,9 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
 
     public bool IsSticker(MongoId tpl) => Get(tpl)?.Kind == Sticker;
 
-    public bool IsRemovable(MongoId tpl) => _goneStickers.Contains(tpl) || (Mode != RetiredMode.Keep && _removable.Contains(tpl));
+    public bool IsRemovable(MongoId tpl) => _goneStickers.Contains(tpl) || _removable.Contains(tpl);
 
-    public void RetireMissing(string modPath, string? mode, bool keepAll = false)
+    public void RetireMissing(string modPath, string? mode, Func<string, string, bool> exists)
     {
         Mode = ParseMode(mode);
         if (!Ready)
@@ -103,8 +105,12 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
         var gone = new List<LedgerItem>();
         var broken = new List<LedgerItem>();
         var slotLabels = new Dictionary<string, string>();
-        foreach (var (tpl, item) in _file.Items.Where(i => !_seen.Contains(i.Key)))
+        var missing = _file.Items.Where(i => !_seen.Contains(i.Key)).ToList();
+        var held = missing.Count > 0 ? HeldTemplates() : null;
+        foreach (var (tpl, item) in missing)
         {
+            if (held != null && !held.Contains(tpl))
+                continue;
             if (!MongoId.IsValidMongoId(tpl) || !CreatePlaceholder(tpl, item, modPath))
                 continue;
             Placeholders.Add(tpl);
@@ -114,13 +120,13 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
 
             if (item.Kind == Sticker)
             {
-                if (keepAll || item.Owner == null || _seen.Contains(item.Owner) || !OwnerExists(item, modPath))
+                if (item.Owner == null || _seen.Contains(item.Owner) || !OwnerExists(item, exists))
                     _goneStickers.Add(new MongoId(tpl));
                 else
                     broken.Add(item);
                 continue;
             }
-            if (keepAll || SourceExists(item, modPath))
+            if (exists(item.Kind, tpl))
             {
                 broken.Add(item);
                 continue;
@@ -132,14 +138,11 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
 
         if (broken.Count > 0)
             logger.Warning($"[DaCard] {broken.Count} item(s) didn't load but their files are still there: {Describe(broken)}. " +
-                           "Copies in profiles are kept (as retired items) until they load again.");
+                           "Copies in profiles are kept until they load again.");
         if (gone.Count > 0)
-            logger.Warning($"[DaCard] {gone.Count} item(s) no longer exist (their files are gone): {Describe(gone)}. " + Mode switch
-            {
-                RetiredMode.Keep => "Copies in profiles stay, as retired items Geek still buys (config.json \"retiredItems\": \"keep\").",
-                RetiredMode.Refund => "Copies in profiles are removed and paid back in roubles (config.json \"retiredItems\": \"refund\").",
-                _ => "Copies in profiles are removed (config.json \"retiredItems\": \"remove\")."
-            });
+            logger.Warning($"[DaCard] {gone.Count} item(s) no longer exist: {Describe(gone)}. " + (Mode == RetiredMode.Refund
+                ? "Copies in profiles are removed and paid back in roubles."
+                : "Copies in profiles are removed."));
         Save();
     }
 
@@ -149,8 +152,63 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
             return RetiredMode.Remove;
         if (Enum.TryParse<RetiredMode>(mode.Trim(), true, out var parsed) && Enum.IsDefined(parsed))
             return parsed;
-        logger.Warning($"[DaCard] config.json \"retiredItems\": \"{mode}\" is not keep, refund or remove; using keep.");
-        return RetiredMode.Keep;
+        logger.Warning($"[DaCard] \"retiredItems\": \"{mode}\" is not refund or remove; using refund.");
+        return RetiredMode.Refund;
+    }
+
+    public void DropUnheld()
+    {
+        if (Placeholders.Count == 0)
+            return;
+        var held = HeldTemplates();
+        if (held == null)
+            return;
+        var dropped = Placeholders.Where(t => !held.Contains(t)).Select(t => new MongoId(t)).ToHashSet();
+        if (dropped.Count == 0)
+            return;
+        foreach (var tpl in dropped)
+        {
+            templates.Items.Remove(tpl);
+            templates.Prices.Remove(tpl);
+            ragfairConfig.Dynamic.Blacklist.Custom.Remove(tpl);
+        }
+        templates.Handbook.Items.RemoveAll(h => dropped.Contains(h.Id));
+        foreach (var (_, trader) in traders)
+        {
+            trader.Base.ItemsBuy?.IdList.ExceptWith(dropped);
+            trader.Base.ItemsBuyProhibited?.IdList.ExceptWith(dropped);
+        }
+        Placeholders.RemoveAll(t => dropped.Contains(new MongoId(t)));
+        logger.Info($"[DaCard] Removed {dropped.Count} deleted item(s) from the database; no profile has them any more.");
+    }
+
+    private HashSet<string>? HeldTemplates()
+    {
+        var held = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!Directory.Exists(ProfilesFolder))
+            return held;
+        foreach (var file in Directory.EnumerateFiles(ProfilesFolder, "*.json"))
+        {
+            try
+            {
+                var bytes = File.ReadAllBytes(file);
+                var json = bytes.AsSpan().StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]) ? bytes.AsSpan(3) : bytes.AsSpan();
+                var reader = new Utf8JsonReader(json, new JsonReaderOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+                while (reader.Read())
+                {
+                    if (reader.TokenType != JsonTokenType.PropertyName || !reader.ValueTextEquals("_tpl"))
+                        continue;
+                    if (reader.Read() && reader.TokenType == JsonTokenType.String && reader.GetString() is { } tpl)
+                        held.Add(tpl);
+                }
+            }
+            catch (Exception e)
+            {
+                logger.Warning($"[DaCard] Could not read {Path.GetFullPath(file)} ({e.Message}); every deleted item stays in the database for now.");
+                return null;
+            }
+        }
+        return held;
     }
 
     private static string Describe(List<LedgerItem> items)
@@ -159,39 +217,8 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
         return names.Count <= 10 ? string.Join(", ", names) : string.Join(", ", names.Take(10)) + $" and {names.Count - 10} more";
     }
 
-    private static IEnumerable<string> Roots(string modPath)
-    {
-        var data = Path.Combine(modPath, "data");
-        return Addons.Dirs(data).Prepend(data);
-    }
-
-    private static bool SourceExists(LedgerItem item, string modPath)
-    {
-        switch (item.Kind)
-        {
-            case Card:
-            case Foil:
-                var cut = item.Key.IndexOf('/');
-                var collection = cut < 0 ? CardCatalog.DefaultCollection : item.Key[..cut];
-                var name = cut < 0 ? item.Key : item.Key[(cut + 1)..];
-                return Roots(modPath).Any(root => CardCatalog.RarityOrder.Any(r => Directory.Exists(Path.Combine(root, Addons.Cards, collection, r, name))));
-            case Binder:
-                return Roots(modPath).Any(root => Directory.Exists(Path.Combine(root, Addons.Cards, item.Key)));
-            case Pack:
-                return Roots(modPath).Any(root => Directory.Exists(Path.Combine(root, Addons.Packs, item.Key)));
-            default:
-                return true;
-        }
-    }
-
-    private static bool OwnerExists(LedgerItem item, string modPath)
-    {
-        var cut = item.Key.LastIndexOf(':');
-        var owner = cut < 0 ? item.Key : item.Key[..cut];
-        if (owner.StartsWith("collection:"))
-            return SourceExists(new LedgerItem { Kind = Binder, Key = owner["collection:".Length..] }, modPath);
-        return !owner.StartsWith("card:") || SourceExists(new LedgerItem { Kind = Card, Key = owner["card:".Length..] }, modPath);
-    }
+    private static bool OwnerExists(LedgerItem item, Func<string, string, bool> exists) =>
+        exists(Card, item.Owner!) || exists(Binder, item.Owner!);
 
     private bool CreatePlaceholder(string tpl, LedgerItem item, string modPath)
     {
@@ -213,16 +240,16 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
             NewId = new MongoId(tpl),
             NewItemName = $"dacard_retired_{item.Kind}_{item.Key.ToLowerInvariant().Replace('/', '_')}",
             HandbookPriceRoubles = price,
-            HandbookParentId = binder ? CollectionBinders.HandbookStorageContainers : DaCardMod.HandbookValuables,
+            HandbookParentId = DaCardHandbook.CategoryOf(item.Kind),
             AddToHandbook = true,
             AddToFleaPriceDb = false,
             Locales = new Dictionary<string, LocaleDetails>
             {
                 ["en"] = new()
                 {
-                    Name = $"{item.Name} (retired)",
+                    Name = $"{item.Name} (unavailable)",
                     ShortName = item.Name,
-                    Description = $"This {what} was removed from DaCard. Geek still buys it."
+                    Description = $"This {what} didn't load. It comes back once DaCard loads it again."
                 }
             },
             OverrideProperties = binder
@@ -281,7 +308,7 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
         if (result.Success)
             ragfairConfig.Dynamic.Blacklist.Custom.Add(new MongoId(tpl));
         else
-            logger.Error($"[DaCard] Could not keep the removed {what} '{item.Name}' ({tpl}) as a retired item: {string.Join("; ", result.Errors ?? [])}. " +
+            logger.Error($"[DaCard] Could not add the placeholder for the {what} '{item.Name}' ({tpl}): {string.Join("; ", result.Errors ?? [])}. " +
                          "Profiles holding it won't load, and DaCard won't touch it.");
         return result.Success;
     }

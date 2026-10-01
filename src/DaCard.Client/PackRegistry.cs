@@ -13,7 +13,7 @@ namespace DaCard.Client
         private static readonly Dictionary<Material, Material> CopyToBase = new Dictionary<Material, Material>();
         private static readonly HashSet<int> Models = new HashSet<int>();
 
-        public static void Load(CardManifest manifest)
+        public static void Load(ClientIndex manifest)
         {
             foreach (var pack in manifest.Packs ?? new List<PackManifestEntry>())
             {

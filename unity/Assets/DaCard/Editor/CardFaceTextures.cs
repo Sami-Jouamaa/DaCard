@@ -73,7 +73,7 @@ namespace DaCard.Editor
             var material = CardBuildSettings.LoadOrCreate().ValidTypes().Select(t => t.material).FirstOrDefault();
             if (material == null)
                 return;
-            var dirs = new[] { Path.Combine(CardPaths.RepoRoot, "src", "DaCard.Server", "creator"), CardBundleBuilder.GameModDir() is { } mod ? Path.Combine(mod, "creator") : null };
+            var dirs = new[] { Path.Combine(CardPaths.RepoRoot, "src", "DaCard.Dashboard", "web", "creator"), CardBundleBuilder.GameModDir() is { } mod ? Path.Combine(mod, "dashboard", "web", "creator") : null };
             foreach (var (property, file) in new[] { (BackProperty, "card_back.png") })
             {
                 var texture = material.HasProperty(property) ? material.GetTexture(property) : null;

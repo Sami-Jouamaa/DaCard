@@ -33,14 +33,17 @@ namespace DaCard.Client
         private static string _overlayProperty = "_CARD_FRONT_BORDER";
         private static List<TextureSlot> _slots = new List<TextureSlot>();
 
-        public static int Count => Cards.Count;
+        private static readonly HashSet<string> CardTpls = new HashSet<string>();
+        private static int _baseCards;
+
+        public static int Count => _baseCards;
 
         public static void Load()
         {
-            CardManifest manifest;
+            ClientIndex index;
             try
             {
-                manifest = JsonConvert.DeserializeObject<CardManifest>(RequestHandler.GetJson("/dacard/manifest"));
+                index = JsonConvert.DeserializeObject<ClientIndex>(RequestHandler.GetJson("/dacard/index"));
             }
             catch (Exception e)
             {
@@ -48,38 +51,42 @@ namespace DaCard.Client
                 return;
             }
 
-            if (manifest?.Cards == null)
+            if (index?.Cards == null)
                 return;
 
-            if (!string.IsNullOrEmpty(manifest.BackProperty))
-                _backProperty = manifest.BackProperty;
-            if (!string.IsNullOrEmpty(manifest.OverlayProperty))
-                _overlayProperty = manifest.OverlayProperty;
-            _slots = manifest.Slots ?? new List<TextureSlot>();
-            foreach (var card in manifest.Cards)
-            {
-                Cards[card.Tpl] = card;
-                foreach (var layer in (card.Front ?? new List<CardLayer>()).Concat(card.Back ?? new List<CardLayer>()))
-                    if (layer?.Sticker != null && !StickerArt.ContainsKey(layer.Sticker))
-                        StickerArt[layer.Sticker] = layer.Textures != null && layer.Textures.TryGetValue(LayerMaps.Albedo, out var art) ? art : null;
-            }
-            foreach (var binder in manifest.Binders ?? new List<BinderManifestEntry>())
+            if (!string.IsNullOrEmpty(index.BackProperty))
+                _backProperty = index.BackProperty;
+            if (!string.IsNullOrEmpty(index.OverlayProperty))
+                _overlayProperty = index.OverlayProperty;
+            _slots = index.Slots ?? new List<TextureSlot>();
+            foreach (var tpl in index.Cards)
+                CardTpls.Add(tpl);
+            _baseCards = index.Cards.Count;
+            foreach (var foil in (index.Foils ?? new Dictionary<string, string>()).Keys)
+                CardTpls.Add(foil);
+            foreach (var pair in index.Stickers ?? new Dictionary<string, string>())
+                StickerArt[pair.Key] = pair.Value;
+            foreach (var binder in index.Binders ?? new List<BinderManifestEntry>())
                 Binders[binder.Tpl] = binder;
-            PackRegistry.Load(manifest);
-            if (manifest.Cards.Any(c => !string.IsNullOrEmpty(c.Text?.Name?.Font) || !string.IsNullOrEmpty(c.Text?.Description?.Font)
-                                        || (c.Front ?? new List<CardLayer>()).Concat(c.Back ?? new List<CardLayer>()).Any(l => !string.IsNullOrEmpty(l?.Text?.Font))))
-                CardFonts.Prefetch();
+            PackRegistry.Load(index);
 
-            var layers = manifest.Cards.SelectMany(c => (c.Front ?? new List<CardLayer>()).Concat(c.Back ?? new List<CardLayer>()));
-            var urls = manifest.Cards.SelectMany(c => c.Textures.Values)
-                .Concat(layers.SelectMany(l => l?.Textures?.Values ?? Enumerable.Empty<string>()))
-                .Concat(Binders.Values.SelectMany(b => (b.Stickers ?? new List<BinderSticker>()).Select(s => s?.Image)))
-                .Concat((manifest.Packs ?? new List<PackManifestEntry>()).SelectMany(p => p?.Textures?.Values ?? Enumerable.Empty<string>()))
+            var urls = Binders.Values.SelectMany(b => (b.Stickers ?? new List<BinderSticker>()).Select(s => s?.Image))
+                .Concat((index.Packs ?? new List<PackManifestEntry>()).SelectMany(p => p?.Textures?.Values ?? Enumerable.Empty<string>()))
+                .Concat(StickerArt.Values)
                 .Where(u => u != null).Distinct().ToList();
+            Prefetch(urls);
+        }
+
+        private static void Prefetch(List<string> urls)
+        {
+            if (urls.Count == 0)
+                return;
             Task.Run(async () =>
             {
                 foreach (var url in urls)
                 {
+                    if (ImageBytes.ContainsKey(url))
+                        continue;
                     try
                     {
                         ImageBytes.TryAdd(url, await RequestHandler.GetDataAsync(url));
@@ -94,9 +101,26 @@ namespace DaCard.Client
 
         public static bool IsLinear(string property) => _slots.FirstOrDefault(s => s.Property == property)?.Linear ?? false;
 
-        public static bool IsCard(string templateId) => templateId != null && Cards.ContainsKey(templateId);
+        public static bool IsCard(string templateId) => templateId != null && CardTpls.Contains(templateId);
 
-        public static CardManifestEntry Card(string templateId) => templateId != null && Cards.TryGetValue(templateId, out var card) ? card : null;
+        public static CardManifestEntry Card(string templateId)
+        {
+            if (!IsCard(templateId))
+                return null;
+            if (Cards.TryGetValue(templateId, out var cached))
+                return cached;
+            CardManifestEntry card = null;
+            try
+            {
+                card = JsonConvert.DeserializeObject<CardManifestEntry>(RequestHandler.GetJson("/dacard/card/" + templateId));
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"Could not get card {templateId} from the server: {e.Message}");
+            }
+            Cards[templateId] = card;
+            return card;
+        }
 
         public static bool IsBinder(string templateId) => templateId != null && Binders.ContainsKey(templateId);
 
@@ -216,7 +240,8 @@ namespace DaCard.Client
 
         public static void Apply(GameObject model, string templateId, string cardName, string itemId, ICollection<string> stickers)
         {
-            if (!Cards.TryGetValue(templateId, out var card))
+            var card = Card(templateId);
+            if (card == null)
                 return;
 
             CardModels.Add(model.GetInstanceID());

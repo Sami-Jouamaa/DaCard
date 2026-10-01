@@ -39,7 +39,9 @@ public class RetiredItemCleanup(
         public readonly Dictionary<string, int> Removed = new();
         public readonly List<List<Item>> Moved = new();
         public double Refund;
-        public bool Changed => Removed.Count > 0 || Moved.Count > 0;
+        public int Presets;
+        public bool Tidied;
+        public bool Changed => Removed.Count > 0 || Moved.Count > 0 || Presets > 0 || Tidied;
     }
 
     private Dictionary<MongoId, HashSet<string>> _slots = new();
@@ -57,7 +59,7 @@ public class RetiredItemCleanup(
         {
             if (profile.ProfileInfo?.InvalidOrUnloadableProfile == true || profile.CharacterData?.PmcData == null)
                 continue;
-            if (!ItemLists(profile).Any(NeedsCleaning))
+            if (!ItemLists(profile).Any(NeedsCleaning) && !NeedsStripping(profile))
                 continue;
 
             var who = profile.ProfileInfo?.Username ?? sessionId.ToString();
@@ -77,6 +79,7 @@ public class RetiredItemCleanup(
                 await saveServer.LoadProfileAsync(sessionId, cancellationToken);
             }
         }
+        ledger.DropUnheld();
     }
 
     internal static IEnumerable<List<Item>> ItemLists(SptProfile profile)
@@ -103,6 +106,61 @@ public class RetiredItemCleanup(
         foreach (var production in (IEnumerable<Production?>?)pmc?.Hideout?.Production?.Values ?? [])
             if (production?.Products != null)
                 yield return production.Products;
+    }
+
+    private static IEnumerable<List<Item>> PresetLists(SptProfile profile)
+    {
+        foreach (var build in profile.UserBuildData?.EquipmentBuilds ?? [])
+            yield return build.Items;
+        foreach (var build in profile.UserBuildData?.WeaponBuilds ?? [])
+            if (build.Items != null)
+                yield return build.Items;
+        foreach (var reward in RepeatableRewards(profile).SelectMany(r => r))
+            if (reward.Items != null)
+                yield return reward.Items;
+    }
+
+    private static IEnumerable<List<Reward>> RepeatableRewards(SptProfile profile)
+    {
+        foreach (var repeatable in profile.CharacterData?.PmcData?.RepeatableQuests ?? [])
+        foreach (var quest in repeatable.ActiveQuests ?? [])
+        foreach (var rewards in (IEnumerable<List<Reward>>?)quest.Rewards?.Values ?? [])
+            yield return rewards;
+    }
+
+    private static IEnumerable<PmcData> Characters(SptProfile profile)
+    {
+        if (profile.CharacterData?.PmcData is { } pmc)
+            yield return pmc;
+        if (profile.CharacterData?.ScavData is { } scav)
+            yield return scav;
+    }
+
+    private bool NeedsStripping(SptProfile profile) =>
+        PresetLists(profile).Any(items => items.Any(i => ledger.IsRemovable(i.Template)))
+        || Characters(profile).Any(c => (c.Encyclopedia?.Keys.Any(ledger.IsRemovable) ?? false) || (c.WishList?.Keys.Any(ledger.IsRemovable) ?? false));
+
+    private HashSet<MongoId> Strip(List<Item> items)
+    {
+        var gone = items.Where(i => ledger.IsRemovable(i.Template)).Select(i => i.Id).ToHashSet();
+        if (gone.Count == 0)
+            return gone;
+        var children = items.Where(i => i.ParentId != null).ToLookup(i => i.ParentId!);
+        var queue = new Queue<MongoId>(gone);
+        while (queue.Count > 0)
+            foreach (var child in children[queue.Dequeue().ToString()])
+                if (gone.Add(child.Id))
+                    queue.Enqueue(child.Id);
+        items.RemoveAll(i => gone.Contains(i.Id));
+        return gone;
+    }
+
+    private bool Stripped(List<Item> items, MongoId root, Report report)
+    {
+        var gone = Strip(items);
+        if (gone.Count > 0)
+            report.Presets++;
+        return gone.Contains(root);
     }
 
     private bool NeedsCleaning(List<Item> items)
@@ -156,6 +214,22 @@ public class RetiredItemCleanup(
         foreach (var production in (IEnumerable<Production?>?)pmc.Hideout?.Production?.Values ?? [])
             if (production?.Products != null)
                 Clean(production.Products, report);
+
+        if (profile.UserBuildData is { } builds)
+        {
+            builds.EquipmentBuilds?.RemoveAll(b => Stripped(b.Items, b.Root, report));
+            builds.WeaponBuilds?.RemoveAll(b => b.Items != null && Stripped(b.Items, b.Root, report));
+        }
+        foreach (var rewards in RepeatableRewards(profile).ToList())
+            report.Presets += rewards.RemoveAll(r => r.Items != null && Strip(r.Items).Count > 0);
+
+        foreach (var character in Characters(profile))
+        {
+            foreach (var tpl in character.Encyclopedia?.Keys.Where(ledger.IsRemovable).ToList() ?? [])
+                report.Tidied |= character.Encyclopedia!.Remove(tpl);
+            foreach (var tpl in character.WishList?.Keys.Where(ledger.IsRemovable).ToList() ?? [])
+                report.Tidied |= character.WishList!.Remove(tpl);
+        }
 
         return report;
     }
@@ -280,6 +354,10 @@ public class RetiredItemCleanup(
         }
         if (report.Moved.Count > 0)
             parts.Add($"{report.Moved.Count} item(s) that were in a deleted binder or binder pocket sent back by mail");
+        if (report.Presets > 0)
+            parts.Add($"cleared from {report.Presets} preset(s) or quest reward(s)");
+        if (report.Tidied)
+            parts.Add("cleared from the wishlist and encyclopedia");
         return string.Join("; ", parts);
     }
 

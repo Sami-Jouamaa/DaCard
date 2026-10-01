@@ -4,16 +4,12 @@
     const RARITIES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'];
     const DEFAULT_WEIGHTS = { Common: 68, Uncommon: 22, Rare: 7, Epic: 2, Legendary: 1 };
     const DEFAULT_PRICE = 25000, DEFAULT_COUNT = 3, MAX_COUNT = 10, DEFAULT_LOOT = 0.5;
-    const DEFAULT_COLLECTION = '_Default';
-    const PACKS = 'packs', SKINS = 'skins';
-    const PACK_FILE = 'pack.json', SKIN_FILE = 'skin.json', THUMB_FILE = 'thumb.png';
+    const FALLBACK_SKIN = 'escape_from_tarkov';
     const MAPS = ['albedo', 'normal', 'metallic', 'roughness', 'ao'];
     const MAP_LABEL = { albedo: 'Albedo', normal: 'Normal map', metallic: 'Metallic', roughness: 'Roughness', ao: 'Ambient occlusion' };
     const MAP_NOTE = { albedo: 'The colours (required)', normal: 'OpenGL: green up', metallic: 'White = metal', roughness: 'White = rough, black = glossy', ao: 'Mixed AO' };
-    const MAP_FILE = /^(albedo|normal|metallic|roughness|ao)\.png$/i;
-    const LAYER_FILE = /^layer_[A-Za-z0-9]+(\.(metallic|roughness|normal|foil|normalmask|mask))?(\.mask)?\.png$/i;
-    const HASH_LAYER = /^(layer_[0-9a-f]{10})$/i;
-    const newLayerStem = () => 'layer_' + Array.from(crypto.getRandomValues(new Uint8Array(5)), (b) => b.toString(16).padStart(2, '0')).join('');
+    const HASH_LAYER = /^([0-9a-f]{12}|layer_[0-9a-f]{10})$/i;
+    const newLayerStem = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, '0')).join('');
     const LAYER_KEYS = ['art', 'normal', 'roughness', 'metallic', 'mask'];
     const LAYER_SUFFIX = { normal: '.normal', roughness: '.roughness', metallic: '.metallic', mask: '.mask' };
     const LAYER_MAP_LABEL = { art: 'Albedo', normal: 'Normal', roughness: 'Roughness', metallic: 'Metallic', mask: 'Mask' };
@@ -24,7 +20,7 @@
         image: { label: 'Image layer', title: 'Add a picture layer' },
         text: { label: 'Text layer', title: 'Add a text layer' },
     };
-    const FONT_FILE = /^layer_[A-Za-z0-9]+\.(ttf|otf)$/i;
+    const FONT_FILE = /^([0-9a-f]{12}|layer_[A-Za-z0-9]+)\.(ttf|otf)$/i;
     const textDefaults = () => ({ value: '${name}', color: '#FFFFFF', align: 'center', uppercase: false, lines: 1, font: null, fontName: '', face: null });
     const MAX_SIDE = 2048;
     const PREVIEW_SIZE = 1024, SAVE_SIZE = 2048;
@@ -63,7 +59,6 @@
     });
     const sizeOf = (img) => ({ w: img.naturalWidth || img.width, h: img.naturalHeight || img.height });
     const lower = (s) => String(s || '').trim().toLowerCase();
-    const collKey = (card) => lower(card.collection || DEFAULT_COLLECTION);
     const geo = () => (window.PackGL ? PackGL.geo() : null);
     const aspect = () => (geo() ? geo().aspect : 0.64);
     const roubles = (n) => `${Math.round(n).toLocaleString('en-US')} ₽`;
@@ -88,20 +83,11 @@
         return ps.template;
     }
 
-    async function fileAt(dir, path) {
-        const parts = path.split('/').filter(Boolean);
-        for (const part of parts.slice(0, -1)) {
-            dir = await app.getDir(dir, part);
-            if (!dir) return null;
-        }
-        return app.getFile(dir, parts[parts.length - 1]);
-    }
-
     async function templateFull(map) {
         if (!ps.templateFull[map]) {
             ps.templateFull[map] = (async () => {
                 const path = window.CC_PACK_MODEL && window.CC_PACK_MODEL.files && window.CC_PACK_MODEL.files[map];
-                const file = app.state.root && path ? await fileAt(app.state.root, path) : null;
+                const file = path ? await fetch(path).then((r) => (r.ok ? r.blob() : null)).catch(() => null) : null;
                 if (file) {
                     try { return await createImageBitmap(file); } catch { }
                 }
@@ -307,47 +293,27 @@
     }
 
     async function scan() {
-        ps.urls.forEach(URL.revokeObjectURL);
-        ps.urls = [];
-        const packs = [], skins = [];
-        for (const addon of app.state.data ? app.state.addons || [] : []) {
-            const pdir = await app.getDir(addon.dir, PACKS);
-            for await (const [folder, handle] of pdir ? pdir.entries() : []) {
-                if (handle.kind !== 'directory') continue;
-                const json = await app.getFile(handle, PACK_FILE);
-                if (!json) continue;
-                let data;
-                try { data = JSON.parse(await json.text()); } catch { data = { name: folder, _broken: true }; }
-                data.name = data.name || folder;
-                packs.push({ folder, dir: handle, parent: pdir, addon: addon.folder, data, thumb: await app.getFile(handle, THUMB_FILE) });
-            }
-            const sdir = await app.getDir(addon.dir, SKINS);
-            for await (const [folder, handle] of sdir ? sdir.entries() : []) {
-                if (handle.kind !== 'directory') continue;
-                const json = await app.getFile(handle, SKIN_FILE);
-                let data = {};
-                if (json) try { data = JSON.parse(await json.text()); } catch { data = {}; }
-                data.name = data.name || folder;
-                skins.push({ folder, dir: handle, parent: sdir, addon: addon.folder, data, maps: await mapsIn(handle), thumb: await app.getFile(handle, THUMB_FILE), images: {} });
-            }
+        const overview = app.state.data;
+        if (!overview) return;
+        const packDocs = await Promise.all((overview.packs || []).map((p) => DaApi.get(`/api/packs/${p.id}`).then((doc) => ({ p, doc })).catch(() => null)));
+        const skinDocs = await Promise.all((overview.skins || []).map((s) => DaApi.get(`/api/skins/${s.id}`).then((doc) => ({ s, doc })).catch(() => null)));
+        const packs = packDocs.filter(Boolean).map(({ p, doc }) => ({
+            id: p.id, folder: p.id, collectionId: doc.collectionId || null, dir: DaApi.folder(doc), doc, data: { ...doc.json, name: doc.json.name || p.name }, thumbUrl: p.thumb,
+        }));
+        const skins = [];
+        for (const entry of skinDocs.filter(Boolean)) {
+            const { s, doc } = entry;
+            const dir = DaApi.folder(doc);
+            skins.push({ id: s.id, folder: s.id, builtin: !!s.builtin, dir, doc, data: { ...doc.json, name: doc.json.name || s.name }, maps: await mapsIn(dir), thumbUrl: s.thumb, images: {} });
         }
         packs.sort((a, b) => a.data.name.localeCompare(b.data.name));
-        const ddir = app.state.data ? await app.defaultSkinsDir() : null;
-        for await (const [folder, handle] of ddir ? ddir.entries() : []) {
-            if (handle.kind !== 'directory') continue;
-            const json = await app.getFile(handle, SKIN_FILE);
-            let data = {};
-            if (json) try { data = JSON.parse(await json.text()); } catch { data = {}; }
-            data.name = data.name || folder;
-            skins.push({ folder, dir: handle, addon: null, data, maps: await mapsIn(handle), thumb: await app.getFile(handle, THUMB_FILE), images: {} });
-        }
-        skins.sort((a, b) => (!a.addon === !b.addon ? a.data.name.localeCompare(b.data.name) : a.addon ? 1 : -1));
+        skins.sort((a, b) => (a.builtin === b.builtin ? a.data.name.localeCompare(b.data.name) : a.builtin ? -1 : 1));
         ps.packs = packs;
         ps.skins = skins;
         app.state.packs = packs;
         app.state.skins = skins;
-        if (ps.edit && ps.edit.source && !packs.some((p) => p.addon === ps.edit.source.addon && p.folder === ps.edit.source.folder)) closePack();
-        if (window.CCAddons) window.CCAddons.render();
+        if (ps.edit && ps.edit.source && !packs.some((p) => p.id === ps.edit.source.id)) closePack();
+        if (window.CCCollections) window.CCCollections.render();
         const count = $('#packs-count');
         count.hidden = !app.state.data;
         count.textContent = packs.length;
@@ -366,10 +332,10 @@
             tile.className = 'coll-tile pack-tile';
             const pic = document.createElement('div');
             pic.className = 'pack-thumb';
-            if (pack.thumb) {
+            if (pack.thumbUrl) {
                 const img = document.createElement('img');
                 img.alt = '';
-                img.src = objectUrl(pack.thumb);
+                img.src = pack.thumbUrl;
                 pic.appendChild(img);
             } else {
                 templatePreview().then((t) => { const c = renderFront(t.albedo, 240); if (c) pic.appendChild(c); });
@@ -379,15 +345,13 @@
             tile.insertAdjacentHTML('beforeend', `
                 <span class="tile-name">${app.escapeHtml(d.name)}</span>
                 <span class="tile-coll">${d.cardCount || DEFAULT_COUNT} cards · ${roubles(d.price > 0 ? d.price : DEFAULT_PRICE)}</span>
-                <span class="tile-coll">${where} · ${poolOf(selectionOf(d)).length} card${poolOf(selectionOf(d)).length === 1 ? '' : 's'} in it</span>`);
+                <span class="tile-coll">${pack.collectionId ? app.escapeHtml(app.collName(pack.collectionId)) : 'Global'} · ${where} · ${poolOf(selectionOf(d), pack.collectionId).length} card${poolOf(selectionOf(d), pack.collectionId).length === 1 ? '' : 's'} in it</span>`);
             tile.addEventListener('click', () => openPack(pack));
             grid.appendChild(tile);
         }
         const empty = $('#pk-empty');
         empty.hidden = ps.packs.length > 0;
-        empty.innerHTML = !app.state.data ? 'Connect the mod folder to see your booster packs.'
-            : !app.state.data ? 'Connect the <b>Guro-DaCard</b> folder.'
-            : 'No booster packs yet. Make one with New booster pack.';
+        empty.textContent = !app.state.data ? 'Loading…' : 'No booster packs yet. Make one with New booster pack.';
     }
 
     function readWeights() {
@@ -517,20 +481,17 @@
     }
 
     async function saveOdds() {
-        if (!app.state.data) { app.toast.err('Connect the Guro-DaCard folder first', 'The chances are saved in its data/config.json.'); return; }
-        const file = await app.getFile(app.state.data, 'config.json');
-        let config;
-        try { config = JSON.parse(await file.text()); } catch (e) { app.toast.err('config.json could not be read', e.message); return; }
+        if (!app.state.data) return;
         const weights = normalised(ps.weights);
-        config.packs = Object.assign(config.packs || {}, {
+        const packs = Object.assign({}, (app.state.config && app.state.config.packs) || {}, {
             rarityWeights: Object.fromEntries(RARITIES.map((r) => [r, round(weights[r], 3)])),
         });
         const button = $('#pk-odds-save');
         button.disabled = true;
         try {
-            await app.writeFile(app.state.data, 'config.json', new Blob([app.prettyJson(config) + '\n'], { type: 'application/json' }));
+            await DaApi.put('/api/settings', { packs });
             await app.readConfig();
-            setStatus($('#pk-odds-status'), 'Saved to data/config.json', true);
+            setStatus($('#pk-odds-status'), 'Saved', true);
             app.toast.ok('Pack chances saved', 'Restart the SPT server to use them.');
         } catch (e) {
             setStatus($('#pk-odds-status'), 'Not saved: ' + e.message, false);
@@ -550,28 +511,27 @@
         };
     }
 
-    const lockedAddon = () => (ps.edit && (ps.edit.source || ps.edit.template) ? (ps.edit.source || ps.edit.template).addon : null);
-    const editAddon = () => lockedAddon() || $('#pk-addon').value;
+    const editCollection = () => {
+        const e = ps.edit;
+        if (e && e.template) return null;
+        return $('#pk-collection').value || null;
+    };
 
-    function poolOf(sel) {
+    function poolOf(sel, collectionId = editCollection()) {
         const filter = sel.rarities.size > 0 && sel.rarities.size < RARITIES.length ? sel.rarities : null;
-        const addon = editAddon();
-        const chosen = (c) => (sel.all && c.addon === addon)
-            || (c.collection ? sel.collections.has(lower(c.collection)) : sel.collections.has(lower(DEFAULT_COLLECTION)) && c.addon === addon)
+        const chosen = (c) => (collectionId ? lower(c.collection) === lower(collectionId) : sel.all)
+            || (!collectionId && sel.collections.has(lower(c.collection)))
             || sel.cards.has(lower(c.key));
         return (app.state.list || []).filter((c) => chosen(c) && (!filter || filter.has(c.rarity)));
     }
 
-    function fillAddons() {
-        const sel = $('#pk-addon');
-        const addons = app.state.addons || [];
+    function fillCollections() {
+        const sel = $('#pk-collection');
         const value = sel.value;
-        sel.innerHTML = addons.length
-            ? addons.map((a) => `<option value="${app.escapeHtml(a.folder)}">${app.escapeHtml(a.name)}</option>`).join('')
-            : '<option value="">My Addon (new)</option>';
-        if ([...sel.options].some((o) => o.value === value)) sel.value = value;
-        if (lockedAddon()) sel.value = lockedAddon();
-        sel.disabled = !!lockedAddon();
+        const list = [...(app.state.collections || [])].sort((a, b) => a.data.name.localeCompare(b.data.name));
+        sel.innerHTML = list.map((c) => `<option value="${app.escapeHtml(c.folder)}">${app.escapeHtml(c.data.name)}</option>`).join('')
+            + '<option value="">Global (any collection)</option>';
+        sel.value = [...sel.options].some((o) => o.value === value) ? value : (list[0] ? list[0].folder : '');
         app.syncSelect(sel);
     }
 
@@ -579,16 +539,18 @@
         const e = ps.edit;
         if (!e) return;
         const sel = e.cards;
+        const own = editCollection();
         $('#pk-all').checked = sel.all;
-        $('#pk-colls-field').classList.toggle('is-off', sel.all);
-        $('#pk-singles-field').classList.toggle('is-off', sel.all);
+        $('#pk-all-row').hidden = !!own;
+        $('#pk-colls-field').hidden = !!own;
+        $('#pk-colls-field').classList.toggle('is-off', !own && sel.all);
+        $('#pk-singles-field').classList.toggle('is-off', !own && sel.all);
 
         const colls = $('#pk-colls');
         colls.innerHTML = '';
-        const options = [...app.state.collections.map((c) => ({ key: lower(c.folder), folder: c.folder, name: c.data.name })),
-            { key: lower(DEFAULT_COLLECTION), folder: DEFAULT_COLLECTION, name: 'No collection' }];
+        const options = app.state.collections.map((c) => ({ key: lower(c.folder), folder: c.folder, name: c.data.name }));
         for (const o of options) {
-            const count = (app.state.list || []).filter((c) => collKey(c) === o.key && (c.collection || c.addon === editAddon())).length;
+            const count = (app.state.list || []).filter((c) => lower(c.collection) === o.key).length;
             const chip = document.createElement('button');
             chip.type = 'button';
             chip.className = 'chip-toggle';
@@ -612,9 +574,8 @@
             chip.className = 'coll-card';
             if (card) {
                 app.paintRarity(chip, card.rarity);
-                let src = '';
-                if (card.thumb || card.art) src = objectUrl(card.thumb || card.art, ps.editUrls);
-                chip.innerHTML = `<img alt="" ${src ? `src="${src}"` : ''}><span>${app.escapeHtml(card.data.name || card.folder)}</span>`;
+                const src = card.thumbUrl || '';
+                chip.innerHTML = `<img alt="" ${src ? `src="${src}"` : ''}><span>${app.escapeHtml(card.data.name || card.id)}</span>`;
             } else {
                 chip.innerHTML = `<span>${app.escapeHtml(e.cardKeys.get(key) || key)} (missing)</span>`;
             }
@@ -632,7 +593,7 @@
             const pick = document.createElement('select');
             pick.className = 'facade-select';
             pick.innerHTML = '<option value="">Add a card…</option>' + others.map((c) =>
-                `<option value="${app.escapeHtml(c.key)}">${app.escapeHtml(c.data.name || c.folder)} (${c.rarity}, ${app.escapeHtml(app.collName(c.collection))})</option>`).join('');
+                `<option value="${app.escapeHtml(c.key)}">${app.escapeHtml(c.data.name || c.id)} (${c.rarity}, ${app.escapeHtml(app.collName(c.collection))})</option>`).join('');
             pick.addEventListener('change', () => {
                 if (!pick.value) return;
                 sel.cards.add(lower(pick.value));
@@ -704,7 +665,7 @@
     }
 
     async function openPack(pack, template = null) {
-        if (!app.state.data) { app.toast.err('Connect the Guro-DaCard folder first'); return; }
+        if (!app.state.data) return;
         const data = pack ? structuredClone(pack.data) : template ? structuredClone(template.data) : {};
         const hasMaps = pack ? Object.keys(await mapsIn(pack.dir)).length > 0 : false;
         ps.editUrls.forEach(URL.revokeObjectURL);
@@ -726,10 +687,11 @@
         };
         $('#pk-editor').classList.toggle('is-template', !!template);
         $('#pk-save').textContent = template ? 'Save template' : 'Save booster pack';
-        if (!pack) e.cards.all = true;
         for (const c of (data.cards && data.cards.collections) || []) e.collFolders.set(lower(c), c);
 
-        fillAddons();
+        fillCollections();
+        if (pack) $('#pk-collection').value = pack.collectionId || '';
+        app.syncSelect($('#pk-collection'));
         $('#pk-title').textContent = template ? `Template: ${data.name}` : pack ? data.name : 'New booster pack';
         $('#pk-name').value = data.name || '';
         $('#pk-short').value = data.shortName || '';
@@ -816,8 +778,8 @@
         return out;
     }
 
-    async function writeLayers(dir, layers) {
-        const entries = [], keepLayers = new Set(), keepFonts = new Set(), stems = new Set();
+    async function writeLayers(layers) {
+        const entries = [], files = [], stems = new Set();
         for (const layer of layers) {
             const own = HASH_LAYER.exec(layer.file || '');
             let stem = own && !stems.has(own[1].toLowerCase()) ? own[1].toLowerCase() : null;
@@ -836,24 +798,21 @@
                 if (t.uppercase) entry.text.uppercase = true;
                 if (t.font) {
                     entry.text.font = `${stem}${(t.fontName.match(/\.(ttf|otf)$/i) || ['.ttf'])[0].toLowerCase()}`;
-                    await app.writeFile(dir, entry.text.font, t.font);
-                    keepFonts.add(entry.text.font.toLowerCase());
+                    files.push([entry.text.font, t.font]);
                 }
             } else {
-                await app.writeFile(dir, `${stem}.png`, layer.blob);
-                keepLayers.add(`${stem}.png`);
+                files.push([`${stem}.png`, layer.blob]);
             }
             for (const key of isText(layer) ? TEXT_KEYS : LAYER_KEYS.slice(1)) {
                 if (!layer[key]) continue;
-                await app.writeFile(dir, `${stem}${LAYER_SUFFIX[key]}.png`, layer[key].blob);
-                keepLayers.add(`${stem}${LAYER_SUFFIX[key]}.png`);
+                files.push([`${stem}${LAYER_SUFFIX[key]}.png`, layer[key].blob]);
             }
             entries.push(JSON.parse(JSON.stringify(entry)));
         }
-        return { entries, keepLayers, keepFonts };
+        return { entries, files };
     }
 
-    const sameSkin = (a, b) => !!a && !!b && a.addon === b.addon && lower(a.folder) === lower(b.folder);
+    const sameSkin = (a, b) => !!a && !!b && lower(a.folder) === lower(b.folder);
 
     async function openTemplate(skin) {
         await openPack(null, skin);
@@ -871,16 +830,16 @@
         const uses = (p, key) => typeof p.data[key] === 'string' && lower(p.data[key]) === lower(skin.folder);
         const users = ps.packs.filter((p) => uses(p, 'skin') || uses(p, 'base'));
         const presets = users.filter((p) => uses(p, 'skin')).length;
-        const fallback = ps.skins.find((x) => !x.addon && lower(x.folder) === CardAddonKit.FALLBACK_SKIN);
+        const fallback = ps.skins.find((x) => x.builtin && lower(x.folder) === FALLBACK_SKIN);
         const note = users.length
             ? `${users.length} pack${users.length === 1 ? ' uses' : 's use'} it.${presets ? ` Preset packs switch to ${fallback ? fallback.data.name : 'the default skin'}.` : ''}`
             : 'No pack uses it.';
         app.confirmMenu(anchor, `Delete "${skin.data.name}"?`, note, 'Delete', async () => {
             try {
-                await skin.parent.removeEntry(skin.folder, { recursive: true });
+                await DaApi.del(`/api/skins/${skin.id}`);
                 if (ps.edit && sameSkin(ps.edit.template, skin)) closePack();
                 app.toast.ok('Preset deleted', skin.data.name);
-                await scan();
+                await app.rescan();
             } catch (err) {
                 app.toast.err('Could not delete the preset', err.message);
             }
@@ -890,7 +849,7 @@
     async function pickBase(folder) {
         const e = ps.edit;
         const skin = folder ? ps.skins.find((x) => lower(x.folder) === lower(folder)) : null;
-        if (!(skin && skin.addon && Array.isArray(skin.data.layers) && skin.data.layers.length)) {
+        if (!(skin && !skin.builtin && Array.isArray(skin.data.layers) && skin.data.layers.length)) {
             e.base = folder;
             renderBases();
             refresh();
@@ -925,9 +884,7 @@
 
     function updateFolder() {
         const e = ps.edit;
-        $('#pk-folder').innerHTML = e && e.template ? `Folder <code>data/${app.escapeHtml(e.template.addon)}/${SKINS}/${app.escapeHtml(e.template.folder)}/</code>`
-            : e && e.source ? `Folder <code>data/${app.escapeHtml(e.source.addon)}/${PACKS}/${app.escapeHtml(e.source.folder)}/</code>`
-            : 'Name in game.';
+        $('#pk-folder').textContent = e && e.template ? `Preset ${e.template.id}` : e && e.source ? `Pack ${e.source.id}` : 'Name in game.';
     }
 
     function updateLootRow() {
@@ -962,7 +919,7 @@
     function skinOf(folder) {
         if (!folder) return null;
         return ps.skins.find((s) => lower(s.folder) === lower(folder))
-            || ps.skins.find((s) => !s.addon && lower(s.folder) === CardAddonKit.FALLBACK_SKIN) || null;
+            || ps.skins.find((s) => s.builtin && lower(s.folder) === FALLBACK_SKIN) || null;
     }
 
     async function skinImage(skin, map) {
@@ -985,10 +942,10 @@
             pic.className = 'pack-thumb';
             tile.appendChild(pic);
             tile.insertAdjacentHTML('beforeend', `<span class="tile-name">${app.escapeHtml(skin.data.name)}</span>`);
-            if (skin.thumb) {
+            if (skin.thumbUrl) {
                 const img = document.createElement('img');
                 img.alt = '';
-                img.src = objectUrl(skin.thumb, ps.editUrls);
+                img.src = skin.thumbUrl;
                 pic.appendChild(img);
             } else {
                 (async () => {
@@ -997,7 +954,7 @@
                     if (c) pic.appendChild(c);
                 })();
             }
-            if (skin.addon) {
+            if (skin.folder && !skin.builtin) {
                 const actions = document.createElement('span');
                 actions.className = 'skin-actions';
                 actions.innerHTML = '<button type="button" class="facade-iconbtn" data-act="edit" title="Edit preset" aria-label="Edit preset">✎</button><button type="button" class="facade-iconbtn skin-delete" data-act="delete" title="Delete preset" aria-label="Delete preset">×</button>';
@@ -1528,13 +1485,6 @@
         new ResizeObserver(() => refresh()).observe(canvas);
     }
 
-    async function removeFiles(dir, test, keep = new Set()) {
-        const doomed = [];
-        for await (const [name, handle] of dir.entries())
-            if (handle.kind === 'file' && test.test(name) && !keep.has(name.toLowerCase())) doomed.push(name);
-        for (const name of doomed) await dir.removeEntry(name).catch(() => {});
-    }
-
     async function thumbOf(albedo) {
         const c = renderFront(albedo || (await templatePreview()).albedo, THUMB_H);
         return c ? pngBlob(c) : null;
@@ -1571,8 +1521,7 @@
 
     async function savePack() {
         const e = ps.edit;
-        if (!e) return;
-        if (!app.state.data) { app.toast.err('Connect the Guro-DaCard folder first'); return; }
+        if (!e || !app.state.data) return;
         if (e.loading) { app.toast.err('Still opening the pack', 'Wait for its pictures to load, then save.'); return; }
         let form;
         try { form = readPackForm(); } catch (err) { app.toast.err('Can\'t save yet', err.message); if (err.field) $(err.field).focus(); return; }
@@ -1584,13 +1533,7 @@
         button.disabled = true;
         button.textContent = 'Saving…';
         try {
-            let dir = e.source ? e.source.dir : null;
-            if (!dir) {
-                const addon = await CardAddonKit.ensure(app.state.data, app.state.addons || [], $('#pk-addon').value);
-                const packsDir = await app.getDir(addon.dir, PACKS, true);
-                dir = await packsDir.getDirectoryHandle(await CardAddonKit.freeName(packsDir), { create: true });
-                if (!(app.state.addons || []).some((a) => a.folder === addon.folder)) await app.scanAddons();
-            }
+            const collectionId = editCollection();
             const data = Object.assign({}, e.data, {
                 name: form.name,
                 look: e.look,
@@ -1600,14 +1543,16 @@
                 lootPercent: round(form.loot, 3),
                 cards: cardsJson(e.cards),
             });
+            if (collectionId) delete data.cards.collections;
             for (const [key, value] of [['shortName', $('#pk-short').value.trim()], ['description', $('#pk-desc').value.trim()]]) {
                 if (value) data[key] = value; else delete data[key];
             }
             delete data.skin;
             delete data.layers;
             delete data.base;
+            delete data.id;
 
-            const keepLayers = new Set(), keepMaps = new Set(), keepFonts = new Set();
+            const files = [];
             let albedoForThumb = null;
             if (e.look === 'preset') {
                 if (e.skin) data.skin = e.skin;
@@ -1615,34 +1560,25 @@
                 albedoForThumb = await skinImage(skin, 'albedo');
             } else if (e.look === 'layers') {
                 if (e.base) data.base = e.base;
-                const written = await writeLayers(dir, e.layers);
+                const written = await writeLayers(e.layers);
                 data.layers = written.entries;
-                written.keepLayers.forEach((n) => keepLayers.add(n));
-                written.keepFonts.forEach((n) => keepFonts.add(n));
+                files.push(...written.files);
                 const tex = await currentTextures(SAVE_SIZE);
-                for (const m of layerMapsToWrite(e)) {
-                    await app.writeFile(dir, `${m}.png`, await pngBlob(tex[m]));
-                    keepMaps.add(`${m}.png`);
-                }
+                for (const m of layerMapsToWrite(e)) files.push([`${m}.png`, await pngBlob(tex[m])]);
                 albedoForThumb = tex.albedo;
             } else {
-                for (const m of MAPS) {
-                    if (!e.maps[m]) continue;
-                    await app.writeFile(dir, `${m}.png`, e.maps[m].blob);
-                    keepMaps.add(`${m}.png`);
-                }
+                for (const m of MAPS) if (e.maps[m]) files.push([`${m}.png`, e.maps[m].blob]);
                 albedoForThumb = e.maps.albedo.img;
             }
-            await removeFiles(dir, LAYER_FILE, keepLayers);
-            await removeFiles(dir, FONT_FILE, keepFonts);
-            await removeFiles(dir, MAP_FILE, keepMaps);
             const thumb = await thumbOf(albedoForThumb);
-            if (thumb) await app.writeFile(dir, THUMB_FILE, thumb);
-            await app.writeFile(dir, PACK_FILE, new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }));
+            if (thumb) files.push(['thumb.png', thumb]);
+            const meta = { collectionId, json: data };
+            if (e.source) await DaApi.upload('PUT', `/api/packs/${e.source.id}`, meta, files);
+            else await DaApi.upload('POST', '/api/packs', meta, files);
 
             app.toast.ok('Booster pack saved', `${form.name} · restart the SPT server to get it in game.`);
             closePack();
-            await scan();
+            await app.rescan();
         } catch (err) {
             app.toast.err('Could not save the booster pack', err.message);
         } finally {
@@ -1662,13 +1598,21 @@
             return;
         }
         try {
-            await e.source.parent.removeEntry(e.source.folder, { recursive: true });
+            await DaApi.del(`/api/packs/${e.source.id}`);
             app.toast.ok('Booster pack deleted', `${e.source.data.name} is gone after the server restarts. Packs players already have stop working then.`);
             closePack();
-            await scan();
+            await app.rescan();
         } catch (err) {
             app.toast.err('Could not delete the booster pack', err.message);
         }
+    }
+
+    async function skinFiles(skin) {
+        const files = [];
+        if (!skin) return files;
+        for await (const [name, handle] of skin.dir.entries())
+            if (handle.kind === 'file' && name !== 'thumb.png') files.push([name, await handle.getFile()]);
+        return files;
     }
 
     async function saveSkin() {
@@ -1681,36 +1625,35 @@
         const button = $('#pk-skin-save');
         button.disabled = true;
         try {
-            const addon = await CardAddonKit.ensure(app.state.data, app.state.addons || [], editAddon());
-            const skinsDir = await app.getDir(addon.dir, SKINS, true);
-            const folder = await CardAddonKit.freeName(skinsDir);
-            const dir = await skinsDir.getDirectoryHandle(folder, { create: true });
             const info = { name };
+            const files = [];
             let albedo = null;
             if (e.look === 'layers') {
                 const tex = await currentTextures(SAVE_SIZE);
-                for (const m of layerMapsToWrite(e)) await app.writeFile(dir, `${m}.png`, await pngBlob(tex[m]));
+                for (const m of layerMapsToWrite(e)) files.push([`${m}.png`, await pngBlob(tex[m])]);
                 albedo = tex.albedo;
-                const copies = await Promise.all(e.layers.map(async (l) => ({ ...l, file: null })));
-                info.layers = (await writeLayers(dir, copies)).entries;
+                const copies = e.layers.map((l) => ({ ...l, file: null }));
+                const written = await writeLayers(copies);
+                info.layers = written.entries;
+                files.push(...written.files);
                 if (e.base) info.base = e.base;
             } else if (e.look === 'textures') {
-                for (const m of MAPS) if (e.maps[m]) await app.writeFile(dir, `${m}.png`, e.maps[m].blob);
+                for (const m of MAPS) if (e.maps[m]) files.push([`${m}.png`, e.maps[m].blob]);
                 albedo = e.maps.albedo.img;
             } else {
                 const skin = skinOf(e.skin);
-                if (skin) await CardAddonKit.copyInto(skin.dir, dir);
+                files.push(...await skinFiles(skin));
                 const source = skin && skin.data && typeof skin.data === 'object' ? skin.data : {};
                 if (Array.isArray(source.layers)) info.layers = source.layers;
                 if (typeof source.base === 'string') info.base = source.base;
                 albedo = await skinImage(skin, 'albedo');
             }
             const thumb = await thumbOf(albedo);
-            if (thumb) await app.writeFile(dir, THUMB_FILE, thumb);
-            await app.writeFile(dir, SKIN_FILE, new Blob([JSON.stringify(info, null, 2) + '\n'], { type: 'application/json' }));
+            if (thumb) files.push(['thumb.png', thumb]);
+            await DaApi.upload('POST', '/api/skins', { json: info }, files);
             $('#pk-skin-name').value = '';
-            await scan();
-            app.toast.ok('Preset saved', `${name} · data/${addon.folder}/skins/${folder}/`);
+            await app.rescan();
+            app.toast.ok('Preset saved', name);
         } catch (err) {
             app.toast.err('Could not save the preset', err.message);
         } finally {
@@ -1730,41 +1673,29 @@
         button.disabled = true;
         button.textContent = 'Saving…';
         try {
-            const dir = skin.dir;
             const info = { ...e.data, name };
             delete info.layers;
             delete info.base;
-            const keepLayers = new Set(), keepFonts = new Set(), keepMaps = new Set();
+            const files = [];
             let albedo;
             if (e.look === 'layers') {
-                const written = await writeLayers(dir, e.layers);
+                const written = await writeLayers(e.layers);
                 info.layers = written.entries;
-                written.keepLayers.forEach((n) => keepLayers.add(n));
-                written.keepFonts.forEach((n) => keepFonts.add(n));
+                files.push(...written.files);
                 if (e.base) info.base = e.base;
                 const tex = await currentTextures(SAVE_SIZE);
-                for (const m of layerMapsToWrite(e)) {
-                    await app.writeFile(dir, `${m}.png`, await pngBlob(tex[m]));
-                    keepMaps.add(`${m}.png`);
-                }
+                for (const m of layerMapsToWrite(e)) files.push([`${m}.png`, await pngBlob(tex[m])]);
                 albedo = tex.albedo;
             } else {
-                for (const m of MAPS) {
-                    if (!e.maps[m]) continue;
-                    await app.writeFile(dir, `${m}.png`, e.maps[m].blob);
-                    keepMaps.add(`${m}.png`);
-                }
+                for (const m of MAPS) if (e.maps[m]) files.push([`${m}.png`, e.maps[m].blob]);
                 albedo = e.maps.albedo.img;
             }
-            await removeFiles(dir, LAYER_FILE, keepLayers);
-            await removeFiles(dir, FONT_FILE, keepFonts);
-            await removeFiles(dir, MAP_FILE, keepMaps);
             const thumb = await thumbOf(albedo);
-            if (thumb) await app.writeFile(dir, THUMB_FILE, thumb);
-            await app.writeFile(dir, SKIN_FILE, new Blob([JSON.stringify(info, null, 2) + '\n'], { type: 'application/json' }));
+            if (thumb) files.push(['thumb.png', thumb]);
+            await DaApi.upload('PUT', `/api/skins/${skin.id}`, { json: info }, files);
             app.toast.ok('Template saved', `${name} · packs using it as their preset show the change after a server restart.`);
             closePack();
-            await scan();
+            await app.rescan();
         } catch (err) {
             app.toast.err('Could not save the template', err.message);
         } finally {
@@ -1775,7 +1706,7 @@
 
     function wire() {
         $('#pk-new').addEventListener('click', () => {
-            if (!app.state.data) { app.toast.err('Connect the mod folder first'); return; }
+            if (!app.state.data) return;
             openPack(null);
         });
         $('#pk-cancel').addEventListener('click', closePack);
@@ -1786,7 +1717,7 @@
         $('#pk-count').addEventListener('input', renderPool);
         $('#pk-loot').addEventListener('change', updateLootRow);
         $('#pk-all').addEventListener('change', () => { if (ps.edit) { ps.edit.cards.all = $('#pk-all').checked; renderCardChoice(); } });
-        $('#pk-addon').addEventListener('change', () => { if (ps.edit) renderCardChoice(); });
+        $('#pk-collection').addEventListener('change', () => { if (ps.edit) renderCardChoice(); });
         $('#pk-normal-dx').addEventListener('change', () => { if (ps.edit && ps.edit.maps.normal) flipNormal(); });
         for (const tile of $$('.look-choice .look-tile')) tile.addEventListener('click', () => setLook(tile.dataset.look));
 
@@ -1828,7 +1759,7 @@
                 return;
             }
             if (what === 'folder') { scan(); return; }
-            if (what === 'addons') { fillAddons(); return; }
+            if (what === 'collections') { fillCollections(); if (ps.edit) renderCardChoice(); return; }
             renderList();
             if (ps.edit) renderCardChoice();
         },

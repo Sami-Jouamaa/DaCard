@@ -5,14 +5,16 @@ using Newtonsoft.Json;
 
 namespace DaCard.Client
 {
-    internal class CardManifest
+    internal class ClientIndex
     {
         [JsonProperty("backProperty")] public string BackProperty = "_CARD_BACK";
         [JsonProperty("overlayProperty")] public string OverlayProperty = "_CARD_FRONT_BORDER";
         [JsonProperty("slots")] public List<TextureSlot> Slots = new List<TextureSlot>();
-        [JsonProperty("cards")] public List<CardManifestEntry> Cards = new List<CardManifestEntry>();
+        [JsonProperty("cards")] public List<string> Cards = new List<string>();
+        [JsonProperty("foils")] public Dictionary<string, string> Foils = new Dictionary<string, string>();
         [JsonProperty("binders")] public List<BinderManifestEntry> Binders = new List<BinderManifestEntry>();
         [JsonProperty("packs")] public List<PackManifestEntry> Packs = new List<PackManifestEntry>();
+        [JsonProperty("stickers")] public Dictionary<string, string> Stickers = new Dictionary<string, string>();
     }
 
     internal class PackManifestEntry
@@ -85,6 +87,8 @@ namespace DaCard.Client
         [JsonProperty("textures")] public Dictionary<string, string> Textures = new Dictionary<string, string>();
         [JsonProperty("animation")] public Dictionary<string, CardAnimationTrack> Animation;
         [JsonProperty("transform")] public LayerTransform Transform;
+        [JsonProperty("roughness")] public float? Roughness;
+        [JsonProperty("metallic")] public float? Metallic;
         [JsonProperty("sticker")] public string Sticker;
         [JsonProperty("id")] public string Id;
         [JsonProperty("name")] public string Name;

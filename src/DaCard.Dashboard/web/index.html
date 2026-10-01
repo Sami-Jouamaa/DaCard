@@ -13,11 +13,8 @@
 </head>
 <body>
 <main class="shell">
-    <div class="migrate-bar" id="migrate-bar" hidden>
-        <div class="wrap">
-            <span><b>Outdated data</b> <span id="migrate-what"></span></span>
-            <button type="button" class="facade-btn fx-sm" id="migrate-run">Update all</button>
-        </div>
+    <div class="jobs-bar" id="jobs-bar" hidden>
+        <div class="wrap jobs-list" id="jobs-list"></div>
     </div>
     <header class="masthead">
         <div class="masthead-main">
@@ -29,23 +26,16 @@
                 <nav class="side-nav" aria-label="Sections">
                     <button class="nav-item active" data-pane="new" type="button">New card</button>
                     <button class="nav-item" data-pane="cards" type="button">Cards <span class="facade-chip fx-grey" id="cards-count" hidden>0</span></button>
+                    <button class="nav-item" data-pane="collections" type="button">Collections <span class="facade-chip fx-grey" id="collections-count" hidden>0</span></button>
                     <button class="nav-item" data-pane="packs" type="button">Booster packs <span class="facade-chip fx-grey" id="packs-count" hidden>0</span></button>
-                    <button class="nav-item" data-pane="addons" type="button">Add-ons <span class="facade-chip fx-grey" id="addons-count" hidden>0</span></button>
                     <button class="nav-item" data-pane="settings" type="button">Settings</button>
                 </nav>
-                <span class="facade-pill fx-sm fx-grey" id="folder-pill">Not connected</span>
-                <button type="button" class="facade-btn fx-blue fx-on" id="folder-connect">Connect mod folder…</button>
+                <span class="facade-pill fx-sm fx-grey" id="folder-pill">Loading…</span>
             </div>
         </div>
     </header>
 
     <div class="layout wrap">
-        <p class="notice" id="folder-note">Connect the <b>Guro-DaCard</b> folder to save into the game.</p>
-        <div class="notice folder-path-row" id="folder-path-row" hidden>
-            <span>Pick this folder:</span>
-            <code id="folder-path"></code>
-            <button type="button" class="facade-btn fx-sm" id="folder-path-copy">Copy path</button>
-        </div>
 
         <div class="panes">
             <section class="pane active" id="pane-new">
@@ -66,7 +56,7 @@
                                     <label class="field">
                                         <span>Name</span>
                                         <input type="text" class="facade-input" id="f-name" maxlength="80" autocomplete="off" placeholder="e.g. Tagilla's Hammer">
-                                        <small class="field-note" id="f-folder">Folder: data/cards/_Default/Rare/&lt;new id&gt;/</small>
+                                        <small class="field-note" id="f-folder"></small>
                                     </label>
                                     <label class="field">
                                         <span>Short name</span>
@@ -80,12 +70,8 @@
                                         <small class="field-note" id="f-price"></small>
                                     </label>
                                     <label class="field">
-                                        <span>Addon</span>
-                                        <select class="facade-select" id="f-addon"></select>
-                                    </label>
-                                    <label class="field">
                                         <span>Collection</span>
-                                        <select class="facade-select" id="f-collection"><option value="">No collection</option></select>
+                                        <select class="facade-select" id="f-collection"></select>
                                     </label>
                                 </div>
                                 <div class="details-col">
@@ -205,7 +191,6 @@
 
                         <div class="save-bar">
                             <span class="facade-status" id="save-status" hidden></span>
-                            <button type="button" class="facade-btn fx-lg" id="save-zip">Download .zip</button>
                             <button type="button" class="facade-btn fx-lg fx-blue fx-on" id="save-card">Save card</button>
                         </div>
                     </div>
@@ -217,7 +202,7 @@
                                     <button type="button" class="facade-btn fx-sm fx-on" data-view="place" title="The card flat: click a layer to select it, drag to move it">2D</button>
                                 </div>
                                 <label class="facade-check-row" title="Show the card's foil version: every card also drops as a foil card (chance in Settings)"><input type="checkbox" class="facade-switch" id="f-holo"><span>Holo</span></label>
-                                <label class="facade-check-row" title="Show layers with a chance under 100%"><input type="checkbox" class="facade-switch" id="f-rare"><span>Rare layers</span></label>
+                                <label class="facade-check-row" title="Show the collection's layers with a chance under 100%"><input type="checkbox" class="facade-switch" id="f-rare"><span>Rare layers</span></label>
                             </div>
                             <canvas id="crop" width="490" height="684" aria-label="Card preview"></canvas>
                             <canvas class="card-3d" id="card-3d" hidden aria-label="3D preview of the card"></canvas>
@@ -233,12 +218,8 @@
                         <legend class="card-title">Batch</legend>
                         <div class="card-body batch-head">
                             <label class="field">
-                                <span>Addon</span>
-                                <select class="facade-select" id="b-addon"></select>
-                            </label>
-                            <label class="field">
                                 <span>Collection</span>
-                                <select class="facade-select" id="b-collection"><option value="">No collection</option></select>
+                                <select class="facade-select" id="b-collection"></select>
                             </label>
                             <label class="facade-check-row" title="Show the collection's layers on these cards"><input type="checkbox" class="facade-switch" id="b-coll-layers" checked disabled><span>Collection layers</span></label>
                         </div>
@@ -272,7 +253,7 @@
                     <button type="button" class="facade-btn" id="cards-refresh">Refresh</button>
                 </div>
                 <div class="cards-grid" id="cards-grid"></div>
-                <div class="empty" id="cards-empty">Connect the mod folder to see your cards.</div>
+                <div class="empty" id="cards-empty">Loading…</div>
                 <p class="field-note">Restart SPT to apply.</p>
                 </div>
                 </div>
@@ -306,7 +287,7 @@
                         <button type="button" class="facade-btn fx-blue fx-on" id="pk-new">New booster pack</button>
                     </div>
                     <div class="coll-grid pack-grid" id="pk-grid"></div>
-                    <div class="empty" id="pk-empty">Connect the mod folder to see your booster packs.</div>
+                    <div class="empty" id="pk-empty">Loading…</div>
                 </div>
 
                 <div id="pk-editor" class="pack-form" hidden>
@@ -319,9 +300,10 @@
                                     <input type="text" class="facade-input" id="pk-name" maxlength="60" autocomplete="off" placeholder="e.g. Streets of Tarkov booster">
                                     <small class="field-note" id="pk-folder"></small>
                                 </label>
-                                <label class="field">
-                                    <span>Addon</span>
-                                    <select class="facade-select" id="pk-addon"></select>
+                                <label class="field pk-pack-only">
+                                    <span>Collection</span>
+                                    <select class="facade-select" id="pk-collection"></select>
+                                    <small class="field-note">Global: cards from any collection.</small>
                                 </label>
                                 <label class="field pk-pack-only">
                                     <span>Short name</span>
@@ -362,7 +344,7 @@
                         <fieldset class="card pk-pack-only">
                             <legend class="card-title">Cards in the pack <span class="facade-chip fx-grey" id="pk-pool-count">0</span></legend>
                             <div class="card-body pack-cards">
-                                <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="pk-all"><span>All cards in its addon</span></label>
+                                <label class="facade-check-row" id="pk-all-row"><input type="checkbox" class="facade-switch" id="pk-all"><span>Every collection</span></label>
                                 <div class="field" id="pk-colls-field">
                                     <span>Whole collections</span>
                                     <div class="chip-toggles" id="pk-colls"></div>
@@ -400,7 +382,7 @@
 
                                 <div class="look-panel" id="pk-look-preset">
                                     <div class="skin-grid" id="pk-skins"></div>
-                                    <p class="field-note">Presets from <code>data/skins/</code>.</p>
+                                    <p class="field-note">Shared presets.</p>
                                 </div>
 
                                 <div class="look-panel" id="pk-look-layers">
@@ -461,25 +443,25 @@
                 </div>
             </section>
 
-            <section class="pane" id="pane-addons">
-                <p class="crumbs"><span>DaCard</span><span>Add-ons</span></p>
-                <h2 class="pane-title">Add-ons</h2>
-                <p class="hint first">Shareable cards, binders and packs.</p>
+            <section class="pane" id="pane-collections">
+                <p class="crumbs"><span>DaCard</span><span>Collections</span></p>
+                <h2 class="pane-title">Collections</h2>
+                <p class="hint first">Cards, binders and packs. Share as .zip.</p>
                 <div class="cards-toolbar coll-toolbar addon-toolbar">
                     <span></span>
-                    <button type="button" class="facade-btn" id="addon-import">Import .zip…</button>
-                    <button type="button" class="facade-btn fx-blue fx-on" id="addon-create">Create addon</button>
-                    <input type="file" id="addon-file" accept=".zip,application/zip" hidden>
+                    <button type="button" class="facade-btn" id="coll-import">Import collection…</button>
+                    <button type="button" class="facade-btn fx-blue fx-on" id="coll-create">New collection</button>
+                    <input type="file" id="coll-file" accept=".zip,application/zip" hidden>
                 </div>
-                <div class="addon-grid" id="addon-grid"></div>
-                <div class="empty" id="addon-empty">Connect the mod folder.</div>
+                <div class="addon-grid" id="coll-grid"></div>
+                <div class="empty" id="coll-empty">Loading…</div>
             </section>
 
             <section class="pane" id="pane-settings">
                 <p class="crumbs"><span>DaCard</span><span>Settings</span></p>
                 <h2 class="pane-title">Settings</h2>
                 <p class="hint first">Restart SPT to apply.</p>
-                <div class="empty" id="s-empty">Connect the <b>Guro-DaCard</b> folder.</div>
+                <div class="empty" id="s-empty">Loading…</div>
 
                 <div id="s-form" hidden>
                     <fieldset class="card">
@@ -539,7 +521,6 @@
                                 <select class="facade-select" id="s-retired">
                                     <option value="remove">Remove</option>
                                     <option value="refund">Remove and refund</option>
-                                    <option value="keep">Keep</option>
                                 </select>
                             </label>
                             <small class="field-note span-2">Profiles are backed up first.</small>
@@ -587,10 +568,6 @@
                         <span>Name</span>
                         <input type="text" class="facade-input" id="c-name" maxlength="60" autocomplete="off" placeholder="e.g. League of Legends">
                         <small class="field-note" id="c-folder"></small>
-                    </label>
-                    <label class="field">
-                        <span>Addon</span>
-                        <select class="facade-select" id="c-addon"></select>
                     </label>
                     <label class="field">
                         <span>Short name</span>
@@ -680,19 +657,27 @@
     </div>
 </div>
 
-<div class="facade-overlay cc-overlay" id="addon-modal" hidden>
-    <div class="facade-modal cc-modal addon-modal" role="dialog" aria-modal="true" aria-labelledby="addon-modal-title">
+<div class="facade-overlay cc-overlay" id="ask-modal" hidden>
+    <div class="facade-modal cc-modal addon-modal" role="dialog" aria-modal="true" aria-labelledby="ask-title">
         <header>
-            <span id="addon-modal-title">Addon</span>
-            <button type="button" class="facade-iconbtn" id="addon-modal-close" aria-label="Close">×</button>
+            <span id="ask-title"></span>
+            <button type="button" class="facade-iconbtn" id="ask-close" aria-label="Close">×</button>
         </header>
-        <div class="cc-modal-body" id="addon-modal-body"></div>
+        <div class="cc-modal-body" id="ask-body"></div>
         <footer>
-            <span class="facade-status" id="addon-modal-status"></span>
             <span class="spacer"></span>
-            <button type="button" class="facade-btn fx-sm" id="addon-modal-cancel">Cancel</button>
-            <button type="button" class="facade-btn fx-sm fx-blue fx-on" id="addon-modal-ok">OK</button>
+            <button type="button" class="facade-btn fx-sm" id="ask-cancel">Cancel</button>
+            <button type="button" class="facade-btn fx-sm fx-blue fx-on" id="ask-ok">OK</button>
         </footer>
+    </div>
+</div>
+
+<div class="boot-overlay" id="boot-overlay">
+    <div class="boot-box">
+        <svg class="boot-logo" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="7" width="15" height="21" rx="2" transform="rotate(-12 10.5 17.5)" fill="none" stroke="currentColor" stroke-width="2.4"/><rect x="13" y="4" width="15" height="21" rx="2" fill="currentColor"/></svg>
+        <b id="boot-title">Starting DaCard</b>
+        <div class="progress"><div class="progress-fill" id="boot-fill"></div></div>
+        <small id="boot-note">Checking the data…</small>
     </div>
 </div>
 
@@ -703,6 +688,7 @@
         onChanged: { addListener() {} }
     };
 </script>
+<script src="creator/api.mjs"></script>
 <script src="creator/ui/facade-select.mjs"></script>
 <script src="creator/ui/facade-toast.mjs"></script>
 <script src="creator/binder_front.mjs"></script>
@@ -715,8 +701,8 @@
 <script src="creator/media.mjs"></script>
 <script src="creator/text.mjs"></script>
 <script src="creator/layers.mjs"></script>
-<script src="creator/addons.mjs"></script>
-<script src="creator/migrations.mjs"></script>
+<script src="creator/status.mjs"></script>
+<script src="creator/collections.mjs"></script>
 <script src="creator/packs.mjs"></script>
 <script src="creator/batch.mjs"></script>
 <script src="creator/app.mjs"></script>

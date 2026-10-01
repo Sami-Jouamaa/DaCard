@@ -59,7 +59,7 @@ public class CardStickers(
 
     public static string SlotName(string sticker) => SlotPrefix + sticker;
 
-    public string? Register(string ownerId, StickerOwner owner, LayerSource layer, string bundle)
+    public string? Register(string ownerId, StickerOwner owner, Storage.LayerRow layer, string bundle)
     {
         if (layer.Chance >= 100)
             return null;
@@ -76,7 +76,7 @@ public class CardStickers(
             NewId = new MongoId(tpl),
             NewItemName = "dacard_sticker_" + tpl,
             HandbookPriceRoubles = price,
-            HandbookParentId = DaCardMod.HandbookValuables,
+            HandbookParentId = DaCardHandbook.Stickers,
             AddToHandbook = true,
             AddToFleaPriceDb = false,
             Locales = new Dictionary<string, LocaleDetails>
@@ -111,7 +111,7 @@ public class CardStickers(
         ledger.Record(tpl, new LedgerItem
         {
             Kind = ItemLedger.Sticker,
-            Key = $"{owner.Key}:{layer.SourceFile}",
+            Key = $"{owner.Key}:{layer.Id}",
             Owner = ownerId,
             Name = name,
             Price = price,
@@ -120,7 +120,7 @@ public class CardStickers(
         return tpl;
     }
 
-    public List<Slot> SlotsFor(string cardTpl, string baseTpl, IEnumerable<LayerManifestEntry> layers)
+    public List<Slot> SlotsFor(string cardTpl, string baseTpl, IEnumerable<(string Key, double Chance, string? Sticker, string? Name)> layers)
     {
         var slots = layers.Where(l => l.Sticker != null)
             .GroupBy(l => l.Sticker!)

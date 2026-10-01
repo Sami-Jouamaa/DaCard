@@ -3,7 +3,6 @@
 
     const RARITIES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'];
     const DEFAULT_RARITY = 'Rare';
-    const DEFAULT_COLLECTION = '_Default', CARDS_FOLDER = 'cards';
     const PREVIEW_W = 172, PREVIEW_H = 240;
     const SHORT_MAX = 24;
     const IMAGE_FILE = /\.(png|jpe?g|webp|bmp|avif)$/i;
@@ -34,7 +33,7 @@
 
     function shown(row) {
         const own = row.layer ? [row.layer] : [];
-        return CardLayerKit.ordered(own, collFront()).filter((l) => l.chance >= 100).map((l) => ({ ...l, hidden: false }));
+        return CardLayerKit.ordered(own, collFront().filter((l) => l.chance >= 100)).map((l) => ({ ...l, hidden: false }));
     }
 
     function draw(row) {
@@ -202,17 +201,17 @@
         const save = CardLayerKit.files({ front: [row.layer], back: [] });
         const files = [...save.files];
         const ctx = ctxOf(f);
-        files.push(['card.png', () => app.pngBlob(CardLayerKit.composite(CardLayerKit.parts(shown(row), 0, ctx), { foil: false, normal: false }).color)]);
-        const json = app.cardJson({ ...f, collection: $('#b-collection').value, hideCollectionLayers: hiddenFiles(), textAlign: {} }, '2d', {},
-            { layers: save.json, animation: null, floats: null });
-        files.push(['card.json', async () => new Blob([json], { type: 'application/json' })]);
+        const json = JSON.parse(app.cardJson({ ...f, collection: $('#b-collection').value, hideCollectionLayers: hiddenFiles(), textAlign: {} }, '2d', {},
+            { layers: save.json, animation: null, floats: null }));
         files.push([app.THUMB_FILE, () => app.thumbnail({ picture: null, front: [row.layer], collFront: collFront(), ctx })]);
-        return files;
+        return { json, files };
     }
 
     async function save() {
         if (saving) return;
-        if (!app.state.data) { app.toast.err('No folder connected', 'Connect the mod folder first.'); return; }
+        if (!app.state.data) return;
+        const collectionId = $('#b-collection').value;
+        if (!collectionId) { app.toast.err('Pick a collection', 'Every card belongs to a collection. Make one under Collections.'); return; }
         const list = rows.filter((r) => r.layer || readRow(r).name);
         if (!list.length) { app.toast.err('No cards yet', 'Add an image and a name.'); return; }
         for (const r of list) {
@@ -220,41 +219,36 @@
             if (!readRow(r).name) { app.toast.err(`Card ${n} needs a name`); $('.b-name', r.el).focus(); return; }
             if (!r.layer) { app.toast.err(`Card ${n} needs an image`); return; }
         }
-        let addon;
-        try {
-            addon = await CardAddonKit.ensure(app.state.data, app.state.addons, $('#b-addon').value);
-        } catch (e) {
-            app.toast.err('Could not save the cards', e.message);
-            return;
-        }
         saving = true;
         const button = $('#b-save');
         button.disabled = true;
-        const collFolder = $('#b-collection').value || DEFAULT_COLLECTION;
         const saved = [];
+        const progress = window.CCStatus ? CCStatus.task(`Saving ${list.length} card${list.length === 1 ? '' : 's'}`) : null;
+        let failure = null;
         try {
-            const collDir = await app.getDir(await app.getDir(addon.dir, CARDS_FOLDER, true), collFolder, true);
             for (const [i, r] of list.entries()) {
                 setStatus(`Saving card ${i + 1} of ${list.length}…`);
+                if (progress) progress.progress(i, list.length, `Card ${i + 1} of ${list.length}`);
                 const f = readRow(r);
-                const rdir = await app.getDir(collDir, f.rarity, true);
-                let slug = app.newFolder();
-                while (await app.getDir(rdir, slug)) slug = app.newFolder();
-                const cdir = await rdir.getDirectoryHandle(slug, { create: true });
-                for (const [name, make] of cardFiles(r, f)) await app.writePath(cdir, name, await make());
+                const { json, files } = cardFiles(r, f);
+                const blobs = [];
+                for (const [name, make] of files) blobs.push([name, await make()]);
+                await DaApi.upload('POST', '/api/cards', { collectionId, rarity: f.rarity, json }, blobs);
                 saved.push(r);
             }
+            if (progress) progress.progress(list.length, list.length, 'Done');
             app.toast.ok(`${saved.length} card${saved.length === 1 ? '' : 's'} saved`, 'Restart the SPT server to get them in game.');
-            setStatus(`Saved ${saved.length} to data/${addon.folder}/cards/${collFolder}/`, true);
+            setStatus(`Saved ${saved.length} to ${app.collName(collectionId)}`, true);
         } catch (e) {
+            failure = e.message;
             app.toast.err('Could not save every card', `${saved.length} of ${list.length} saved. ${e.message}`);
             setStatus('Not saved: ' + e.message, false);
         } finally {
+            if (progress) progress.finish(failure);
             for (const r of saved) removeRow(r);
             saving = false;
             button.disabled = false;
-            if (!app.state.addons.some((a) => a.folder === addon.folder)) await app.scanAddons();
-            await app.scanCards();
+            await app.rescan();
         }
     }
 
@@ -276,7 +270,6 @@
             $('.b-name', row.el).focus();
         });
         wireDrop();
-        $('#b-addon').addEventListener('change', () => { app.fillCollectionSelects(); loadCollection(); });
         $('#b-collection').addEventListener('change', loadCollection);
         $('#b-coll-layers').addEventListener('change', redrawAll);
         $('#b-save').addEventListener('click', save);

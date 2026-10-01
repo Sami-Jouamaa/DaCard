@@ -257,7 +257,7 @@ namespace DaCard.Editor
                          "};\n";
 
             var gameModDir = CardBundleBuilder.GameModDir();
-            var targets = new[] { Path.Combine(CardPaths.RepoRoot, "src", "DaCard.Server", "creator"), gameModDir != null ? Path.Combine(gameModDir, "creator") : null };
+            var targets = new[] { Path.Combine(CardPaths.RepoRoot, "src", "DaCard.Dashboard", "web", "creator"), gameModDir != null ? Path.Combine(gameModDir, "dashboard", "web", "creator") : null };
             foreach (var creatorDir in targets.Where(t => t != null))
             {
                 Directory.CreateDirectory(Path.Combine(creatorDir, "pack"));
