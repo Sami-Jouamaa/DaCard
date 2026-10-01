@@ -3,7 +3,7 @@ using BepInEx.Logging;
 
 namespace DaCard.Client
 {
-    [BepInPlugin("com.guro.dacard", "DaCard", "1.0.0")]
+    [BepInPlugin("com.guro.dacard", "DaCard", "1.1.0")]
     public class Plugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
@@ -26,7 +26,7 @@ namespace DaCard.Client
             new GridItemNamePatch().Enable();
             new InspectCaptionPatch().Enable();
             WorldCamera.Enable();
-            Log.LogInfo($"DaCard 1.0.0 loaded, {CardRegistry.Count} card(s) from the server");
+            Log.LogInfo($"DaCard 1.1.0 loaded, {CardRegistry.Count} card(s) from the server");
         }
 
         private void Update()

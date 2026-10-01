@@ -9,8 +9,7 @@
     <ItemGroup>
       <ModDeployFiles Include="$(TargetDir)**\*" />
       <ModDeployFiles Remove="$(TargetDir)$(ModDebugDeploySkip)" Condition="'$(Configuration)' != 'Release' and '$(ModDebugDeploySkip)' != ''" />
-      <!-- The game's data\config.json is edited there (Dashboard Settings tab): Debug builds only create it -->
-      <ModDeployFiles Remove="$(TargetDir)data\config.json" Condition="'$(Configuration)' != 'Release' and Exists('$(ModDeployDir)data\config.json')" />
+      <ModDeployFiles Remove="$(TargetDir)data\config.json" />
     </ItemGroup>
 
     <Copy SourceFiles="@(ModDeployFiles)"

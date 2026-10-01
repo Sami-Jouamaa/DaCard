@@ -22,7 +22,6 @@
   <ItemGroup>
     <Content Include="bundles\**" CopyToOutputDirectory="PreserveNewest" />
     <Content Remove="data\**" />
-    <Content Include="data\config.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Update="bundles.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="traders\**" CopyToOutputDirectory="PreserveNewest" />
     <Content Remove="defaults\**" />

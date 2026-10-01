@@ -53,8 +53,8 @@ namespace DaCard.Editor
 
         [Header("Install after build")]
         [Tooltip("After DaCard > Build Mod, copy the built mod straight into the game below: the server mod into the " +
-                 "mods folder, the client plugin into the game's BepInEx\\plugins. Existing files are overwritten " +
-                 "(config.json too); nothing is deleted, so your cards there stay. The SPT server and the game must be closed.")]
+                 "mods folder, the client plugin into the game's BepInEx\\plugins. Existing files are overwritten, " +
+                 "except data\\config.json (your settings); nothing is deleted, so your cards there stay. The SPT server and the game must be closed.")]
         public bool installAfterBuild;
 
         [Tooltip("The game's SPT mods folder: <game>\\SPT_Runtime\\user\\mods (the game folder itself works too).")]

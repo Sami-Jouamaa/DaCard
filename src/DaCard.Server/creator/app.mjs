@@ -319,11 +319,24 @@
         btn.onclick = connectFolder;
     }
 
+    async function createConfig() {
+        const defaults = state.root ? await getDir(state.root, 'defaults') : null;
+        const file = defaults ? await getFile(defaults, CONFIG_FILE) : null;
+        if (!file) return null;
+        try {
+            await writeFile(state.data, CONFIG_FILE, file);
+            return await getFile(state.data, CONFIG_FILE);
+        } catch (e) {
+            toast.err('config.json could not be created', e.message);
+            return null;
+        }
+    }
+
     async function readConfig() {
         state.rarities = structuredClone(RARITY_DEFAULTS);
         state.config = null;
         if (!state.data) { renderSettings(); return; }
-        const file = await getFile(state.data, CONFIG_FILE);
+        const file = await getFile(state.data, CONFIG_FILE) || await createConfig();
         if (!file) { renderSettings(); return; }
         try {
             const config = JSON.parse(await file.text());

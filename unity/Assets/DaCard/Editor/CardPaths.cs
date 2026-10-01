@@ -55,7 +55,7 @@ namespace DaCard.Editor
 
         public static string ServerBundlesDir => Path.Combine(RepoRoot, "src", "DaCard.Server", "bundles");
 
-        public static string ServerConfig => Path.Combine(RepoRoot, "src", "DaCard.Server", "data", "config.json");
+        public static string ServerConfig => Path.Combine(RepoRoot, "src", "DaCard.Server", "defaults", "config.json");
 
         public static string BuildOutputDir =>
             Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Build", "Bundles"));

@@ -207,7 +207,7 @@ public class DaCardMod(
         var regular = manifest.Cards.Where(c => !c.Foil).ToList();
         var perRarity = string.Join(", ", CardCatalog.RarityOrder.Select(r => $"{r} {regular.Count(c => c.Rarity == r)}"));
         var perType = string.Join(", ", regular.GroupBy(c => c.Type).Select(g => $"{g.Count()} {g.Key.ToUpperInvariant()}"));
-        logger.Success($"[DaCard] 1.0.0 loaded {regular.Count} card(s) + their foil versions ({FoilShare(config):0.#%} of cards found): " +
+        logger.Success($"[DaCard] 1.1.0 loaded {regular.Count} card(s) + their foil versions ({FoilShare(config):0.#%} of cards found): " +
                        $"{perRarity} ({perType}); {manifest.Binders.Count} collection binder(s); {manifest.Packs.Count} booster pack(s); " +
                        $"{addons.Count} addon(s){(addons.Count > 0 ? ": " + string.Join(", ", addons.Select(a => a.Name)) : "")}");
         return Task.CompletedTask;
@@ -262,6 +262,7 @@ public class DaCardMod(
     }
 
     public const string ConfigFile = "data/config.json";
+    public const string DefaultConfigFile = "defaults/config.json";
 
     private bool OldLayout(string modPath)
     {
@@ -533,9 +534,31 @@ public class DaCardMod(
         logger.Info($"[DaCard] Cards, binders and booster packs are bought by: {string.Join(", ", names)}");
     }
 
+    private void EnsureConfig(string path, string defaults)
+    {
+        if (File.Exists(path))
+            return;
+        if (!File.Exists(defaults))
+        {
+            logger.Error($"[DaCard] {ConfigFile} is missing and so is {DefaultConfigFile}: reinstall the mod.");
+            return;
+        }
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.Copy(defaults, path);
+            logger.Info($"[DaCard] Created {ConfigFile} with the default settings.");
+        }
+        catch (Exception e)
+        {
+            logger.Error($"[DaCard] Could not create {path}: {e.Message}");
+        }
+    }
+
     private DaCardConfig LoadConfig(string modPath)
     {
         var path = Path.Combine(modPath, ConfigFile);
+        EnsureConfig(path, Path.Combine(modPath, DefaultConfigFile));
         try
         {
             var text = File.ReadAllText(path);
