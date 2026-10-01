@@ -1,0 +1,82 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>DaCard.Server</RootNamespace>
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+
+    <ModInstallSubDir>SPT_Runtime\user\mods\$(ModAuthor)-$(ModName)</ModInstallSubDir>
+    <ModDebugDeploySkip>data\*\**</ModDebugDeploySkip>
+
+    <DefaultDataDir>$(MSBuildThisFileDirectory)..\..\unity\Assets\DaCard\_DATA\</DefaultDataDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SPTushonka.Common" Version="$(SptPackageVersion)" />
+    <PackageReference Include="SPTushonka.DI" Version="$(SptPackageVersion)" />
+    <PackageReference Include="SPTushonka.Server.Core" Version="$(SptPackageVersion)" />
+    <PackageReference Include="SPTushonka.Reflection" Version="$(SptPackageVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="bundles\**" CopyToOutputDirectory="PreserveNewest" />
+    <Content Remove="data\**" />
+    <Content Include="data\config.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="data\skins\**" Condition="!Exists('$(DefaultDataDir)skins')" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="$(DefaultDataDir)**\*" Exclude="$(DefaultDataDir)**\*.meta" Link="data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Update="bundles.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="traders\**" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="DaCardDashboard.html" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="creator\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <UsingTask TaskName="WriteFontCss" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Font ParameterType="System.String" Required="true" />
+      <Family ParameterType="System.String" Required="true" />
+      <Output ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var data = System.Convert.ToBase64String(System.IO.File.ReadAllBytes(Font));
+        var css = "@font-face {\n    font-family: '" + Family + "';\n    src: url(data:font/ttf;base64," + data + ") format('truetype');\n}\n";
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Output));
+        if (!System.IO.File.Exists(Output) || System.IO.File.ReadAllText(Output) != css)
+            System.IO.File.WriteAllText(Output, css);
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="WriteCardFont" BeforeTargets="DeployMod">
+    <PropertyGroup>
+      <CardFont>$(MSBuildThisFileDirectory)..\..\unity\Assets\DaCard\Fonts\Bw Modelica ExtraBold.ttf</CardFont>
+    </PropertyGroup>
+    <Warning Condition="!Exists('$(CardFont)')" Text="$(CardFont) is missing: the Card Creator previews card text in a fallback font." />
+    <WriteFontCss Condition="Exists('$(CardFont)')" Font="$(CardFont)" Family="Bw Modelica ExtraBold" Output="$(TargetDir)creator\card-font.css" />
+  </Target>
+
+  <Target Name="NoJsInMod" BeforeTargets="DeployMod">
+    <ItemGroup>
+      <StrayJs Include="$(TargetDir)**\*.js" />
+    </ItemGroup>
+    <Error Condition="'@(StrayJs)' != ''" Text="SPT would refuse to load the mod because of these .js files (name them .mjs): @(StrayJs)" />
+  </Target>
+
+  <Target Name="ZipComfyNodes" BeforeTargets="DeployMod">
+    <PropertyGroup>
+      <NodesSrc>$(MSBuildThisFileDirectory)..\..\comfyui\DaCardCrop\</NodesSrc>
+      <NodesStage>$(MSBuildThisFileDirectory)$(IntermediateOutputPath)nodes-zip\</NodesStage>
+    </PropertyGroup>
+    <ItemGroup>
+      <NodesFiles Include="$(NodesSrc)**\*" Exclude="$(NodesSrc)**\__pycache__\**" />
+    </ItemGroup>
+    <RemoveDir Directories="$(NodesStage)" />
+    <Copy SourceFiles="@(NodesFiles)" DestinationFiles="@(NodesFiles->'$(NodesStage)DaCardCrop\%(RecursiveDir)%(Filename)%(Extension)')" />
+    <MakeDir Directories="$(TargetDir)creator\downloads" />
+    <ZipDirectory SourceDirectory="$(NodesStage)" DestinationFile="$(TargetDir)creator\downloads\DaCardCrop.zip" Overwrite="true" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\..\comfyui\workflows\3DCardGen.json" DestinationFolder="$(TargetDir)creator\downloads" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

@@ -1,0 +1,43 @@
+:root {
+    --facade-bg: #141416;
+    --facade-shell: #1C1C1E;
+    --facade-well: #1C1C1E;
+    --facade-panel: #2C2C2E;
+    --facade-head: #363638;
+    --facade-raised: #3A3A3C;
+    --facade-head-hover: #414143;
+    --facade-line: #545456;
+    --facade-divider: color-mix(in srgb, var(--facade-line) 45%, transparent);
+
+    --facade-ink: #E5E5E7;
+    --facade-ink-muted: #A0A0A2;
+    --facade-ink-muted-raised: #AEAEB2;
+    --facade-link: #5CB8FF;
+
+    --facade-blue: 0, 145, 255;
+    --facade-green: 48, 209, 88;
+    --facade-red: 255, 66, 69;
+    --facade-amber: 255, 146, 48;
+    --facade-purple: 219, 52, 242;
+    --facade-grey: 142, 142, 147;
+
+    --facade-scrim: rgba(0, 0, 0, .55);
+    --facade-scroll-thumb: rgba(235, 235, 245, .28);
+    --facade-scroll-thumb-hover: rgba(235, 235, 245, .5);
+    --facade-scroll-thumb-active: rgba(235, 235, 245, .72);
+    --facade-glass-tint: rgba(28, 28, 30, .78);
+}
+
+.facade-chip { color: var(--facade-shell); }
+
+input[type="checkbox"].facade-check,
+input[type="radio"].facade-radio {
+    --fx-tone: var(--facade-grey);
+    --fx-line: .75;
+}
+input[type="checkbox"].facade-check:checked,
+input[type="radio"].facade-radio:checked { --fx-tone: var(--facade-blue); }
+input[type="checkbox"].facade-check:focus-visible,
+input[type="radio"].facade-radio:focus-visible {
+    outline-color: rgba(var(--facade-blue), .7);
+}

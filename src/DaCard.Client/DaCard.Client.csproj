@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <RootNamespace>DaCard.Client</RootNamespace>
+    <Nullable>disable</Nullable>
+
+    <ModInstallSubDir>BepInEx\plugins\$(ModName)</ModInstallSubDir>
+    <Managed>$(SptGameDir)\EscapeFromTarkov_Data\Managed</Managed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\card_slot.png" LogicalName="DaCard.card_slot.png" />
+    <EmbeddedResource Include="Resources\layer_slot.png" LogicalName="DaCard.layer_slot.png" />
+  </ItemGroup>
+
+  <ItemDefinitionGroup>
+    <Reference>
+      <Private>false</Private>
+    </Reference>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx" HintPath="$(SptGameDir)\BepInEx\core\BepInEx.dll" />
+    <Reference Include="0Harmony" HintPath="$(SptGameDir)\BepInEx\core\0Harmony.dll" />
+    <Reference Include="spt-common" HintPath="$(SptGameDir)\BepInEx\plugins\spt\spt-common.dll" />
+    <Reference Include="spt-reflection" HintPath="$(SptGameDir)\BepInEx\plugins\spt\spt-reflection.dll" />
+    <Reference Include="Assembly-CSharp" HintPath="$(Managed)\Assembly-CSharp.dll" />
+    <Reference Include="Comfort" HintPath="$(Managed)\Comfort.dll" />
+    <Reference Include="Comfort.Unity" HintPath="$(Managed)\Comfort.Unity.dll" />
+    <Reference Include="UnityEngine" HintPath="$(Managed)\UnityEngine.dll" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(Managed)\UnityEngine.CoreModule.dll" />
+    <Reference Include="UnityEngine.AssetBundleModule" HintPath="$(Managed)\UnityEngine.AssetBundleModule.dll" />
+    <Reference Include="UnityEngine.ImageConversionModule" HintPath="$(Managed)\UnityEngine.ImageConversionModule.dll" />
+    <Reference Include="Unity.TextMeshPro" HintPath="$(Managed)\Unity.TextMeshPro.dll" />
+    <Reference Include="UnityEngine.TextRenderingModule" HintPath="$(Managed)\UnityEngine.TextRenderingModule.dll" />
+    <Reference Include="UnityEngine.UI" HintPath="$(Managed)\UnityEngine.UI.dll" />
+    <Reference Include="UnityEngine.UIModule" HintPath="$(Managed)\UnityEngine.UIModule.dll" />
+    <Reference Include="Sirenix.Serialization" HintPath="$(Managed)\Sirenix.Serialization.dll" />
+    <Reference Include="Newtonsoft.Json" HintPath="$(Managed)\Newtonsoft.Json.dll" />
+  </ItemGroup>
+
+  <Target Name="CheckSptGameDir" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(SptGameDir)' == '' or !Exists('$(Managed)')" Text="SptGameDir must point at your SPT install (the client builds against its DLLs). Set it in Directory.Build.props.user (next to Directory.Build.props, not in git), as an environment variable, or with dotnet build -p:SptGameDir=&lt;path&gt;." />
+  </Target>
+
+</Project>

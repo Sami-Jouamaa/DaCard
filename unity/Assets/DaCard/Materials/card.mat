@@ -1,0 +1,57 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: card
+  m_Shader: {fileID: 4800000, guid: 90f7d2ed22784524da97e340331522d1, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _BackTex:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _HoloMask:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _MainTex:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _FoilDarken: 0.25
+    - _Gloss: 96
+    - _GratingAngle: 30
+    - _GratingSpacing: 1600
+    - _HoloAmbient: 0.6
+    - _HoloPattern: 0
+    - _HoloStrength: 1
+    - _ReflectStrength: 0.15
+    - _SparkleDensity: 0.6
+    - _SparkleScale: 60
+    - _StencilType: 0
+    m_Colors:
+    - _BackColor: {r: 0.16, g: 0.18, b: 0.22, a: 1}
+    - _BackRect: {r: 0.5095171, g: 0.22017723, b: 0.47665644, a: 0.6656966}
+    - _EdgeColor: {r: 0.85, g: 0.84, b: 0.8, a: 1}
+    - _FrontRect: {r: 0.49232724, g: 0.8858738, b: -0.47665638, a: -0.66569656}
+    - _SpecColor: {r: 0.25, g: 0.25, b: 0.25, a: 1}
+  m_BuildTextureStacks: []

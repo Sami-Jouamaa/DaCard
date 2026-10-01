@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DaCard.Client/DaCard.Client.csproj" />
+    <Project Path="src/DaCard.Server/DaCard.Server.csproj" />
+  </Folder>
+</Solution>

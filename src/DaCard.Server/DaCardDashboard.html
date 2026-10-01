@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en" class="facade-scroll">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DaCard</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='7' width='15' height='21' rx='2' transform='rotate(-12 10.5 17.5)' fill='none' stroke='%2300b285' stroke-width='2.4'/%3E%3Crect x='13' y='4' width='15' height='21' rx='2' fill='%2300b285'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="creator/ui/facade-ui.css">
+    <link rel="stylesheet" href="creator/ui/fonts.css">
+    <link rel="stylesheet" href="creator/card-font.css">
+    <link rel="stylesheet" href="creator/theme.css">
+    <link rel="stylesheet" href="creator/app.css">
+</head>
+<body>
+<main class="shell">
+    <header class="masthead">
+        <div class="masthead-main">
+            <div class="wrap">
+                <h1 class="logo">
+                    <svg class="logo-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="7" width="15" height="21" rx="2" transform="rotate(-12 10.5 17.5)" fill="none" stroke="currentColor" stroke-width="2.4"/><rect x="13" y="4" width="15" height="21" rx="2" fill="currentColor"/></svg>
+                    <span class="logo-a">Da</span><span class="logo-b">Card</span>
+                </h1>
+                <nav class="side-nav" aria-label="Sections">
+                    <button class="nav-item active" data-pane="new" type="button">New card</button>
+                    <button class="nav-item" data-pane="cards" type="button">My cards <span class="facade-chip fx-grey" id="cards-count" hidden>0</span></button>
+                    <button class="nav-item" data-pane="collections" type="button">Collections <span class="facade-chip fx-grey" id="collections-count" hidden>0</span></button>
+                    <button class="nav-item" data-pane="packs" type="button">Booster packs <span class="facade-chip fx-grey" id="packs-count" hidden>0</span></button>
+                    <button class="nav-item" data-pane="settings" type="button">Settings</button>
+                </nav>
+                <span class="facade-pill fx-sm fx-grey" id="folder-pill">Not connected</span>
+                <button type="button" class="facade-btn fx-blue fx-on" id="folder-connect">Connect mod folder…</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="layout wrap">
+        <p class="notice" id="folder-note">Connect the <b>Guro-DaCard</b> folder to save into the game.</p>
+        <div class="notice folder-path-row" id="folder-path-row" hidden>
+            <span>Pick this folder:</span>
+            <code id="folder-path"></code>
+            <button type="button" class="facade-btn fx-sm" id="folder-path-copy">Copy path</button>
+        </div>
+
+        <div class="panes">
+            <section class="pane active" id="pane-new">
+                <p class="crumbs"><span>DaCard</span><span>New card</span></p>
+                <h2 class="pane-title">New card</h2>
+
+                <div id="card-form-home"></div>
+                <div id="card-form">
+                    <div class="card-form-main">
+                        <fieldset class="card">
+                            <legend class="card-title">Details</legend>
+                            <div class="card-body details-grid">
+                                <div class="details-col">
+                                    <label class="field">
+                                        <span>Name</span>
+                                        <input type="text" class="facade-input" id="f-name" maxlength="80" autocomplete="off" placeholder="e.g. Tagilla's Hammer">
+                                        <small class="field-note" id="f-folder">Folder: data/cards/_Default/Rare/&lt;new id&gt;/</small>
+                                    </label>
+                                    <label class="field">
+                                        <span>Short name</span>
+                                        <input type="text" class="facade-input" id="f-short" maxlength="24" autocomplete="off" placeholder="Shown on the inventory cell">
+                                    </label>
+                                    <label class="field">
+                                        <span>Rarity</span>
+                                        <select class="facade-select" id="f-rarity">
+                                            <option>Common</option><option>Uncommon</option><option selected>Rare</option><option>Epic</option><option>Legendary</option>
+                                        </select>
+                                        <small class="field-note" id="f-price"></small>
+                                    </label>
+                                    <label class="field">
+                                        <span>Collection</span>
+                                        <select class="facade-select" id="f-collection"><option value="">No collection</option></select>
+                                    </label>
+                                </div>
+                                <div class="details-col">
+                                    <label class="field details-desc">
+                                        <span>Description</span>
+                                        <textarea class="facade-input" id="f-desc" rows="3" placeholder="Shown when the card is inspected"></textarea>
+                                    </label>
+                                </div>
+                                <div class="field span-2" id="f-align-field" hidden>
+                                    <span>Collection text on this card</span>
+                                    <div class="card-align" id="f-align-rows"></div>
+                                    <small class="field-note" id="f-align-note"></small>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <fieldset class="card">
+                            <legend class="card-title">Card</legend>
+                            <div class="card-body picture">
+                                <div class="picture-inputs">
+                                    <div class="picture-3d" id="picture-3d">
+                                    <div class="picture-3d-head">
+                                        <div class="picture-3d-title">
+                                            <b>3D layer</b>
+                                            <small>Picture with real depth.</small>
+                                        </div>
+                                        <label class="facade-check-row" title="Give the card a 3D layer: albedo, depth map, foil area and normal map"><input type="checkbox" class="facade-switch" id="f-3d"><span>3D</span></label>
+                                    </div>
+                                    <div class="picture-3d-body" id="picture-3d-body" hidden>
+                                    <div class="media" id="media-art" data-slot="art">
+                                        <div class="drop" id="drop-art">
+                                            <b>Albedo</b>
+                                            <span>Image, frames, video or GIF:</span>
+                                            <div class="media-pick"></div>
+                                            <small id="art-name">PNG, JPG, WebP · MP4, WebM, GIF</small>
+                                        </div>
+                                        <div class="media-anim" hidden>
+                                            <label class="media-fps-row"><span>FPS</span><input type="number" class="facade-input media-fps" min="1" max="60" step="1" inputmode="numeric"></label>
+                                            <button type="button" class="facade-btn fx-sm media-split">Split frames</button>
+                                            <small class="field-note media-info"></small>
+                                        </div>
+                                        <input type="file" class="media-file" hidden>
+                                    </div>
+                                    <div class="media" id="media-depth" data-slot="depth">
+                                        <div class="drop" id="drop-depth">
+                                            <b>Depth map</b>
+                                            <span>Grayscale depth map:</span>
+                                            <div class="media-pick"></div>
+                                            <small id="depth-name">white = near, black = far</small>
+                                        </div>
+                                        <div class="media-anim" hidden>
+                                            <label class="media-fps-row"><span>FPS</span><input type="number" class="facade-input media-fps" min="1" max="60" step="1" inputmode="numeric"></label>
+                                            <button type="button" class="facade-btn fx-sm media-split">Split frames</button>
+                                            <small class="field-note media-info"></small>
+                                        </div>
+                                        <input type="file" class="media-file" hidden>
+                                    </div>
+                                    <div class="depth-field">
+                                        <div class="depth-field-head">
+                                            <b>Depth</b>
+                                            <small id="depth-note"></small>
+                                            <button type="button" class="facade-btn fx-sm fx-grey" id="depth-reset">Default</button>
+                                        </div>
+                                        <div class="depth-range" id="depth-range">
+                                            <div class="depth-range-track"><div class="depth-range-fill"></div></div>
+                                            <input type="range" id="depth-near" min="0" max="1" step="0.01" aria-label="Near depth (white of the depth map)">
+                                            <input type="range" id="depth-far" min="0" max="1" step="0.01" aria-label="Far depth (black of the depth map)">
+                                        </div>
+                                        <div class="depth-range-scale"><span>Window</span><span>Back of the box</span></div>
+                                    </div>
+                                    <div class="media" id="media-foil" data-slot="foil">
+                                        <div class="drop drop-sm" id="drop-foil">
+                                            <b>Foil area</b>
+                                            <span>Optional. White = foil.</span>
+                                            <div class="media-pick"></div>
+                                            <small id="foil-name">No mask: all foil</small>
+                                        </div>
+                                        <div class="media-anim" hidden>
+                                            <label class="media-fps-row"><span>FPS</span><input type="number" class="facade-input media-fps" min="1" max="60" step="1" inputmode="numeric"></label>
+                                            <button type="button" class="facade-btn fx-sm media-split">Split frames</button>
+                                            <small class="field-note media-info"></small>
+                                        </div>
+                                        <div class="guide-actions media-actions"><button type="button" class="facade-btn fx-sm fx-grey" id="foil-clear" hidden>Foil the whole picture</button></div>
+                                        <input type="file" class="media-file" hidden>
+                                    </div>
+                                    <div class="media" id="media-normal" data-slot="normal">
+                                        <div class="drop drop-sm" id="drop-normal">
+                                            <b>Normal map</b>
+                                            <span>Optional. OpenGL, green up.</span>
+                                            <div class="media-pick"></div>
+                                            <small id="normal-name">No normal map</small>
+                                        </div>
+                                        <div class="media-anim" hidden>
+                                            <label class="media-fps-row"><span>FPS</span><input type="number" class="facade-input media-fps" min="1" max="60" step="1" inputmode="numeric"></label>
+                                            <button type="button" class="facade-btn fx-sm media-split">Split frames</button>
+                                            <small class="field-note media-info"></small>
+                                        </div>
+                                        <div class="guide-actions media-actions"><button type="button" class="facade-btn fx-sm fx-grey" id="normal-clear" hidden>Remove the normal map</button></div>
+                                        <input type="file" class="media-file" hidden>
+                                    </div>
+                                    <div class="crop-controls">
+                                        <label class="range-row"><span>Zoom</span><input type="range" class="facade-range" id="crop-zoom" min="1" max="6" step="0.01" value="1"></label>
+                                        <button type="button" class="facade-btn fx-sm fx-grey" id="crop-reset">Reset</button>
+                                    </div>
+                                    <p class="field-note">Drag to move. Dashed line: the window.</p>
+                                    <div class="guide-actions picture-3d-downloads">
+                                        <a class="facade-btn fx-sm" href="creator/downloads/3DCardGen.json" download title="ComfyUI workflow: Card Crop, then the depth map, normal map and a cut-out with its mask">Download workflow (3DCardGen.json)</a>
+                                        <a class="facade-btn fx-sm" href="creator/downloads/DaCardCrop.zip" download title="The Card Crop custom node the workflow needs: extract into ComfyUI's custom_nodes">Download Card Crop node (.zip)</a>
+                                    </div>
+                                    </div>
+                                    </div>
+                                    <div id="card-layers"></div>
+                                    <p class="field-note">Drag to move, double-click to fill.</p>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <div class="save-bar">
+                            <span class="facade-status" id="save-status" hidden></span>
+                            <button type="button" class="facade-btn fx-lg" id="save-zip">Download .zip</button>
+                            <button type="button" class="facade-btn fx-lg fx-blue fx-on" id="save-card">Save card</button>
+                        </div>
+                    </div>
+                    <aside class="card-form-preview" aria-label="Card preview">
+                        <div class="crop-wrap">
+                            <div class="preview-head">
+                                <div class="view-toggle" id="preview-view">
+                                    <button type="button" class="facade-btn fx-sm" data-view="3d" title="The card as it looks in game">3D</button>
+                                    <button type="button" class="facade-btn fx-sm fx-on" data-view="place" title="The card flat: click a layer to select it, drag to move it">2D</button>
+                                </div>
+                                <label class="facade-check-row" title="Show the card's foil version: every card also drops as a foil card (chance in Settings)"><input type="checkbox" class="facade-switch" id="f-holo"><span>Holo</span></label>
+                            </div>
+                            <canvas id="crop" width="490" height="684" aria-label="Card preview"></canvas>
+                            <canvas class="card-3d" id="card-3d" hidden aria-label="3D preview of the card"></canvas>
+                            <div class="crop-toggle" id="crop-toggle" hidden>
+                                <button type="button" class="facade-btn fx-sm fx-on" data-show="art">Picture</button>
+                                <button type="button" class="facade-btn fx-sm" data-show="depth">Depth</button>
+                            </div>
+                        </div>
+                    </aside>
+                </div>
+            </section>
+
+            <section class="pane" id="pane-cards">
+                <p class="crumbs"><span>DaCard</span><span>My cards</span></p>
+                <h2 class="pane-title">My cards</h2>
+                <div class="cards-layout">
+                <nav class="cards-side" id="cards-side" aria-label="Collections"></nav>
+                <div class="cards-main">
+                <div class="cards-toolbar">
+                    <input type="search" class="facade-input" id="cards-search" placeholder="Search name or collection" autocomplete="off">
+                    <select class="facade-select" id="cards-rarity">
+                        <option value="">All rarities</option><option>Common</option><option>Uncommon</option><option>Rare</option><option>Epic</option><option>Legendary</option>
+                    </select>
+                    <button type="button" class="facade-btn" id="cards-refresh">Refresh</button>
+                </div>
+                <div class="cards-grid" id="cards-grid"></div>
+                <div class="empty" id="cards-empty">Connect the mod folder to see your cards.</div>
+                <p class="field-note">Restart SPT to apply.</p>
+                </div>
+                </div>
+            </section>
+
+            <section class="pane" id="pane-collections">
+                <p class="crumbs"><span>DaCard</span><span>Collections</span></p>
+                <h2 class="pane-title">Collections</h2>
+
+                <div id="collections-list-view">
+                    <p class="hint first">One binder per collection.</p>
+                    <div class="cards-toolbar coll-toolbar">
+                        <span></span>
+                        <button type="button" class="facade-btn fx-blue fx-on" id="coll-new">New collection</button>
+                    </div>
+                    <div class="coll-grid" id="coll-grid"></div>
+                    <div class="empty" id="coll-empty">Connect the mod folder to see your collections.</div>
+                </div>
+
+                <div id="coll-editor" hidden>
+                    <fieldset class="card">
+                        <legend class="card-title" id="coll-editor-title">New collection</legend>
+                        <div class="card-body form-grid">
+                            <label class="field">
+                                <span>Name</span>
+                                <input type="text" class="facade-input" id="c-name" maxlength="60" autocomplete="off" placeholder="e.g. League of Legends">
+                                <small class="field-note" id="c-folder"></small>
+                            </label>
+                            <label class="field">
+                                <span>Short name</span>
+                                <input type="text" class="facade-input" id="c-short" maxlength="24" autocomplete="off" placeholder="Shown on the inventory cell">
+                            </label>
+                            <label class="field span-2">
+                                <span>Description</span>
+                                <textarea class="facade-input" id="c-desc" rows="2" placeholder="Empty = says which collection it is and how many cards it holds"></textarea>
+                            </label>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="card">
+                        <legend class="card-title">Stickers</legend>
+                        <div class="card-body sticker-editor">
+                            <div class="sticker-controls">
+                                <div class="sticker-layers" id="sticker-layers"></div>
+                                <div class="drop drop-sm" id="drop-sticker" tabindex="0">
+                                    <b>Add a sticker</b>
+                                    <span>Drop or click.</span>
+                                    <small>PNG with transparency works best</small>
+                                </div>
+                                <input type="file" id="file-sticker" accept="image/*" hidden>
+                                <div class="sticker-tools" id="sticker-tools">
+                                    <label class="range-row"><span>Size</span><input type="range" class="facade-range" id="st-size" min="0.03" max="1.2" step="0.005" value="0.6"></label>
+                                    <label class="range-row"><span>Turn</span><input type="range" class="facade-range" id="st-rot" min="-180" max="180" step="1" value="0"></label>
+                                    <div class="guide-actions">
+                                        <button type="button" class="facade-btn fx-sm fx-grey" id="st-center">Centre</button>
+                                        <button type="button" class="facade-btn fx-sm fx-grey" id="st-straight">Straighten</button>
+                                        <button type="button" class="facade-btn fx-sm fx-red" id="st-remove">Remove sticker</button>
+                                    </div>
+                                </div>
+                                <p class="field-note">Drag to move, corner to resize.</p>
+                            </div>
+                            <div class="binder-view">
+                                <div class="view-toggle" id="st-view">
+                                    <button type="button" class="facade-btn fx-sm" data-view="3d">3D</button>
+                                    <button type="button" class="facade-btn fx-sm fx-on" data-view="2d">Front</button>
+                                </div>
+                                <div class="binder-stage" id="binder-stage">
+                                    <img id="binder-img" alt="" draggable="false">
+                                    <div class="binder-cover" id="binder-cover"></div>
+                                </div>
+                                <canvas class="binder-3d" id="binder-3d" hidden></canvas>
+                                <small class="field-note" id="st-3d-note" hidden></small>
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="card">
+                        <legend class="card-title">Card layers</legend>
+                        <div class="card-body back-editor">
+                            <div class="picture-inputs">
+                                <div id="coll-layers"></div>
+                                <p class="field-note">On every card in the collection.</p>
+                            </div>
+                            <div class="crop-wrap">
+                                <div class="preview-head">
+                                    <div class="view-toggle" id="coll-view">
+                                        <button type="button" class="facade-btn fx-sm" data-view="3d" title="The card as it looks in game">3D</button>
+                                        <button type="button" class="facade-btn fx-sm fx-on" data-view="place" title="The side of the Front / Back tab, flat: click a layer to select it, drag to move it">2D</button>
+                                    </div>
+                                    <label class="facade-check-row" title="Show the card's foil version"><input type="checkbox" class="facade-switch" id="coll-holo"><span>Holo</span></label>
+                                </div>
+                                <canvas class="card-preview" id="coll-preview" width="490" height="684" aria-label="Card preview"></canvas>
+                                <canvas class="card-3d" id="coll-3d" hidden aria-label="3D preview of a card"></canvas>
+                                <label class="field coll-sample"><span>Preview on</span><select class="facade-select" id="coll-sample"></select></label>
+                                <small class="field-note preview-note">Drag to move, double-click to fill.</small>
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="card">
+                        <legend class="card-title">Cards <span class="facade-chip fx-grey" id="c-count">0</span></legend>
+                        <div class="card-body">
+                            <div class="coll-cards" id="c-cards"></div>
+                            <p class="field-note" id="c-size-note"></p>
+                        </div>
+                    </fieldset>
+
+                    <div class="save-bar">
+                        <button type="button" class="facade-btn fx-lg fx-red" id="c-delete" hidden>Delete collection</button>
+                        <span class="spacer"></span>
+                        <button type="button" class="facade-btn fx-lg" id="c-cancel">Back</button>
+                        <button type="button" class="facade-btn fx-lg fx-blue fx-on" id="c-save">Save collection</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="pane" id="pane-packs">
+                <p class="crumbs"><span>DaCard</span><span>Booster packs</span></p>
+                <h2 class="pane-title">Booster packs</h2>
+
+                <div id="packs-list-view">
+                    <p class="hint first">Sealed packs of random cards.</p>
+
+                    <fieldset class="card">
+                        <legend class="card-title">Card chances in packs</legend>
+                        <div class="card-body odds-editor">
+                            <div class="odds-bar" id="pk-odds-bar" aria-label="Share of pack cards per rarity"></div>
+                            <div class="odds-table" id="pk-odds-table">
+                                <span class="rt-head">Rarity</span><span class="rt-head">Chance per card %</span><span class="rt-head">In a pack of <span id="pk-odds-n">3</span></span>
+                            </div>
+                            <p class="field-note">Rarity chance per card.</p>
+                            <div class="save-bar">
+                                <span class="facade-status" id="pk-odds-status" hidden></span>
+                                <button type="button" class="facade-btn" id="pk-odds-reset">Undo changes</button>
+                                <button type="button" class="facade-btn fx-blue fx-on" id="pk-odds-save">Save chances</button>
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <div class="cards-toolbar coll-toolbar">
+                        <span></span>
+                        <button type="button" class="facade-btn fx-blue fx-on" id="pk-new">New booster pack</button>
+                    </div>
+                    <div class="coll-grid pack-grid" id="pk-grid"></div>
+                    <div class="empty" id="pk-empty">Connect the mod folder to see your booster packs.</div>
+                </div>
+
+                <div id="pk-editor" class="pack-form" hidden>
+                    <div class="pack-form-main">
+                        <fieldset class="card">
+                            <legend class="card-title" id="pk-title">New booster pack</legend>
+                            <div class="card-body form-grid">
+                                <label class="field">
+                                    <span>Name</span>
+                                    <input type="text" class="facade-input" id="pk-name" maxlength="60" autocomplete="off" placeholder="e.g. Streets of Tarkov booster">
+                                    <small class="field-note" id="pk-folder"></small>
+                                </label>
+                                <label class="field">
+                                    <span>Short name</span>
+                                    <input type="text" class="facade-input" id="pk-short" maxlength="24" autocomplete="off" placeholder="Shown on the inventory cell">
+                                </label>
+                                <label class="field span-2">
+                                    <span>Description</span>
+                                    <textarea class="facade-input" id="pk-desc" rows="2" placeholder="Empty = says how many cards it holds"></textarea>
+                                </label>
+                                <label class="field">
+                                    <span>Cards per pack</span>
+                                    <input type="number" class="facade-input" id="pk-count" min="1" max="10" step="1" inputmode="numeric">
+                                    <small class="field-note">Needs this many free cells.</small>
+                                </label>
+                                <label class="field">
+                                    <span>Price ₽</span>
+                                    <input type="number" class="facade-input" id="pk-price" min="1" step="500" inputmode="numeric">
+                                    <small class="field-note">Buy and sell value.</small>
+                                </label>
+                            </div>
+                        </fieldset>
+
+                        <fieldset class="card">
+                            <legend class="card-title">Where to get it</legend>
+                            <div class="card-body form-grid">
+                                <div class="field">
+                                    <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="pk-buy"><span>Geek sells it</span></label>
+                                    <small class="field-note">Off: loot only.</small>
+                                </div>
+                                <div class="field">
+                                    <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="pk-loot"><span>Found in raid</span></label>
+                                    <label class="pack-loot-row" id="pk-loot-row"><input type="number" class="facade-input" id="pk-loot-percent" min="0.01" max="100" step="0.01" inputmode="decimal"><span>% of card containers</span></label>
+                                    <small class="field-note">Per card container.</small>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <fieldset class="card">
+                            <legend class="card-title">Cards in the pack <span class="facade-chip fx-grey" id="pk-pool-count">0</span></legend>
+                            <div class="card-body pack-cards">
+                                <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="pk-all"><span>All cards (every collection, new cards too)</span></label>
+                                <div class="field" id="pk-colls-field">
+                                    <span>Whole collections</span>
+                                    <div class="chip-toggles" id="pk-colls"></div>
+                                </div>
+                                <div class="field" id="pk-singles-field">
+                                    <span>Single cards</span>
+                                    <div class="coll-cards" id="pk-singles"></div>
+                                </div>
+                                <div class="field">
+                                    <span>Rarities</span>
+                                    <div class="chip-toggles" id="pk-rarities"></div>
+                                    <small class="field-note">All on = any rarity.</small>
+                                </div>
+                                <div class="pack-pool" id="pk-pool"></div>
+                            </div>
+                        </fieldset>
+
+                        <fieldset class="card">
+                            <legend class="card-title">Look</legend>
+                            <div class="card-body pack-look">
+                                <div class="look-choice" role="radiogroup" aria-label="How the pack looks">
+                                    <button type="button" class="look-tile" data-look="preset" role="radio">
+                                        <span class="look-name">Preset skin</span>
+                                        <span class="look-desc">Shared preset.</span>
+                                    </button>
+                                    <button type="button" class="look-tile" data-look="layers" role="radio">
+                                        <span class="look-name">Layers</span>
+                                        <span class="look-desc">Pictures on a base.</span>
+                                    </button>
+                                    <button type="button" class="look-tile" data-look="textures" role="radio">
+                                        <span class="look-name">Own textures</span>
+                                        <span class="look-desc">Finished texture set.</span>
+                                    </button>
+                                </div>
+
+                                <div class="look-panel" id="pk-look-preset">
+                                    <div class="skin-grid" id="pk-skins"></div>
+                                    <p class="field-note">Presets from <code>data/skins/</code>.</p>
+                                </div>
+
+                                <div class="look-panel" id="pk-look-layers">
+                                    <div class="field">
+                                        <span>Base</span>
+                                        <div class="skin-grid" id="pk-bases"></div>
+                                        <small class="field-note">Under the layers.</small>
+                                    </div>
+                                    <div class="drop drop-sm" id="pk-layer-drop" tabindex="0">
+                                        <b>Add a picture</b>
+                                        <span>Drop or click.</span>
+                                        <small>PNG with transparency works best</small>
+                                    </div>
+                                    <input type="file" id="pk-layer-file" accept="image/*" multiple hidden>
+                                    <div class="pack-layers" id="pk-layers"></div>
+                                    <p class="field-note">Top layer is on top.</p>
+                                </div>
+
+                                <div class="look-panel" id="pk-look-textures">
+                                    <div class="pack-maps" id="pk-maps"></div>
+                                    <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="pk-normal-dx"><span>DirectX normal map (flip)</span></label>
+                                    <p class="field-note">Empty = template's.</p>
+                                </div>
+
+                                <div class="skin-save">
+                                    <input type="text" class="facade-input" id="pk-skin-name" maxlength="40" autocomplete="off" placeholder="Preset name">
+                                    <button type="button" class="facade-btn" id="pk-skin-save">Save as preset</button>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <div class="save-bar">
+                            <button type="button" class="facade-btn fx-lg fx-red" id="pk-delete" hidden>Delete pack</button>
+                            <span class="spacer"></span>
+                            <button type="button" class="facade-btn fx-lg" id="pk-cancel">Back</button>
+                            <button type="button" class="facade-btn fx-lg fx-blue fx-on" id="pk-save">Save booster pack</button>
+                        </div>
+                    </div>
+
+                    <aside class="pack-form-preview" aria-label="Booster pack preview">
+                        <div class="preview-head">
+                            <div class="view-toggle" id="pk-view">
+                                <button type="button" class="facade-btn fx-sm" data-view="3d" title="The pack as it looks in game: drag to turn it, scroll to zoom, double-click to reset">3D</button>
+                                <button type="button" class="facade-btn fx-sm fx-on" data-view="front" title="The front, flat: select a layer and drag it">Front</button>
+                                <button type="button" class="facade-btn fx-sm" data-view="back" title="The back, flat">Back</button>
+                                <button type="button" class="facade-btn fx-sm" data-view="texture" title="The whole texture as the model uses it (UV layout)">Texture</button>
+                            </div>
+                        </div>
+                        <div class="view-toggle" id="pk-show" title="Which of the pack's maps the flat views show">
+                            <button type="button" class="facade-btn fx-sm fx-on" data-show="albedo">Colour</button>
+                            <button type="button" class="facade-btn fx-sm" data-show="metallic">Metallic</button>
+                            <button type="button" class="facade-btn fx-sm" data-show="roughness">Roughness</button>
+                            <button type="button" class="facade-btn fx-sm" data-show="normal">Normal</button>
+                        </div>
+                        <canvas class="pack-2d" id="pk-2d" aria-label="Booster pack, flat"></canvas>
+                        <canvas class="pack-3d" id="pk-3d" hidden aria-label="Booster pack, 3D"></canvas>
+                        <small class="field-note preview-note" id="pk-preview-note"></small>
+                    </aside>
+                </div>
+            </section>
+
+            <section class="pane" id="pane-settings">
+                <p class="crumbs"><span>DaCard</span><span>Settings</span></p>
+                <h2 class="pane-title">Settings</h2>
+                <p class="hint first">Restart SPT to apply.</p>
+                <div class="empty" id="s-empty">Connect the <b>Guro-DaCard</b> folder.</div>
+
+                <div id="s-form" hidden>
+                    <fieldset class="card">
+                        <legend class="card-title">Rarities</legend>
+                        <div class="card-body">
+                            <div class="rarity-table" id="s-rarities">
+                                <span class="rt-head">Rarity</span><span class="rt-head">Price ₽</span><span class="rt-head">Spawn chance %</span>
+                            </div>
+                            <p class="field-note"><b>Spawn chance</b>: per card container.</p>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="card">
+                        <legend class="card-title">Foil cards</legend>
+                        <div class="card-body form-grid">
+                            <label class="field">
+                                <span>Foil chance %</span>
+                                <input type="number" class="facade-input" id="s-foil-percent" min="0" max="100" step="0.1" inputmode="decimal">
+                                <small class="field-note">Chance a found card is foil.</small>
+                            </label>
+                            <label class="field">
+                                <span>Foil price ×</span>
+                                <input type="number" class="facade-input" id="s-foil-multiplier" min="0.1" step="0.1" inputmode="decimal">
+                                <small class="field-note">× the rarity's price.</small>
+                            </label>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="card">
+                        <legend class="card-title">Geek, the card trader</legend>
+                        <div class="card-body geek-settings">
+                            <img class="geek-avatar" src="traders/geek.png" alt="">
+                            <div class="field">
+                                <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="s-geek-cards"><span>Geek sells cards</span></label>
+                                <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="s-geek-foils"><span>Geek sells foil cards</span></label>
+                                <small class="field-note">Only Geek buys cards.</small>
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="card">
+                        <legend class="card-title">Binders</legend>
+                        <div class="card-body form-grid">
+                            <label class="field">
+                                <span>Price ₽</span>
+                                <input type="number" class="facade-input" id="s-binder-price" min="1" step="500" inputmode="numeric">
+                                <small class="field-note">Every binder.</small>
+                            </label>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="card">
+                        <legend class="card-title">Deleted cards, binders and booster packs</legend>
+                        <div class="card-body form-grid">
+                            <label class="field">
+                                <span>Copies players own</span>
+                                <select class="facade-select" id="s-retired">
+                                    <option value="remove">Remove</option>
+                                    <option value="refund">Remove and refund</option>
+                                    <option value="keep">Keep</option>
+                                </select>
+                            </label>
+                            <small class="field-note span-2">Profiles are backed up first.</small>
+                        </div>
+                    </fieldset>
+
+                    <div class="save-bar">
+                        <span class="facade-status" id="s-status" hidden></span>
+                        <button type="button" class="facade-btn fx-lg" id="s-reset">Undo changes</button>
+                        <button type="button" class="facade-btn fx-lg fx-blue fx-on" id="s-save">Save settings</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+</main>
+
+<div class="facade-overlay cc-overlay" id="edit-modal" hidden>
+    <div class="facade-modal cc-modal cc-modal-wide" role="dialog" aria-modal="true" aria-labelledby="edit-title">
+        <header>
+            <span id="edit-title">Edit card</span>
+            <button type="button" class="facade-iconbtn" id="edit-close" aria-label="Close">×</button>
+        </header>
+        <div class="cc-modal-body" id="edit-host"></div>
+        <footer>
+            <button type="button" class="facade-btn fx-sm fx-red" id="edit-delete">Delete card</button>
+            <button type="button" class="facade-btn fx-sm" id="edit-duplicate" title="Copy this card (as saved) into a new card named with _copy, and open it">Duplicate</button>
+            <span class="spacer"></span>
+            <button type="button" class="facade-btn fx-sm" id="edit-cancel">Close without saving</button>
+        </footer>
+    </div>
+</div>
+
+<script>
+    window.chrome = window.chrome || {};
+    if (!chrome.storage) chrome.storage = {
+        local: { get: () => Promise.resolve({ 'settings:notifications': { success: true, error: true } }) },
+        onChanged: { addListener() {} }
+    };
+</script>
+<script src="creator/ui/facade-select.mjs"></script>
+<script src="creator/ui/facade-toast.mjs"></script>
+<script src="creator/binder_front.mjs"></script>
+<script src="creator/binder_band.mjs"></script>
+<script src="creator/binder_model.mjs"></script>
+<script src="creator/binder3d.mjs"></script>
+<script src="creator/card3d.mjs"></script>
+<script src="creator/pack_model.mjs"></script>
+<script src="creator/pack3d.mjs"></script>
+<script src="creator/media.mjs"></script>
+<script src="creator/text.mjs"></script>
+<script src="creator/layers.mjs"></script>
+<script src="creator/packs.mjs"></script>
+<script src="creator/app.mjs"></script>
+</body>
+</html>

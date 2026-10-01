@@ -1,0 +1,20 @@
+{
+  "manifest": [
+    {
+      "key": "dacard/item_card_3d.bundle",
+      "dependencyKeys": []
+    },
+    {
+      "key": "dacard/item_card_2d.bundle",
+      "dependencyKeys": []
+    },
+    {
+      "key": "dacard/item_binder.bundle",
+      "dependencyKeys": []
+    },
+    {
+      "key": "dacard/item_pack.bundle",
+      "dependencyKeys": []
+    }
+  ]
+}

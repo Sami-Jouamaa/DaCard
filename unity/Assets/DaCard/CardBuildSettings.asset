@@ -1,0 +1,30 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2732888c199920c4fbdce49faf1838e0, type: 3}
+  m_Name: CardBuildSettings
+  m_EditorClassIdentifier: Assembly-CSharp-Editor:DaCard.Editor:CardBuildSettings
+  cardTypes:
+  - type: 3d
+    material: {fileID: 2100000, guid: e7744a4fc8b025e49877e2142ecfa5f9, type: 2}
+  - type: 2d
+    material: {fileID: 2100000, guid: 151b04e8c495f2644a5c244d931dea07, type: 2}
+  previewScale: 2.5
+  binderIconAngles: {x: 10, y: 20, z: 0}
+  stickerBump: 0.35
+  cardIconAngles: {x: 10, y: 20, z: 0}
+  packIconAngles: {x: 8, y: 18, z: 0}
+  packPreviewScale: 1
+  cardEdgeColor: {r: 0.93, g: 0.92, b: 0.9, a: 1}
+  cardEdgeSmoothness: 0.3
+  installAfterBuild: 0
+  modsFolder: D:\Games\EFT\SPT\Game\SPT_Runtime\user\mods
+  sourceMaterial: {fileID: 0}
