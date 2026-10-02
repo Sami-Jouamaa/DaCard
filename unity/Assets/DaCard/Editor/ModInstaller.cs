@@ -88,7 +88,7 @@ namespace DaCard.Editor
                           "and build again):\n  " + string.Join("\n  ", locked.Take(10));
                 return false;
             }
-            message = $"Installed {copied} file(s) into:\n  " + string.Join("\n  ", targets);
+            message = (copied == 0 ? "Already up to date in:\n  " : $"Installed {copied} changed file(s) into:\n  ") + string.Join("\n  ", targets);
             return true;
         }
 
@@ -99,6 +99,7 @@ namespace DaCard.Editor
             {
                 var target = Path.Combine(to, file.Substring(from.Length).TrimStart('\\', '/'));
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                if (SameFile(file, target)) continue;
                 try
                 {
                     File.Copy(file, target, overwrite: true);
@@ -110,6 +111,39 @@ namespace DaCard.Editor
                 }
             }
             return count;
+        }
+
+        private static bool SameFile(string a, string b)
+        {
+            var x = new FileInfo(a);
+            var y = new FileInfo(b);
+            if (!y.Exists || x.Length != y.Length) return false;
+            if (x.LastWriteTimeUtc == y.LastWriteTimeUtc) return true;
+            try
+            {
+                using var sa = new FileStream(a, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var sb = new FileStream(b, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                var ba = new byte[1 << 16];
+                var bb = new byte[1 << 16];
+                int read;
+                while ((read = sa.Read(ba, 0, ba.Length)) > 0)
+                {
+                    var offset = 0;
+                    while (offset < read)
+                    {
+                        var got = sb.Read(bb, offset, read - offset);
+                        if (got == 0) return false;
+                        offset += got;
+                    }
+                    for (var i = 0; i < read; i++)
+                        if (ba[i] != bb[i]) return false;
+                }
+                return true;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
         }
     }
 
