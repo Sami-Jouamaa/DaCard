@@ -1,14 +1,19 @@
 (() => {
     'use strict';
 
-    const RARITIES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'];
+    const DEFAULT_RARITIES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'];
     const RARITY_DEFAULTS = {
-        Common: { price: 5000, color: '#B8BCC4' },
-        Uncommon: { price: 15000, color: '#4FD65A' },
-        Rare: { price: 40000, color: '#3F8CFF' },
-        Epic: { price: 100000, color: '#B04FFF' },
-        Legendary: { price: 250000, color: '#FFB32E' },
+        Common: { price: 5000, color: '#B8BCC4', weight: 68 },
+        Uncommon: { price: 15000, color: '#4FD65A', weight: 22 },
+        Rare: { price: 40000, color: '#3F8CFF', weight: 7 },
+        Epic: { price: 100000, color: '#B04FFF', weight: 2 },
+        Legendary: { price: 250000, color: '#FFB32E', weight: 1 },
     };
+    const NO_RARITY_COLOR = '#8E8E93';
+    const RARITY_NAME = /^[\p{L}\p{N}][\p{L}\p{N} _'.-]{0,23}$/u;
+    const MAX_RARITIES = 12;
+    const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+    const DEFAULT_FOIL_TYPES = ['foil'];
     const CARD_W = 490, CARD_H = 684;
     const WINDOW_RECT = [0.031, 0.022, 0.969, 0.978];
     const PREVIEW_SCALE = 0.5;
@@ -20,7 +25,6 @@
         offline: false,
         data: null,
         cards: null,
-        rarities: structuredClone(RARITY_DEFAULTS),
         list: [],
         urls: [],
         use3d: false,
@@ -68,12 +72,125 @@
         return `${n >> 16}, ${(n >> 8) & 255}, ${n & 255}`;
     }
 
-    function rarityColor(rarity) { return (state.rarities[rarity] || RARITY_DEFAULTS.Rare).color; }
-    function rarityPrice(rarity) { return (state.rarities[rarity] || RARITY_DEFAULTS.Rare).price; }
+    function defaultRarities() {
+        const saved = (state.config && state.config.rarities) || {};
+        return DEFAULT_RARITIES.map((name) => {
+            const key = Object.keys(saved).find((k) => sameName(k, name));
+            const r = (key && saved[key]) || {}, d = RARITY_DEFAULTS[name];
+            return {
+                name,
+                color: HEX_COLOR.test(r.color || '') ? r.color.toUpperCase() : d.color,
+                price: r.price > 0 ? r.price : d.price,
+                weight: Number.isFinite(r.weight) && r.weight >= 0 ? r.weight : d.weight,
+            };
+        });
+    }
 
-    function paintRarity(el, rarity) {
-        el.style.setProperty('--cc-rarity', rarityColor(rarity));
-        el.style.setProperty('--cc-rarity-rgb', hexToRgbTriple(rarityColor(rarity)));
+    const overviewColl = (id) => (id && state.data ? (state.data.collections || []).find((c) => sameName(c.id, id)) || null : null);
+
+    function raritiesOf(collectionId) {
+        const own = overviewColl(collectionId);
+        return own && Array.isArray(own.rarities) && own.rarities.length ? own.rarities : defaultRarities();
+    }
+
+    function rarityOf(rarity, collectionId) {
+        const find = (list) => list.find((r) => sameName(r.name, rarity));
+        let hit = find(raritiesOf(collectionId)) || find(defaultRarities());
+        for (const c of (state.data && state.data.collections) || []) {
+            if (hit) break;
+            if (Array.isArray(c.rarities)) hit = find(c.rarities);
+        }
+        return hit || null;
+    }
+
+    function rarityColor(rarity, collectionId) { const r = rarityOf(rarity, collectionId); return r ? r.color : NO_RARITY_COLOR; }
+    function rarityPrice(rarity, collectionId) { const r = rarityOf(rarity, collectionId); return r ? r.price : 0; }
+    const rarityRank = (rarity, collectionId) => raritiesOf(collectionId).findIndex((r) => sameName(r.name, rarity));
+
+    function rarityNames() {
+        const names = [...DEFAULT_RARITIES];
+        for (const c of (state.data && state.data.collections) || [])
+            for (const r of Array.isArray(c.rarities) ? c.rarities : []) if (!names.some((n) => sameName(n, r.name))) names.push(r.name);
+        return names;
+    }
+
+    function rarityCounts(list, rarities) {
+        const counts = new Map(list.map((r) => [r.name, 0]));
+        for (const name of rarities) {
+            const hit = list.find((r) => sameName(r.name, name));
+            if (hit) counts.set(hit.name, counts.get(hit.name) + 1);
+        }
+        return counts;
+    }
+
+    function rarityOdds(list, counts = null) {
+        const weight = (r) => Math.max(0, +r.weight || 0);
+        const total = list.reduce((sum, r) => sum + weight(r), 0);
+        const live = list.filter((r) => !counts || counts.get(r.name) > 0).reduce((sum, r) => sum + weight(r), 0);
+        let acc = 0;
+        return list.map((r) => {
+            const lo = total > 0 ? (acc / total) * 100 : 0;
+            acc += weight(r);
+            const count = counts ? counts.get(r.name) || 0 : null;
+            const rerolled = !!counts && !count;
+            const chance = !rerolled && live > 0 ? weight(r) / live : 0;
+            return { ...r, lo, hi: total > 0 ? (acc / total) * 100 : 0, count, rerolled, chance, each: count ? chance / count : 0 };
+        });
+    }
+
+    const percentText = (v) => `${+v.toFixed(v >= 10 ? 1 : v >= 1 ? 2 : 3)}`;
+
+    function oddsText(o) {
+        const range = `${percentText(o.lo)}–${percentText(o.hi)}`;
+        if (o.count == null) return `${range} · ${percentText(o.chance * 100)}%`;
+        if (o.rerolled) return `${range} · no cards, re-rolled`;
+        return `${range} · ${percentText(o.chance * 100)}% · ${o.count} card${o.count === 1 ? '' : 's'} · ${percentText(o.each * 100)}% each`;
+    }
+
+    function renderOddsBar(el, odds) {
+        el.innerHTML = '';
+        for (const o of odds) {
+            const share = o.hi - o.lo;
+            if (!(share > 0)) continue;
+            const seg = document.createElement('div');
+            seg.className = 'odds-seg';
+            seg.style.width = `${share}%`;
+            seg.style.background = o.color;
+            seg.title = `${o.name}: ${percentText(o.lo)}–${percentText(o.hi)}`;
+            const label = document.createElement('span');
+            label.textContent = share >= 9 ? o.name : share >= 3 ? percentText(share) : '';
+            seg.appendChild(label);
+            el.appendChild(seg);
+        }
+    }
+
+    function fillRaritySelect(sel, collectionId, fallback) {
+        const list = raritiesOf(collectionId);
+        const want = sel.value || fallback;
+        sel.innerHTML = list.map((r) => `<option value="${escapeHtml(r.name)}">${escapeHtml(r.name)}</option>`).join('');
+        const hit = list.find((r) => sameName(r.name, want));
+        sel.value = hit ? hit.name : list[0].name;
+        syncSelect(sel);
+    }
+
+    const fillCardRarity = () => fillRaritySelect($('#f-rarity'), $('#f-collection').value || null);
+
+    function foilChanceOf(collectionId) {
+        const own = overviewColl(collectionId);
+        if (own && typeof own.foilChance === 'number') return own.foilChance;
+        return settingsFoilChance();
+    }
+
+    const settingsFoilChance = () => (state.config && state.config.foil && Number.isFinite(state.config.foil.percent) ? state.config.foil.percent : DEFAULT_FOIL_PERCENT);
+    const foilTypeList = () => {
+        const listed = state.data && Array.isArray(state.data.foilTypes) ? state.data.foilTypes : [];
+        return [...listed, ...CardLayerKit.FOIL_TYPES.filter((t) => !listed.some((x) => x.id === t.id))];
+    };
+
+    function paintRarity(el, rarity, collectionId) {
+        const color = rarityColor(rarity, collectionId);
+        el.style.setProperty('--cc-rarity', color);
+        el.style.setProperty('--cc-rarity-rgb', hexToRgbTriple(color));
     }
 
     function download(blob, filename) {
@@ -116,13 +233,6 @@
         const overview = await DaApi.get('/api/overview');
         state.data = overview;
         state.config = overview.settings || null;
-        state.rarities = structuredClone(RARITY_DEFAULTS);
-        for (const [name, r] of Object.entries((state.config && state.config.rarities) || {})) {
-            const key = RARITIES.find((x) => x.toLowerCase() === name.toLowerCase());
-            if (!key || !r) continue;
-            if (r.price > 0) state.rarities[key].price = r.price;
-            if (/^#[0-9a-f]{6}$/i.test(r.color || '')) state.rarities[key].color = r.color;
-        }
         return overview;
     }
 
@@ -138,6 +248,7 @@
                 packsChanged('folder');
                 if (window.CCCollections) CCCollections.render();
                 await showMigrations();
+                showLegacy();
                 redrawStale();
             } catch (e) {
                 toast.err('Could not load the data', e.message);
@@ -155,11 +266,22 @@
         for (const r of notes) {
             const d = r.details || {};
             const what = d.cards ? `${d.cards} card${d.cards === 1 ? '' : 's'}, ${(d.collections || []).length} collection${(d.collections || []).length === 1 ? '' : 's'}` : '';
-            toast.ok('Data updated', [r.title, what, r.by === 'server' ? 'on server start' : ''].filter(Boolean).join(' · '));
+            const packs = (Array.isArray(d.packs) ? d.packs : []).map((p) => `${p.name} → ${p.collection || 'no collection'}${p.dropped ? ` (${p.dropped} card${p.dropped === 1 ? '' : 's'} dropped)` : ''}`);
+            toast.ok('Data updated', [r.title, what, ...packs, r.by === 'server' ? 'on server start' : ''].filter(Boolean).join(' · '));
             for (const w of (d.warnings || []).slice(0, 5)) toast.err('Update note', w);
         }
         await DaApi.post('/api/migrations/seen').catch(() => {});
         state.data.migrations = [];
+    }
+
+    let legacyShown = false;
+    function showLegacy() {
+        if (legacyShown || !state.data || !state.data.legacyFolder || !window.FacadeToast) return;
+        legacyShown = true;
+        FacadeToast.success('Old data', 'Pre-2.0 data in _legacy is already imported. You can delete it.', {
+            timeout: 0,
+            action: { text: 'Open folder', onClick: () => DaApi.post('/api/legacy/open').catch((e) => toast.err('Could not open the folder', e.message)) },
+        });
     }
 
     async function readConfig() {
@@ -196,8 +318,10 @@
                 doc: fresh ? old.doc : null, dir: fresh ? old.dir : null, thumbUrl: c.thumb, stale: !!c.thumbStale,
             };
         });
-        state.list.sort((a, b) => RARITIES.indexOf(b.rarity) - RARITIES.indexOf(a.rarity) || (a.data.name || '').localeCompare(b.data.name || '')
+        const rank = new Map(state.list.map((c) => [c, rarityRank(c.rarity, c.collection)]));
+        state.list.sort((a, b) => rank.get(b) - rank.get(a) || (a.data.name || '').localeCompare(b.data.name || '')
             || collName(a.collection).localeCompare(collName(b.collection)));
+        fillRarityFilter();
         renderCardsSide();
         renderCards();
         const count = $('#cards-count');
@@ -205,6 +329,15 @@
         count.textContent = state.list.length;
         updateFolderHint();
         packsChanged('cards');
+    }
+
+    function fillRarityFilter() {
+        const sel = $('#cards-rarity');
+        const value = sel.value;
+        const names = rarityNames();
+        sel.innerHTML = '<option value="">All rarities</option>' + names.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+        sel.value = names.find((n) => sameName(n, value)) || '';
+        syncSelect(sel);
     }
 
     async function loadCardDoc(card, fresh = false) {
@@ -220,6 +353,66 @@
 
     function cardType(c) { return (c.data.type || '2d').toLowerCase(); }
 
+    const CARDS_PAGE = 120;
+    const COLL_CARDS_PAGE = 100;
+    const ADD_HITS = 20;
+
+    function renderPager(el, page, pages, onPage) {
+        el.innerHTML = '';
+        el.hidden = pages <= 1;
+        if (pages <= 1) return;
+        const add = (label, target, on = false) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'facade-btn fx-sm' + (on ? ' fx-on is-on' : ' fx-grey');
+            b.textContent = label;
+            b.disabled = target < 0 || target >= pages;
+            b.addEventListener('click', () => onPage(target));
+            el.appendChild(b);
+        };
+        const gap = () => {
+            const s = document.createElement('span');
+            s.className = 'pager-gap';
+            s.textContent = '…';
+            el.appendChild(s);
+        };
+        add('‹', page - 1);
+        const shown = [...new Set([0, pages - 1, page - 2, page - 1, page, page + 1, page + 2].filter((p) => p >= 0 && p < pages))].sort((a, b) => a - b);
+        shown.forEach((p, i) => {
+            if (i > 0 && p - shown[i - 1] > 1) gap();
+            add(String(p + 1), p, p === page);
+        });
+        add('›', page + 1);
+    }
+
+    function cardSearch({ skip, label, pick, placeholder = 'Add a card: search its name' }) {
+        const add = document.createElement('div');
+        add.className = 'coll-add';
+        add.innerHTML = '<input type="search" class="facade-input" autocomplete="off"><div class="coll-add-hits"></div>';
+        const input = add.querySelector('input'), hits = add.querySelector('.coll-add-hits');
+        input.placeholder = placeholder;
+        input.addEventListener('input', () => {
+            hits.innerHTML = '';
+            const q = input.value.trim().toLowerCase();
+            if (!q) return;
+            const found = [];
+            for (const c of state.list) {
+                if (skip(c) || !((c.data.name || '').toLowerCase().includes(q) || c.id.includes(q))) continue;
+                found.push(c);
+                if (found.length >= ADD_HITS) break;
+            }
+            for (const c of found) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'facade-btn fx-sm fx-grey';
+                b.textContent = label(c);
+                b.addEventListener('click', () => pick(c));
+                hits.appendChild(b);
+            }
+        });
+        return add;
+    }
+
     function renderCards() {
         const grid = $('#cards-grid');
         const q = $('#cards-search').value.trim().toLowerCase();
@@ -227,20 +420,29 @@
         const view = state.cardsView;
         const shown = state.list.filter((c) =>
             (view === '*' || sameName(c.collection, view)) &&
-            (!rarity || c.rarity === rarity) &&
+            (!rarity || sameName(c.rarity, rarity)) &&
             (!q || (c.data.name || '').toLowerCase().includes(q) || collName(c.collection).toLowerCase().includes(q) || c.id.includes(q)));
         grid.innerHTML = '';
-        for (const c of shown) {
+        const pages = Math.max(1, Math.ceil(shown.length / CARDS_PAGE));
+        const key = `${view}|${rarity}|${q}`;
+        if (state.cardsPageKey !== key) { state.cardsPageKey = key; state.cardsPage = 0; }
+        state.cardsPage = Math.min(Math.max(0, state.cardsPage || 0), pages - 1);
+        renderPager($('#cards-pager'), state.cardsPage, pages, (p) => {
+            state.cardsPage = p;
+            renderCards();
+            $('#cards-grid').scrollIntoView({ block: 'start', behavior: 'smooth' });
+        });
+        for (const c of shown.slice(state.cardsPage * CARDS_PAGE, (state.cardsPage + 1) * CARDS_PAGE)) {
             const tile = document.createElement('button');
             tile.type = 'button';
             tile.className = 'card-tile';
-            paintRarity(tile, c.rarity);
+            paintRarity(tile, c.rarity, c.collection);
             const src = c.thumbUrl || '';
             tile.innerHTML = `
                 <img alt="" ${src ? `src="${src}"` : ''} loading="lazy">
                 <span class="tile-name">${escapeHtml(c.data.name || c.folder)}</span>
                 <span class="tile-meta">
-                    <span class="facade-pill fx-sm rarity-pill">${c.rarity}</span>
+                    <span class="facade-pill fx-sm rarity-pill">${escapeHtml(c.rarity)}</span>
                     ${cardType(c) === '3d' ? '<span class="facade-chip fx-purple">3D layer</span>' : ''}
                     ${c.data.animation ? '<span class="facade-chip fx-amber">Animated</span>' : ''}
                 </span>
@@ -587,13 +789,13 @@
     }
 
     const roubles = (n) => `${Math.round(n).toLocaleString('en-US')} ₽`;
-    const priceNote = (rarity) => `${roubles(rarityPrice(rarity))}, foil ${roubles(rarityPrice(rarity) * foilMultiplier(state.config))}`;
+    const priceNote = (rarity, collectionId) => `${roubles(rarityPrice(rarity, collectionId))} · Foil: up to ×2`;
 
     function refreshPrices() {
-        const rarity = $('#f-rarity').value;
-        $('#f-price').textContent = priceNote(rarity);
-        paintRarity($('#crop'), rarity);
-        paintRarity($('#card-3d'), rarity);
+        const rarity = $('#f-rarity').value, coll = $('#f-collection').value || null;
+        $('#f-price').textContent = priceNote(rarity, coll);
+        paintRarity($('#crop'), rarity, coll);
+        paintRarity($('#card-3d'), rarity, coll);
         refresh3d();
     }
 
@@ -690,7 +892,7 @@
     }
 
     // The card's layers, the collection's over them, the card's layers marked over the collection
-    const everyCopy = (layers, selected = null, rare = false) => (rare ? layers : layers.filter((l) => l.chance >= 100 || l === selected));
+    const everyCopy = (layers, selected = null, rare = false) => (rare ? layers : layers.filter((l) => l.chance >= 100 || l === selected || (!!selected && !!l.variants && l.variants.includes(selected))));
 
     function stackParts(side) {
         const coll = state.collPreview.layers;
@@ -744,6 +946,7 @@
         ctx.clearRect(0, 0, CARD_W, CARD_H);
         const back = showingBack();
         const holo = $('#f-holo').checked;
+        cardFoilPick();
         const parts = back ? stackParts('back') : [...pictureParts(), ...stackParts('front')];
         const stack = !depthShown() && parts.length ? CardLayerKit.composite(parts, { foil: holo, normal: false }) : null;
         canvas.classList.toggle('is-empty', !stack && !depthShown());
@@ -761,7 +964,7 @@
         if (depthShown()) renderCard(frameOf(state.depth), canvas);
         else {
             ctx.drawImage(stack.color, 0, 0);
-            if (holo) drawFoilTint(ctx, stack.foil);
+            if (holo) drawFoilTint(ctx, stack.foil, cardFoilPick());
         }
         // The selected layer's outline
         drawOutline(ctx, state.layers && state.layers.selected, back ? 'back' : 'front');
@@ -838,7 +1041,7 @@
         canvas.addEventListener('pointercancel', end);
         canvas.addEventListener('dblclick', () => {
             const layer = layerOf();
-            if (!layer || !layer.maps.art || CardLayerKit.isText(layer)) return;
+            if (!layer || CardLayerKit.isText(layer) || !CardLayerKit.shapeOf(layer)) return;
             Object.assign(layer.transform, CardLayerKit.IDENTITY, { scale: CardLayerKit.fillScale(layer) });
             moved(layer);
         });
@@ -966,29 +1169,209 @@
 
     const maskOf = (img, preview = false) => foilMaskCanvas((ctx) => renderCard(img, ctx.canvas), preview);
 
-    // foil: the stack's foil (R) as a mask for the rainbow tint
-    function drawFoilTint(ctx, foil) {
-        const tint = document.createElement('canvas');
-        tint.width = CARD_W; tint.height = CARD_H;
-        const t = tint.getContext('2d');
-        const g = t.createLinearGradient(0, 0, CARD_W, CARD_H);
-        const hues = ['#ff4d6d', '#ffd24d', '#5dff8a', '#4dd2ff', '#b44dff', '#ff4d6d'];
-        hues.forEach((c, i) => g.addColorStop(i / (hues.length - 1), c));
-        t.fillStyle = g;
-        t.fillRect(0, 0, CARD_W, CARD_H);
-        const mask = document.createElement('canvas');
-        mask.width = CARD_W; mask.height = CARD_H;
-        const mg = mask.getContext('2d');
-        const src = foil.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, CARD_W, CARD_H);
-        const out = mg.createImageData(CARD_W, CARD_H);
-        for (let i = 0; i < out.data.length; i += 4) { out.data[i] = out.data[i + 1] = out.data[i + 2] = 255; out.data[i + 3] = src.data[i]; }
-        mg.putImageData(out, 0, 0);
-        t.globalCompositeOperation = 'destination-in';
-        t.drawImage(mask, 0, 0);
-        ctx.save();
-        ctx.globalAlpha = 0.55;
-        ctx.drawImage(tint, 0, 0);
-        ctx.restore();
+    const FOIL_HUES = ['#ff4d6d', '#ffd24d', '#5dff8a', '#4dd2ff', '#b44dff', '#ff4d6d'];
+    const SPEC_K1 = [3.54585104, 2.93225262, 2.41593945], SPEC_O1 = [0.69549072, 0.49228336, 0.27699880], SPEC_Y1 = [0.02312639, 0.15225084, 0.52607955];
+    const SPEC_K2 = [3.90307140, 3.21182957, 3.96587128], SPEC_O2 = [0.11748627, 0.86755042, 0.66077860], SPEC_Y2 = [0.84897130, 0.88445281, 0.73949448];
+    const TAU = Math.PI * 2;
+    const sat = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+    const fract = (v) => v - Math.floor(v);
+    const stepAt = (edge, v) => (v >= edge ? 1 : 0);
+
+    function dcHash(x, y) {
+        let qx = fract(x * 123.34), qy = fract(y * 456.21);
+        const d = qx * (qx + 45.32) + qy * (qy + 45.32);
+        qx += d; qy += d;
+        return fract(qx * qy);
+    }
+
+    function addSpectral(out, x, k) {
+        for (let i = 0; i < 3; i++) {
+            const a = SPEC_K1[i] * (x - SPEC_O1[i]), b = SPEC_K2[i] * (x - SPEC_O2[i]);
+            out[i] += k * (sat(1 - a * a - SPEC_Y1[i]) + sat(1 - b * b - SPEC_Y2[i]));
+        }
+    }
+    const addSpec = (out, t, k) => addSpectral(out, fract(t), k);
+
+    function foilPatternAt(type, ux, uy, fw, out) {
+        const px = ux - 0.5, py = (uy - 0.5) * 1.397;
+        const vl = Math.hypot(px, py, 2), ll = Math.hypot(0.7 - px, 1.4 - py, 2);
+        const Vx = -px / vl, Vy = -py / vl, Vz = 2 / vl, Lx = (0.7 - px) / ll, Ly = (1.4 - py) / ll, Lz = 2 / ll;
+        const hx = Lx + Vx, hy = Ly + Vy, hl = Math.hypot(hx + 1e-5, hy + 1e-5);
+        const nhx = (hx + 1e-5) / hl, nhy = (hy + 1e-5) / hl;
+        const spot = 0.55 + 0.75 * Math.pow(sat((Lz + Vz) / Math.hypot(Lx + Vx, Ly + Vy, Lz + Vz)), 12);
+        const col = [0, 0, 0];
+        let glint = 0, dx = 0.866, dy = 0.5, gate = 1, sheen = 0, grating = true;
+        if (type === 11) {
+            const qx = ux * 9, qy = uy * 12.573, bx = Math.floor(qx), by = Math.floor(qy);
+            let d1 = 8, ix = bx, iy = by;
+            for (let j = -1; j <= 1; j++)
+                for (let i = -1; i <= 1; i++) {
+                    const nx = bx + i, ny = by + j;
+                    const d = Math.hypot(qx - (nx + 0.1 + 0.8 * dcHash(nx, ny + 3.3)), qy - (ny + 0.1 + 0.8 * dcHash(nx + 5.7, ny)));
+                    if (d < d1) { d1 = d; ix = nx; iy = ny; }
+                }
+            const turn = dcHash(ix + 1.7, iy + 9.2) * TAU;
+            dx = Math.cos(turn); dy = Math.sin(turn);
+            gate = 0.45 + 0.55 * dcHash(ix + 6.6, iy + 2.2);
+            sheen = 0.25;
+        } else if (type === 10) {
+            grating = false;
+            const nx = ux * 7, ny = uy * 9.779, ix = Math.floor(nx), iy = Math.floor(ny);
+            let fx = fract(nx), fy = fract(ny);
+            fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+            const lerp = (a, b, t) => a + (b - a) * t;
+            const dens = 0.45 + 0.3 * lerp(lerp(dcHash(ix, iy), dcHash(ix + 1, iy), fx), lerp(dcHash(ix, iy + 1), dcHash(ix + 1, iy + 1), fx), fy);
+            const ppx = ux, ppy = uy * 1.397;
+            for (let k = 0; k < 3; k++) {
+                const s = [113, 139, 167][k], an = [0.31, 1.13, 2.07][k];
+                const qx = (Math.cos(an) * ppx - Math.sin(an) * ppy) * s + 0.37 * k, qy = (Math.sin(an) * ppx + Math.cos(an) * ppy) * s + 0.61 * k;
+                const cx = Math.floor(qx) + 41.3 * k, cy = Math.floor(qy) + 27.1 * k;
+                const rad = 0.0026 * s * (0.85 + 0.3 * dcHash(cx + 7.7, cy + 3.3));
+                const ox = (dcHash(cx + 1.3, cy) - 0.5) * (1 - 2 * rad), oy = (dcHash(cx, cy + 2.9) - 0.5) * (1 - 2 * rad);
+                const d = Math.hypot(fract(qx) - 0.5 - ox, fract(qy) - 0.5 - oy);
+                const turn = dcHash(cx + 4.1, cy + 2.3) * TAU;
+                const tw = Math.pow(sat(Math.cos(turn) * nhx + Math.sin(turn) * nhy), 3);
+                const dotMask = sat((rad - d) / Math.max(fw * s * 1.5, 0.05) + 0.5) * stepAt(1 - dens, dcHash(cx, cy));
+                if (dotMask > 0) addSpec(col, ux * 0.35 + uy * 0.75 + dcHash(cx + 8.8, cy) * 0.15, dotMask * (0.45 + 1.1 * tw) * 1.7);
+                glint += dotMask * tw * tw * tw * 0.45;
+            }
+        } else if (type === 9) {
+            grating = false;
+            const ph = Math.hypot(px + 0.45, py - 1) * 2.4;
+            addSpec(col, ph, (0.6 + 0.4 * Math.cos(TAU * ph * 0.5)) * 1.6);
+            glint = Math.pow(sat(1 - Math.abs(fract(ph * 0.5) - 0.5) * 8), 3) * 0.5;
+        } else if (type === 8) {
+            grating = false;
+            const ph = (px * 0.8 + py * 0.6) * 1.4;
+            const band = Math.pow(0.5 + 0.5 * Math.cos(TAU * ph), 3);
+            const band2 = Math.pow(0.5 + 0.5 * Math.cos(TAU * (ph * 2.7 + 0.3)), 10) * 0.6;
+            addSpec(col, ph * 0.8 + py * 0.25, (band + band2) * 2);
+            glint = Math.pow(band, 6) * 0.5;
+        } else if (type === 7) {
+            const qx = ux * 8, qy = uy * 11.176;
+            const bx = fract(qx + 0.5) - 0.5, by = fract(qy + 0.5) - 0.5;
+            const inB = Math.hypot(bx, by) < 0.5;
+            const fx = inB ? bx : fract(qx) - 0.5, fy = inB ? by : fract(qy) - 0.5;
+            const d = Math.hypot(fx, fy);
+            const rings = 0.5 + 0.5 * Math.cos(d * TAU * 9);
+            dx = fx / Math.max(d, 1e-4); dy = fy / Math.max(d, 1e-4);
+            gate = 0.45 + 0.55 * rings;
+            sheen = 0.35;
+        } else if (type === 5 || type === 6) {
+            const cells = type === 6 ? 12 : 10;
+            const qx = ux * cells, qy = uy * cells * 1.397, cx = Math.floor(qx), cy = Math.floor(qy), fx = fract(qx) - 0.5, fy = fract(qy) - 0.5;
+            if (type === 5) {
+                const sec = Math.floor(fract(Math.atan2(fy, fx) / TAU + dcHash(cx, cy)) * 7);
+                const turn = dcHash(cx + sec * 3.7, cy + sec * 1.9) * TAU;
+                dx = Math.cos(turn); dy = Math.sin(turn);
+                gate = 0.55 + 0.45 * dcHash(cx + sec * 5.3 + 1.1, cy + 2.2);
+                sheen = 0.25;
+            } else {
+                const l = Math.hypot(fx + 1e-5, fy + 1e-5);
+                dx = (fx + 1e-5) / l; dy = (fy + 1e-5) / l;
+                gate = 0.65 + 0.35 * sat(Math.max(Math.abs(fx), Math.abs(fy)) * 2.5);
+            }
+        } else if (type === 4) {
+            grating = false;
+            const layers = [[6, 0.35, 0.18, 0.4, 2.8], [20, 0.55, 0.14, 0.34, 2.5], [64, 0.7, 0.16, 0.36, 2.4]];
+            layers.forEach(([s, prob, r0, r1, br], k) => {
+                const qx = ux * s, qy = uy * s * 1.397;
+                const cx = Math.floor(qx) + 31.7 * k, cy = Math.floor(qy) + 17.9 * k;
+                const r = r0 + (r1 - r0) * dcHash(cx + 3.1, cy + 7.7);
+                const ox = (dcHash(cx + 11.3, cy) - 0.5) * (1 - 2 * r), oy = (dcHash(cx, cy + 5.9) - 0.5) * (1 - 2 * r);
+                const d = Math.hypot(fract(qx) - 0.5 - ox, fract(qy) - 0.5 - oy);
+                const disc = sat((r - d) / Math.max(fw * s * 1.5, 0.02) + 0.5 * sat((fw * s * 1.5) / r - 1)) * stepAt(1 - prob, dcHash(cx, cy));
+                if (disc > 0) addSpec(col, dcHash(cx + 2.7, cy + 1.3) + uy * 0.6, disc * (0.7 + 0.3 * Math.cos((d / Math.max(r, 1e-3)) * 4)) * br);
+                if (k === 2) glint = disc * stepAt(0.7, dcHash(cx + 9.1, cy + 4.4)) * 0.5;
+            });
+            for (const [sx, sy, w] of [[0.25, 0.55, 0.6], [-0.3, -0.2, 0.5]]) {
+                const ex = px - sx, ey = py - sy, sr = Math.hypot(ex, ey) + 1e-4;
+                const swirl = Math.pow(sat(Math.sin(Math.atan2(ey, ex) * 2 - Math.log(sr) * 7)), 8) * sat(1 - sr * 5);
+                if (swirl > 0) addSpec(col, sr * 3, swirl * w);
+            }
+        } else if (type === 3) {
+            const cx = Math.floor(ux * 60), cy = Math.floor(uy * 83.8);
+            const turn = dcHash(cx, cy) * TAU;
+            gate = stepAt(0.4, dcHash(cx + 17.13, cy + 17.13));
+            dx = Math.cos(turn); dy = Math.sin(turn);
+            sheen = 0.2;
+        } else if (type === 2) {
+            const l = Math.hypot(px + 1e-5, py + 1e-5);
+            dx = (px + 1e-5) / l; dy = (py + 1e-5) / l;
+        }
+        if (grating) {
+            const g = Math.abs(hx * dx + hy * dy);
+            const diff = [0, 0, 0];
+            for (let n = 1; n <= 8; n++) {
+                const w = (g * 1600) / n;
+                if (w >= 400 && w <= 700) addSpectral(diff, (w - 400) / 300, 1);
+            }
+            const shine = sheen * gate * Math.pow(sat((dx * nhx + dy * nhy) * 0.5 + 0.5), 16);
+            for (let i = 0; i < 3; i++) col[i] = sat(diff[i]) * gate + shine;
+            glint = Math.pow(sat(1 - g * 4), 4) * gate;
+        }
+        out[0] = col[0] * spot; out[1] = col[1] * spot; out[2] = col[2] * spot; out[3] = glint * spot;
+    }
+
+    function bands(g, repeats) {
+        for (let k = 0; k < repeats; k++)
+            FOIL_HUES.forEach((c, i) => g.addColorStop((k + i / (FOIL_HUES.length - 1)) / repeats, c));
+        return g;
+    }
+
+    const foilPatterns = new Map();
+    function foilPattern(index) {
+        if (!foilPatterns.has(index)) {
+            if (index === 0) {
+                const g = CardLayerKit.newCanvas().getContext('2d', { willReadFrequently: true });
+                g.fillStyle = bands(g.createLinearGradient(0, 0, CARD_W, CARD_H), 1);
+                g.fillRect(0, 0, CARD_W, CARD_H);
+                foilPatterns.set(index, g.getImageData(0, 0, CARD_W, CARD_H).data);
+            } else {
+                const data = new Float32Array(CARD_W * CARD_H * 4), px = [0, 0, 0, 0];
+                for (let y = 0; y < CARD_H; y++)
+                    for (let x = 0; x < CARD_W; x++) {
+                        foilPatternAt(index, (x + 0.5) / CARD_W, 1 - (y + 0.5) / CARD_H, 1 / CARD_W, px);
+                        data.set(px, (y * CARD_W + x) * 4);
+                    }
+                foilPatterns.set(index, data);
+            }
+        }
+        return foilPatterns.get(index);
+    }
+
+    const FOIL_STRENGTH = 0.6, ART_GLOW = 0.6;
+
+    function drawFoilTint(ctx, foil, type = 'foil') {
+        const ids = CardLayerKit.FOIL_TYPES.map((t) => t.id);
+        const pick = Math.max(0, ids.indexOf(type));
+        const src = foil.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, CARD_W, CARD_H).data;
+        const image = ctx.getImageData(0, 0, CARD_W, CARD_H), d = image.data;
+        const metalOf = sat(FOIL_STRENGTH * 1.5);
+        for (let i = 0; i < d.length; i += 4) {
+            const area = src[i] / 255;
+            if (!area) continue;
+            const code = Math.round(src[i + 2] / CardLayerKit.FOIL_CODE_STEP);
+            const k = code > 0 && code <= ids.length ? code - 1 : pick;
+            const p = foilPattern(k);
+            if (k === 0) {
+                const a = 0.55 * area;
+                for (let c = 0; c < 3; c++) d[i + c] += (p[i + c] - d[i + c]) * a;
+                continue;
+            }
+            const b = [d[i] / 255, d[i + 1] / 255, d[i + 2] / 255];
+            const luma = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
+            const lit = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2] + p[i + 3];
+            const metal = area * metalOf * sat(lit * 2.5), boost = k === 3 ? 1.4 : 1;
+            for (let c = 0; c < 3; c++) {
+                const tint = sat(0.35 + p[i + c] * 0.6 + b[c] * 0.3);
+                const albedo = b[c] * (1 - ART_GLOW);
+                const color = albedo + (tint * 0.6 - albedo) * metal + b[c] * ART_GLOW;
+                const holo = (p[i + c] * (0.3 + 0.7 * luma) * boost + p[i + 3] * 0.25) * FOIL_STRENGTH * area;
+                d[i + c] = sat(color + holo) * 255;
+            }
+        }
+        ctx.putImageData(image, 0, 0);
     }
 
     const MEDIA_SLOTS = ['art', 'depth', 'foil', 'normal', 'roughness', 'metallic'];
@@ -1035,7 +1418,7 @@
         } else if (state.art && Math.abs(media.width / media.height - state.art.width / state.art.height) > 0.01) {
             toast.err('Different shape', `The ${MEDIA_WHAT[slot]} should have the same width:height as the picture, or they won't line up.`);
         }
-        if (slot === 'foil') $('#f-holo').checked = true;
+        if (slot === 'foil') { $('#f-holo').checked = true; showFoilPicks(); }
         state.pictureDirty = true;
         if (state.layers) state.layers.select(null);
         renderMedia(slot);
@@ -1195,7 +1578,7 @@
             $('#crop').hidden = want3d;
             $('#card-3d').hidden = !want3d;
         });
-        paintRarity($('#card-3d'), $('#f-rarity').value);
+        paintRarity($('#card-3d'), $('#f-rarity').value, $('#f-collection').value || null);
         updateFormVisibility();
         if (cardView) cardView.resize();
     }
@@ -1220,13 +1603,14 @@
                     metallic: state.metallic ? greyCanvas(frameOf(state.metallic)) : null,
                 } : null,
                 front: stackParts('front'), back: backParts,
-                holo: $('#f-holo').checked, rarity: $('#f-rarity').value,
+                holo: $('#f-holo').checked, foilType: cardFoilPick(),
+                rarity: $('#f-rarity').value, collection: $('#f-collection').value || null,
             }));
         });
     }
 
     // What the 3D view draws (CardView.set): the picture (3D: behind the window) and the stacked layers, like the game
-    async function viewInput({ is3d, picture, front, back, holo, rarity }) {
+    async function viewInput({ is3d, picture, front, back, holo, foilType, rarity, collection }) {
         const surface = { surface: true, roughness: window.CardView ? CardView.roughnessOf(is3d ? '3d' : '2d') : CardLayerKit.DEFAULT_ROUGHNESS };
         const f = CardLayerKit.composite(front, surface), b = CardLayerKit.composite(back, surface);
         const white = CardLayerKit.newCanvas();
@@ -1243,8 +1627,8 @@
             overlay: f.color, layerFoil: f.foil, layerNormal: f.normal, layerSurface: f.surface,
             back: back.length ? b.color : await defaultBackImage(),
             backFoil: b.foil, backNormal: b.normal, backSurface: b.surface,
-            type: is3d ? '3d' : '2d', foil: holo,
-            rarityColor: rarityColor(rarity),
+            type: is3d ? '3d' : '2d', foil: holo, foilType,
+            rarityColor: rarityColor(rarity, collection),
         };
     }
 
@@ -1259,6 +1643,9 @@
         }
         $('#f-collection').addEventListener('change', () => {
             state.collHidden = new Set();
+            fillCardRarity();
+            refreshPrices();
+            state.layers.render();
             ensureCollPreview().then(() => drawCrop());
         });
     }
@@ -1415,7 +1802,7 @@
     async function openEdit(card) {
         if (state.editingCard) closeEdit();
         state.draft = {
-            fields: Object.fromEntries(['#f-name', '#f-short', '#f-desc', '#f-rarity', '#f-collection'].map((id) => [id, $(id).value])),
+            fields: Object.fromEntries(['#f-name', '#f-short', '#f-desc', '#f-collection', '#f-rarity'].map((id) => [id, $(id).value])),
             collHidden: state.collHidden,
             use3d: state.use3d, depthRange: state.depthRange, pictureSurface: state.pictureSurface, crop: state.crop, show: state.show,
             art: state.art, depth: state.depth, foil: state.foil, normal: state.normal, roughness: state.roughness, metallic: state.metallic,
@@ -1455,10 +1842,11 @@
         $('#f-short').value = d.shortName || '';
         $('#f-desc').value = d.description || '';
         state.textAlign = alignOf(d.textAlign);
-        $('#f-rarity').value = card.rarity; syncSelect($('#f-rarity'));
         defaultBack = defaultBackImg = null;
         fillCollectionSelects();
         $('#f-collection').value = card.collection || ''; syncSelect($('#f-collection'));
+        $('#f-rarity').value = '';
+        fillRaritySelect($('#f-rarity'), card.collection, card.rarity);
         state.collHidden = d.collectionLayers === false ? 'all' : new Set((d.hideCollectionLayers || []).filter((f) => typeof f === 'string'));
         state.use3d = cardType(card) === '3d';
         state.depthRange = depthFromFloats(d.floats);
@@ -1513,7 +1901,8 @@
         if (d) {
             for (const [id, value] of Object.entries(d.fields)) {
                 if (id === '#f-collection') fillCollectionSelects();
-                $(id).value = value;
+                if (id === '#f-rarity') fillCardRarity();
+                if (id !== '#f-rarity' || [...$(id).options].some((o) => o.value === value)) $(id).value = value;
                 if ($(id).tagName === 'SELECT') syncSelect($(id));
             }
             state.collHidden = d.collHidden;
@@ -1628,6 +2017,7 @@
             sel.value = [...sel.options].some((o) => o.value === value) ? value : (list[0] ? list[0].folder : '');
             syncSelect(sel);
         }
+        fillCardRarity();
         if (window.CCBatch) CCBatch.collectionsChanged();
     }
 
@@ -1693,6 +2083,219 @@
         }
     }
 
+    let rarityUid = 0;
+    const rarityRow = (r, from = null) => ({ uid: ++rarityUid, name: r.name, color: HEX_COLOR.test(r.color || '') ? r.color.toUpperCase() : '#FFFFFF', price: r.price, weight: r.weight, from });
+    const collRarityList = () => (state.coll && state.coll.own ? state.coll.rows : defaultRarities());
+    const collOwnCards = () => (state.coll && state.coll.source ? state.list.filter((c) => isMember(c, state.coll.source)) : []);
+    const collAddedCards = () => (state.coll ? state.list.filter((c) => state.coll.members.has(c.key) && !(state.coll.source && isMember(c, state.coll.source))) : []);
+
+    function blankRarity() {
+        const list = state.coll ? collRarityList() : defaultRarities();
+        return ((list.find((r) => sameName(r.name, 'Rare')) || list[0]) || { name: 'Rare' }).name;
+    }
+
+    function collOrphans() {
+        const coll = state.coll, list = collRarityList();
+        const renamed = coll.own ? coll.rows.filter((r) => r.from) : [];
+        const out = new Map();
+        for (const c of collOwnCards()) {
+            if (list.some((r) => sameName(r.name, c.rarity)) || renamed.some((r) => sameName(r.from, c.rarity))) continue;
+            const key = [...out.keys()].find((k) => sameName(k, c.rarity)) ?? c.rarity;
+            out.set(key, (out.get(key) || 0) + 1);
+        }
+        return out;
+    }
+
+    function orphanTarget(name) {
+        const list = collRarityList().filter((r) => r.name.trim());
+        const key = Object.keys(state.coll.moveTo).find((k) => sameName(k, name));
+        const hit = key ? list.find((r) => sameName(r.name, state.coll.moveTo[key])) : null;
+        return (hit || list[0] || { name: '' }).name;
+    }
+
+    function landing(card, own) {
+        const list = collRarityList();
+        const hit = list.find((r) => sameName(r.name, card.rarity));
+        if (hit) return hit.name;
+        if (own && state.coll.own) {
+            const row = state.coll.rows.find((r) => r.from && sameName(r.from, card.rarity));
+            if (row) return row.name;
+        }
+        return own ? orphanTarget(card.rarity) : (list[0] || { name: '' }).name;
+    }
+
+    function collRarityOdds() {
+        const list = collRarityList();
+        const names = [...collOwnCards().map((c) => landing(c, true)), ...collAddedCards().map((c) => landing(c, false))];
+        return rarityOdds(list, rarityCounts(list, names));
+    }
+
+    function openCollRarities(data) {
+        const coll = state.coll;
+        coll.own = Array.isArray(data.rarities) && data.rarities.length > 0;
+        coll.rows = coll.own ? data.rarities.map((r) => rarityRow(r, r.name)) : null;
+        coll.moveTo = {};
+        coll.foilTypes = new Set(Array.isArray(data.foilTypes) && data.foilTypes.length ? data.foilTypes : DEFAULT_FOIL_TYPES);
+        $('#c-foil-chance').value = typeof data.foilChance === 'number' ? data.foilChance : '';
+        $('#c-foil-chance').placeholder = settingsFoilChance();
+        renderCollRarities();
+        renderCollFoilTypes();
+    }
+
+    function renderCollRarities() {
+        const coll = state.coll;
+        if (!coll) return;
+        $('#c-own-rarities').checked = coll.own;
+        const table = $('#c-rarities');
+        table.classList.toggle('is-own', coll.own);
+        table.innerHTML = coll.own
+            ? '<span class="rt-head">Name</span><span class="rt-head">Colour</span><span class="rt-head">Price ₽</span><span class="rt-head">Chance</span><span class="rt-head">Odds</span><span></span>'
+            : '<span class="rt-head">Rarity</span><span class="rt-head">Price ₽</span><span class="rt-head">Chance</span><span class="rt-head">Odds</span>';
+        collRarityList().forEach((r, i) => {
+            if (!coll.own) {
+                const pill = document.createElement('span');
+                pill.className = 'facade-pill fx-sm rarity-pill';
+                pill.textContent = r.name;
+                paintRarity(pill, r.name, null);
+                table.append(pill);
+                table.insertAdjacentHTML('beforeend', `<span>${roubles(r.price)}</span><span>${percentText(r.weight)}</span><span class="odds-note" data-odds="${i}"></span>`);
+                return;
+            }
+            const rows = coll.rows;
+            const name = document.createElement('input');
+            name.type = 'text';
+            name.className = 'facade-input';
+            name.maxLength = 24;
+            name.value = r.name;
+            name.setAttribute('aria-label', 'Rarity name');
+            name.addEventListener('input', () => { r.name = name.value.trim(); paintCollOdds(); });
+            const color = document.createElement('input');
+            color.type = 'color';
+            color.className = 'rarity-color';
+            color.value = r.color.toLowerCase();
+            color.setAttribute('aria-label', 'Rarity colour');
+            color.addEventListener('input', () => { r.color = color.value.toUpperCase(); paintCollOdds(); });
+            const number = (key, attrs, label) => {
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.className = 'facade-input';
+                Object.assign(input, attrs);
+                input.value = r[key];
+                input.setAttribute('aria-label', label);
+                input.addEventListener('input', () => { const v = parseFloat(input.value); r[key] = Number.isFinite(v) ? v : NaN; paintCollOdds(); });
+                return input;
+            };
+            const odds = document.createElement('span');
+            odds.className = 'odds-note';
+            odds.dataset.odds = i;
+            const actions = document.createElement('span');
+            actions.className = 'rarity-row-actions';
+            actions.innerHTML = `<button type="button" class="facade-iconbtn" data-a="up" title="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>`
+                + `<button type="button" class="facade-iconbtn" data-a="down" title="Move down" ${i === rows.length - 1 ? 'disabled' : ''}>↓</button>`
+                + `<button type="button" class="facade-iconbtn" data-a="remove" title="Remove" ${rows.length === 1 ? 'disabled' : ''}>×</button>`;
+            actions.addEventListener('click', (e) => {
+                const a = e.target.closest('button') && e.target.closest('button').dataset.a;
+                if (a === 'up' || a === 'down') {
+                    const to = i + (a === 'up' ? -1 : 1);
+                    [rows[i], rows[to]] = [rows[to], rows[i]];
+                } else if (a === 'remove') rows.splice(i, 1);
+                else return;
+                renderCollRarities();
+            });
+            table.append(name, color, number('price', { min: 0, step: 500, inputMode: 'numeric' }, 'Price'), number('weight', { min: 0, step: 0.1, inputMode: 'decimal' }, 'Chance'), odds, actions);
+        });
+        $('#c-rarity-actions').hidden = !coll.own;
+        $('#c-rarity-add').disabled = coll.own && coll.rows.length >= MAX_RARITIES;
+        paintCollOdds();
+    }
+
+    function paintCollOdds() {
+        const odds = collRarityOdds();
+        renderOddsBar($('#c-rarity-bar'), odds);
+        odds.forEach((o, i) => {
+            const el = $(`#c-rarities [data-odds="${i}"]`);
+            if (el) el.textContent = oddsText(o);
+        });
+        renderCollMoves();
+    }
+
+    function renderCollMoves() {
+        const box = $('#c-rarity-moves');
+        const orphans = collOrphans();
+        const list = collRarityList().filter((r) => r.name.trim());
+        box.hidden = !orphans.size || !list.length;
+        box.innerHTML = '';
+        if (box.hidden) return;
+        for (const [name, n] of orphans) {
+            const row = document.createElement('div');
+            row.className = 'rarity-move';
+            const what = document.createElement('span');
+            what.textContent = `${name}: ${n} card${n === 1 ? '' : 's'} to`;
+            const sel = document.createElement('select');
+            sel.className = 'facade-select';
+            sel.setAttribute('aria-label', `New rarity of the ${name} cards`);
+            sel.innerHTML = list.map((r) => `<option value="${escapeHtml(r.name)}">${escapeHtml(r.name)}</option>`).join('');
+            sel.value = orphanTarget(name);
+            sel.addEventListener('change', () => { state.coll.moveTo[name] = sel.value; paintCollOdds(); });
+            row.append(what, sel);
+            box.appendChild(row);
+            enhanceSelect(sel);
+        }
+    }
+
+    function renderCollFoilTypes() {
+        const coll = state.coll;
+        const box = $('#c-foil-types');
+        box.innerHTML = '';
+        for (const t of foilTypeList()) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'chip-toggle';
+            chip.textContent = t.name;
+            chip.setAttribute('aria-pressed', coll.foilTypes.has(t.id));
+            chip.addEventListener('click', () => {
+                if (coll.foilTypes.has(t.id)) { if (coll.foilTypes.size > 1) coll.foilTypes.delete(t.id); }
+                else coll.foilTypes.add(t.id);
+                renderCollFoilTypes();
+                drawCollPreview();
+            });
+            box.appendChild(chip);
+        }
+    }
+
+    function collRarityData() {
+        const coll = state.coll;
+        const moves = {};
+        let rarities = null;
+        if (coll.own) {
+            if (!coll.rows.length || coll.rows.length > MAX_RARITIES) throw new Error(`1 to ${MAX_RARITIES} rarities.`);
+            const seen = new Set();
+            rarities = coll.rows.map((r) => {
+                const name = r.name.trim();
+                if (!RARITY_NAME.test(name)) throw new Error(`"${name}": letters, numbers, spaces, up to 24.`);
+                if (seen.has(name.toLowerCase())) throw new Error(`Two rarities are called "${name}".`);
+                seen.add(name.toLowerCase());
+                if (!HEX_COLOR.test(r.color)) throw new Error(`${name}: pick a colour.`);
+                if (!(r.price >= 0)) throw new Error(`${name}: price 0 or more.`);
+                if (!(r.weight >= 0)) throw new Error(`${name}: chance 0 or more.`);
+                return { name, color: r.color.toUpperCase(), price: Math.round(r.price), weight: Math.round(r.weight * 1000) / 1000 };
+            });
+            if (!rarities.some((r) => r.weight > 0)) throw new Error('One rarity needs a chance above 0.');
+            for (const r of coll.rows)
+                if (r.from && !rarities.some((x) => sameName(x.name, r.from))) moves[r.from] = r.name.trim();
+        }
+        for (const name of collOrphans().keys()) moves[name] = orphanTarget(name);
+        return { rarities, moves };
+    }
+
+    function collFoilData() {
+        const text = $('#c-foil-chance').value.trim();
+        const v = parseFloat(text);
+        if (text && !(v >= 0 && v <= 100)) throw new Error('Foil chance: 0 to 100.');
+        const types = foilTypeList().map((t) => t.id).filter((id) => state.coll.foilTypes.has(id));
+        return { foilChance: text ? Math.round(v * 1000) / 1000 : null, foilTypes: types.length && types.join() !== DEFAULT_FOIL_TYPES.join() ? types : null };
+    }
+
     function openCollection(coll) {
         const data = coll ? structuredClone(coll.data) : {};
         state.coll = {
@@ -1722,6 +2325,7 @@
         $('#c-name').value = data.name || '';
         $('#c-short').value = data.shortName || '';
         $('#c-desc').value = data.description || '';
+        openCollRarities(data);
         $('#coll-modal').hidden = false;
         $('#coll-editor').scrollTop = 0;
         layoutStage();
@@ -1730,6 +2334,53 @@
         updateCollFolder();
         renderCollCards();
         $('#c-name').focus();
+    }
+
+    const shownFoilLayers = (lists) => lists.flat().filter((l) => !l.hidden).map(CardLayerKit.shownLayer).filter((l) => l && l.canBeFoil && CardLayerKit.hasContent(l));
+
+    function syncFoilPick(sel, typeIds, layers, random) {
+        const all = foilTypeList();
+        const allowed = all.filter((t) => typeIds.includes(t.id));
+        if (!allowed.length) allowed.push(all[0]);
+        const overrides = [...new Set(layers.filter((l) => l.foilType).map((l) => l.foilType))];
+        const anyRandom = random || layers.some((l) => !l.foilType);
+        const label = !anyRandom && overrides.length
+            ? (overrides.length === 1 ? (all.find((t) => t.id === overrides[0]) || { name: overrides[0] }).name : 'Per layer') : null;
+        const pick = allowed.some((t) => t.id === sel.dataset.pick) ? sel.dataset.pick : allowed[0].id;
+        const key = JSON.stringify([allowed.map((t) => t.id), pick, label, anyRandom]);
+        if (sel.dataset.key === key) return pick;
+        sel.dataset.key = key;
+        sel.dataset.pick = pick;
+        sel.innerHTML = label ? `<option value="">${escapeHtml(label)}</option>`
+            : allowed.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+        sel.value = label ? '' : pick;
+        sel.disabled = !anyRandom;
+        const button = sel.closest('.facade-dd') && sel.closest('.facade-dd').querySelector('button.facade-select');
+        if (button) {
+            button.disabled = !anyRandom;
+            button.title = anyRandom ? 'Foil type of random layers' : 'Set per layer';
+        }
+        syncSelect(sel);
+        return pick;
+    }
+
+    function cardFoilPick() {
+        const own = overviewColl($('#f-collection').value || null);
+        const coll = state.collPreview.layers, rare = $('#f-rare').checked;
+        const layers = state.layers ? shownFoilLayers([state.layers.front, state.layers.back, everyCopy(coll.front, null, rare), everyCopy(coll.back, null, rare)]) : [];
+        return syncFoilPick($('#f-foil-type'), (own && own.foilTypes) || DEFAULT_FOIL_TYPES, layers, has3d() && !!state.art);
+    }
+
+    function collFoilPick() {
+        const s = collView.sample, rare = $('#coll-rare').checked;
+        const layers = shownFoilLayers([everyCopy(s ? s.front : [], null, rare), everyCopy(s ? s.back : [], null, rare),
+            everyCopy(collEditor.front, collEditor.selected, rare), everyCopy(collEditor.back, collEditor.selected, rare)]);
+        return syncFoilPick($('#coll-foil-type'), state.coll && state.coll.foilTypes ? [...state.coll.foilTypes] : DEFAULT_FOIL_TYPES, layers, !s || !!(s.is3d && s.picture));
+    }
+
+    function showFoilPicks() {
+        for (const [box, sel] of [['#f-holo', '#f-foil-type'], ['#coll-holo', '#coll-foil-type']])
+            $(sel).closest('.foil-pick').hidden = !$(box).checked;
     }
 
     function closeCollection() {
@@ -2056,7 +2707,7 @@
 
     const cardVars = ({ name, description, rarity, collection }) => ({
         name, description: description || `${rarity} collectible card.`, rarity,
-        'rarity.color': rarityColor(rarity), collection: collection ? collName(collection) : '',
+        'rarity.color': rarityColor(rarity, collection), collection: collection ? collName(collection) : '',
     });
     const alignOf = (saved) => Object.fromEntries(Object.entries(saved || {}).filter(([k, v]) => TEXT_ID.test(k) && TEXT_ALIGNS.includes(v)));
 
@@ -2094,9 +2745,10 @@
         if (!previewIds.has(media)) previewIds.set(media, ++previewSeq);
         return previewIds.get(media);
     };
+    const pictureKey = (l) => ({ file: l.file, transform: l.transform, art: previewId(l.maps.art), mask: previewId(l.maps.mask) });
     const previewKey = (front) => JSON.stringify(front.filter((l) => l.chance >= 100 && CardLayerKit.hasContent(l)).map((l) => (CardLayerKit.isText(l)
         ? { id: l.id, text: { ...l.text, font: previewId(l.text.font) } }
-        : { file: l.file, transform: l.transform, art: previewId(l.maps.art), mask: previewId(l.maps.mask) })));
+        : CardLayerKit.isVariant(l) ? { file: l.file, variants: l.variants.map((v) => ({ ...pictureKey(v), chance: v.chance })) } : pictureKey(l))));
 
     const staleTried = new Set();
     let redrawing = null;
@@ -2137,7 +2789,7 @@
             } catch {
                 failed.push(card.data.name || card.id);
             } finally {
-                if (sample) for (const l of [...sample.front, ...sample.back]) for (const m of CardLayerKit.MAPS) if (l.maps[m]) l.maps[m].dispose();
+                if (sample) for (const l of [...sample.front, ...sample.back]) CardLayerKit.dispose(l);
             }
             if (onProgress) onProgress(++done, cards.length);
         }
@@ -2269,6 +2921,11 @@
             },
             onSelect: () => drawCollPreview(),
             onError: (title, body) => toast.err(title, body),
+            foilTypes: foilTypeList,
+            foilDefault: () => {
+                const v = parseFloat($('#c-foil-chance').value);
+                return v >= 0 && v <= 100 ? v : settingsFoilChance();
+            },
         });
         wireCollPreview();
     }
@@ -2344,7 +3001,7 @@
     function collStack(side) {
         const s = collView.sample;
         const ctx = s ? savedCtx(s.card) : {
-            vars: cardVars({ name: 'Card Name', description: 'The card\'s description goes here. Longer descriptions wrap onto more lines.', rarity: 'Rare', collection: state.coll && state.coll.source ? state.coll.source.folder : null }),
+            vars: cardVars({ name: 'Card Name', description: 'The card\'s description goes here. Longer descriptions wrap onto more lines.', rarity: blankRarity(), collection: state.coll && state.coll.source ? state.coll.source.folder : null }),
         };
         const sel = collEditor.selected, rare = $('#coll-rare').checked;
         if (side === 'back') return CardLayerKit.parts(CardLayerKit.ordered(everyCopy(s ? s.back : [], null, rare), everyCopy(collEditor.back, sel, rare)), 0, ctx);
@@ -2358,14 +3015,15 @@
         collPreviewDrawQueued = true;
         requestAnimationFrame(async () => {
             collPreviewDrawQueued = false;
-            const s = collView.sample, holo = $('#coll-holo').checked;
+            const s = collView.sample, holo = $('#coll-holo').checked, foilType = collFoilPick();
             if (collOverlay) collOverlay.update(collEditor.side);
             const front = collStack('front'), back = collStack('back');
             if (collView.view === '3d') {
                 if (!collView.card3d) return;
                 collView.card3d.set(await viewInput({
                     is3d: !!(s && s.is3d), picture: s && s.is3d ? s.picture : null, front, back,
-                    holo, rarity: s ? s.card.rarity : 'Rare',
+                    holo, foilType, rarity: s ? s.card.rarity : blankRarity(),
+                    collection: s ? s.card.collection : state.coll && state.coll.source ? state.coll.source.id : null,
                 }));
                 return;
             }
@@ -2381,7 +3039,7 @@
             } else {
                 const stack = CardLayerKit.composite(parts, { foil: holo, normal: false });
                 ctx.drawImage(stack.color, 0, 0);
-                if (holo) drawFoilTint(ctx, stack.foil);
+                if (holo) drawFoilTint(ctx, stack.foil, foilType);
             }
             drawOutline(ctx, collEditor.selected, side);
         });
@@ -2404,7 +3062,8 @@
         });
         if (!window.CardView || !window.CardView.available()) $('#coll-view button[data-view="3d"]').disabled = true;
         $('#coll-sample').addEventListener('change', () => setCollSample($('#coll-sample').value));
-        $('#coll-holo').addEventListener('change', drawCollPreview);
+        $('#coll-holo').addEventListener('change', () => { showFoilPicks(); drawCollPreview(); });
+        $('#coll-foil-type').addEventListener('change', (e) => { if (e.target.value) e.target.dataset.pick = e.target.value; drawCollPreview(); });
         $('#coll-rare').addEventListener('change', drawCollPreview);
         const collMoved = (layer) => {
             if (state.coll) state.coll.layersDirty = true;
@@ -2425,31 +3084,29 @@
         const box = $('#c-cards');
         box.innerHTML = '';
         const members = state.list.filter((c) => coll.members.has(c.key));
-        for (const card of members) {
+        const pages = Math.max(1, Math.ceil(members.length / COLL_CARDS_PAGE));
+        coll.page = Math.min(Math.max(0, coll.page || 0), pages - 1);
+        for (const card of members.slice(coll.page * COLL_CARDS_PAGE, (coll.page + 1) * COLL_CARDS_PAGE)) {
             const chip = document.createElement('span');
             chip.className = 'coll-card';
-            paintRarity(chip, card.rarity);
+            paintRarity(chip, card.rarity, card.collection);
             const src = card.thumbUrl || '';
             const added = !coll.source || !isMember(card, coll.source);
             chip.innerHTML = `<img alt="" ${src ? `src="${src}"` : ''}><span>${escapeHtml(card.data.name || card.id)}</span>` +
                 (added ? '<button type="button" class="facade-iconbtn" aria-label="Leave it where it was">×</button>' : '');
-            if (added) chip.querySelector('button').addEventListener('click', () => { coll.members.delete(card.key); renderCollCards(); });
+            if (added) chip.querySelector('button').addEventListener('click', () => { coll.members.delete(card.key); renderCollCards(); paintCollOdds(); });
             box.appendChild(chip);
         }
-        const others = state.list.filter((c) => !coll.members.has(c.key));
-        if (others.length) {
-            const sel = document.createElement('select');
-            sel.className = 'facade-select';
-            sel.innerHTML = '<option value="">Add a card…</option>' + others.map((c) =>
-                `<option value="${escapeHtml(c.key)}">${escapeHtml(c.data.name || c.id)} (${c.rarity}, now in ${escapeHtml(collName(c.collection))})</option>`).join('');
-            sel.addEventListener('change', () => {
-                if (!sel.value) return;
-                coll.members.add(sel.value);
-                renderCollCards();
-            });
-            box.appendChild(sel);
-            enhanceSelect(sel);
-        }
+        const pager = document.createElement('div');
+        pager.className = 'pager';
+        renderPager(pager, coll.page, pages, (p) => { coll.page = p; renderCollCards(); });
+        box.appendChild(pager);
+        if (state.list.length > members.length)
+            box.appendChild(cardSearch({
+                skip: (c) => coll.members.has(c.key),
+                label: (c) => `${c.data.name || c.id} (${c.rarity}, now in ${collName(c.collection)})`,
+                pick: (c) => { coll.members.add(c.key); renderCollCards(); paintCollOdds(); },
+            }));
         $('#c-count').textContent = members.length;
         $('#c-size-note').textContent = members.length
             ? `${BINDER_SIZE} binder, ${members.length} pocket${members.length === 1 ? '' : 's'}.`
@@ -2466,6 +3123,14 @@
         if (!name) { toast.err('The collection needs a name'); $('#c-name').focus(); return; }
         const clash = state.collections.find((c) => c !== coll.source && sameName(c.data.name, name));
         if (clash) { toast.err(`"${name}" already exists`, 'Pick another name.'); return; }
+        let rarityData, foilData;
+        try {
+            rarityData = collRarityData();
+            foilData = collFoilData();
+        } catch (e) {
+            toast.err('Can\'t save yet', e.message);
+            return;
+        }
 
         const button = $('#c-save'), label = button.textContent;
         button.disabled = true;
@@ -2478,6 +3143,11 @@
             for (const [key, value] of [['shortName', $('#c-short').value.trim()], ['description', $('#c-desc').value.trim()]]) {
                 if (value) data[key] = value; else delete data[key];
             }
+            for (const [key, value] of [['rarities', rarityData.rarities], ['foilChance', foilData.foilChance], ['foilTypes', foilData.foilTypes]]) {
+                if (value != null) data[key] = value; else delete data[key];
+            }
+            if (Object.keys(rarityData.moves).length) data.rarityMoves = rarityData.moves; else delete data.rarityMoves;
+            const raritiesChanged = JSON.stringify((coll.source && coll.source.data.rarities) || null) !== JSON.stringify(rarityData.rarities);
             const files = [];
             const keep = new Set();
             for (const st of coll.stickers) {
@@ -2512,7 +3182,8 @@
                 ? await DaApi.upload('PUT', `/api/collections/${coll.source.id}`, { json: data, keep: [...keep] }, blobs)
                 : await DaApi.upload('POST', '/api/collections', { json: data, keep: [] }, blobs);
             if (layerSave) layerSave.commit();
-            const previewChanged = !coll.source || !!coll.data.cardText || coll.source.data.name !== name
+            for (const w of (result && result.warnings) || []) (/ moved: /.test(w) ? toast.ok('Rarity changed', w) : toast.err('Collection note', w));
+            const previewChanged = !coll.source || !!coll.data.cardText || coll.source.data.name !== name || raritiesChanged || Object.keys(rarityData.moves).length > 0
                 || (!!layerSave && previewKey(collEditor.front) !== coll.previewKey);
             for (const [i, card] of moves.entries()) {
                 button.textContent = `Moving cards ${i + 1} / ${moves.length}…`;
@@ -2564,20 +3235,32 @@
             else if (!$('#coll-modal').hidden) closeCollection();
         });
         $('#c-name').addEventListener('input', updateCollFolder);
+        $('#c-own-rarities').addEventListener('change', (e) => {
+            const coll = state.coll;
+            if (!coll) return;
+            coll.own = e.target.checked;
+            if (coll.own && !coll.rows) coll.rows = defaultRarities().map((r) => rarityRow(r, r.name));
+            renderCollRarities();
+        });
+        $('#c-rarity-add').addEventListener('click', () => {
+            const coll = state.coll;
+            if (!coll || !coll.own || coll.rows.length >= MAX_RARITIES) return;
+            let name = 'New rarity', n = 1;
+            while (coll.rows.some((r) => sameName(r.name, name))) name = `New rarity ${++n}`;
+            coll.rows.push(rarityRow({ name, color: '#FFFFFF', price: 10000, weight: 1 }));
+            renderCollRarities();
+            const inputs = $$('#c-rarities input[type="text"]');
+            if (inputs.length) inputs[inputs.length - 1].select();
+        });
+        $('#c-foil-chance').addEventListener('change', () => collEditor.render());
         wireStickerEditor();
     }
 
     const DEFAULT_BINDER_PRICE = 5000;
     const DEFAULT_FOIL_PERCENT = 10;
-    const DEFAULT_FOIL_MULTIPLIER = 2;
+    const DEFAULT_CARD_PERCENT = 3.7;
     const RETIRED_MODES = ['remove', 'refund'];
     const DEFAULT_RETIRED_MODE = 'remove';
-    const foilMultiplier = (config) => (config && config.foil && config.foil.priceMultiplier > 0 ? config.foil.priceMultiplier : DEFAULT_FOIL_MULTIPLIER);
-
-    function configRarity(config, rarity) {
-        const key = Object.keys(config.rarities || {}).find((k) => sameName(k, rarity));
-        return key ? config.rarities[key] : null;
-    }
 
     function renderSettings() {
         const config = state.config;
@@ -2589,25 +3272,41 @@
 
         const table = $('#s-rarities');
         for (const el of $$(':scope > :not(.rt-head)', table)) el.remove();
-        for (const r of RARITIES) {
-            const cr = configRarity(config, r) || {};
+        for (const r of defaultRarities()) {
             const pill = document.createElement('span');
             pill.className = 'facade-pill fx-sm rarity-pill';
-            pill.textContent = r;
-            paintRarity(pill, r);
+            pill.textContent = r.name;
+            paintRarity(pill, r.name, null);
             table.append(pill);
             table.insertAdjacentHTML('beforeend',
-                `<input type="number" class="facade-input" data-rarity="${r}" data-k="price" min="1" step="500" inputmode="numeric" aria-label="${r} price" value="${cr.price > 0 ? cr.price : RARITY_DEFAULTS[r].price}">` +
-                `<input type="number" class="facade-input" data-rarity="${r}" data-k="lootPercent" min="0" max="100" step="0.01" inputmode="decimal" aria-label="${r} spawn chance" value="${cr.lootPercent ?? 0}">`);
+                `<input type="number" class="facade-input" data-rarity="${r.name}" data-k="price" min="1" step="500" inputmode="numeric" aria-label="${r.name} price" value="${r.price}">` +
+                `<input type="number" class="facade-input" data-rarity="${r.name}" data-k="weight" min="0" step="0.1" inputmode="decimal" aria-label="${r.name} chance" value="${r.weight}">` +
+                `<span class="odds-note" data-range="${r.name}"></span>`);
         }
+        paintSettingsOdds();
 
+        $('#s-loot-percent').value = config.loot && Number.isFinite(config.loot.cardPercent) ? config.loot.cardPercent : DEFAULT_CARD_PERCENT;
         $('#s-binder-price').value = (config.binders && config.binders.price) || DEFAULT_BINDER_PRICE;
         $('#s-geek-cards').checked = !!(config.geek && config.geek.sellCards);
-        $('#s-geek-foils').checked = !!(config.geek && config.geek.sellFoilCards);
-        $('#s-foil-multiplier').value = foilMultiplier(config);
-        $('#s-foil-percent').value = config.foil && config.foil.percent != null ? config.foil.percent : DEFAULT_FOIL_PERCENT;
+        $('#s-foil-percent').value = settingsFoilChance();
         $('#s-retired').value = RETIRED_MODES.includes(config.retiredItems) ? config.retiredItems : DEFAULT_RETIRED_MODE;
         syncSelect($('#s-retired'));
+    }
+
+    function settingsRarities() {
+        return defaultRarities().map((r) => {
+            const v = parseFloat(($(`#s-rarities input[data-k="weight"][data-rarity="${r.name}"]`) || {}).value);
+            return { ...r, weight: v >= 0 ? v : 0 };
+        });
+    }
+
+    function paintSettingsOdds() {
+        const odds = rarityOdds(settingsRarities());
+        renderOddsBar($('#s-rarity-bar'), odds);
+        for (const o of odds) {
+            const el = $(`#s-rarities [data-range="${o.name}"]`);
+            if (el) el.textContent = oddsText(o);
+        }
     }
 
     function setSettingsStatus(text, ok) {
@@ -2640,35 +3339,39 @@
             const v = parseFloat(input.value);
             const r = input.dataset.rarity, k = input.dataset.k;
             if (k === 'price' && !(v >= 1)) { toast.err(`${r} price`, 'Needs a price of at least 1 ₽.'); input.focus(); return; }
-            if (k === 'lootPercent' && !(v >= 0 && v <= 100)) { toast.err(`${r} spawn chance`, 'Needs a percentage from 0 to 100.'); input.focus(); return; }
+            if (k === 'weight' && !(v >= 0)) { toast.err(`${r} chance`, 'Needs 0 or more.'); input.focus(); return; }
             (values[r] = values[r] || {})[k] = k === 'price' ? Math.round(v) : Math.round(v * 1000) / 1000;
         }
+        if (!Object.values(values).some((v) => v.weight > 0)) { toast.err('Rarity chances', 'One needs a chance above 0.'); return; }
+        const cardPercent = parseFloat($('#s-loot-percent').value);
+        if (!(cardPercent >= 0 && cardPercent <= 100)) { toast.err('Card chance', 'Needs a percentage from 0 to 100.'); $('#s-loot-percent').focus(); return; }
         const binderPrice = parseInt($('#s-binder-price').value, 10);
         if (!(binderPrice >= 1)) { toast.err('Binder price', 'Needs a price of at least 1 ₽.'); $('#s-binder-price').focus(); return; }
         const foilPercent = parseFloat($('#s-foil-percent').value);
         if (!(foilPercent >= 0 && foilPercent <= 100)) { toast.err('Foil chance', 'Needs a percentage from 0 to 100.'); $('#s-foil-percent').focus(); return; }
-        const multiplier = parseFloat($('#s-foil-multiplier').value);
-        if (!(multiplier > 0)) { toast.err('Foil price', 'Needs a multiplier above 0 (2 = twice the price).'); $('#s-foil-multiplier').focus(); return; }
 
         config.rarities = config.rarities || {};
-        for (const r of RARITIES) {
+        for (const r of DEFAULT_RARITIES) {
             const key = Object.keys(config.rarities).find((k) => sameName(k, r)) || r;
             config.rarities[key] = Object.assign(config.rarities[key] || {}, values[r]);
         }
+        config.loot = Object.assign(config.loot || {}, { cardPercent: Math.round(cardPercent * 1000) / 1000 });
         config.binders = Object.assign(config.binders || {}, { price: binderPrice });
-        config.geek = Object.assign(config.geek || {}, { sellCards: $('#s-geek-cards').checked, sellFoilCards: $('#s-geek-foils').checked });
-        config.foil = Object.assign(config.foil || {}, { percent: Math.round(foilPercent * 100) / 100, priceMultiplier: Math.round(multiplier * 100) / 100 });
+        config.geek = Object.assign(config.geek || {}, { sellCards: $('#s-geek-cards').checked });
+        config.foil = Object.assign(config.foil || {}, { percent: Math.round(foilPercent * 100) / 100 });
         config.retiredItems = RETIRED_MODES.includes($('#s-retired').value) ? $('#s-retired').value : DEFAULT_RETIRED_MODE;
 
         const button = $('#s-save');
         button.disabled = true;
         try {
             await DaApi.put('/api/settings', {
-                rarities: config.rarities, binders: config.binders, geek: config.geek, foil: config.foil, retiredItems: config.retiredItems,
+                rarities: config.rarities, loot: config.loot, binders: config.binders, geek: config.geek, foil: config.foil, retiredItems: config.retiredItems,
             });
             await readConfig();
+            fillCardRarity();
             refreshPrices();
             renderCardsSide();
+            renderCards();
             toast.ok('Settings saved', 'Restart the SPT server to use them.');
             setSettingsStatus('Saved', true);
         } catch (e) {
@@ -2682,7 +3385,10 @@
     function wireSettings() {
         $('#s-save').addEventListener('click', saveSettings);
         $('#s-reset').addEventListener('click', renderSettings);
-        $('#pane-settings').addEventListener('input', () => setSettingsStatus('Not saved yet'));
+        $('#pane-settings').addEventListener('input', (e) => {
+            setSettingsStatus('Not saved yet');
+            if (e.target.dataset.k === 'weight') paintSettingsOdds();
+        });
     }
 
     // The tabs are pages: #new, #cards, #collections, #settings (a refresh stays on the tab; Back / Forward move between them)
@@ -2738,6 +3444,8 @@
             onSelect: () => drawCrop(),
             onError: (title, body) => toast.err(title, body),
             time: () => playT,
+            foilTypes: foilTypeList,
+            foilDefault: () => foilChanceOf($('#f-collection').value || null),
         });
         wireCollectionLayers();
         $('#normal-clear').addEventListener('click', () => clearMedia('normal'));
@@ -2749,7 +3457,8 @@
             updateFormVisibility();
         });
         $('#metallic-clear').addEventListener('click', () => clearMedia('metallic'));
-        $('#f-holo').addEventListener('change', () => drawCrop());
+        $('#f-holo').addEventListener('change', () => { showFoilPicks(); drawCrop(); });
+        $('#f-foil-type').addEventListener('change', (e) => { if (e.target.value) e.target.dataset.pick = e.target.value; drawCrop(); });
         $('#f-rare').addEventListener('change', () => drawCrop());
         $('#foil-clear').addEventListener('click', () => clearMedia('foil'));
         wireCrop();
@@ -2781,8 +3490,9 @@
         }
         const shared = {
             state, toast, getDir, getFile, slugify, newFolder, escapeHtml, paintRarity, rarityColor, enhanceSelect, setRange, prettyJson,
+            raritiesOf, rarityOf, rarityOdds, rarityCounts, oddsText, renderOddsBar, fillRaritySelect, percentText,
             readConfig, collName, syncSelect, confirmMenu, rescan, download, sameName, collectionLayers, cardVars, cardJson, thumbnail, pngBlob,
-            fillCollectionSelects, openCollection, deleteCollection, isMember, THUMB_FILE,
+            fillCollectionSelects, openCollection, deleteCollection, isMember, THUMB_FILE, cardSearch, renderPager,
         };
         if (window.CCPacks) window.CCPacks.init(shared);
         if (window.CCBatch) window.CCBatch.init(shared);

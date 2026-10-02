@@ -1016,6 +1016,10 @@ button.facade-rte-b {
     text-decoration: none !important;
 }
 .facade-toast-link:hover { text-decoration: underline !important; }
+.facade-toast-action {
+    display: inline-flex;
+    margin-top: 8px;
+}
 .facade-toast-link:focus-visible {
     outline: 2px solid rgba(var(--facade-blue), .7);
     outline-offset: 2px;

@@ -1,8 +1,6 @@
 (() => {
     'use strict';
 
-    const RARITIES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'];
-    const DEFAULT_WEIGHTS = { Common: 68, Uncommon: 22, Rare: 7, Epic: 2, Legendary: 1 };
     const DEFAULT_PRICE = 25000, DEFAULT_COUNT = 3, MAX_COUNT = 10, DEFAULT_LOOT = 0.5;
     const FALLBACK_SKIN = 'escape_from_tarkov';
     const MAPS = ['albedo', 'normal', 'metallic', 'roughness', 'ao'];
@@ -27,7 +25,6 @@
     const FACE_LABEL = { front: 'Front', back: 'Back', texture: 'Whole texture' };
     const LOOKS = ['preset', 'layers', 'textures'];
     const THUMB_H = 360;
-    const ODDS_PACK = 3;
 
     const $ = (sel, root = document) => root.querySelector(sel);
     const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -37,7 +34,6 @@
     const ps = {
         packs: [],
         skins: [],
-        weights: { ...DEFAULT_WEIGHTS },
         edit: null,
         view: '3d',
         view3d: null,
@@ -67,12 +63,6 @@
         const url = URL.createObjectURL(blob);
         list.push(url);
         return url;
-    }
-
-    function setStatus(el, text, ok) {
-        el.hidden = !text;
-        el.textContent = text || '';
-        el.className = 'facade-status ' + (ok ? 'is-ok' : ok === false ? 'is-error' : '');
     }
 
     function templatePreview() {
@@ -342,10 +332,11 @@
             }
             tile.appendChild(pic);
             const where = [d.purchasable !== false ? 'Geek' : null, d.lootPercent > 0 ? `${round(d.lootPercent)}% in raid` : null].filter(Boolean).join(' · ') || 'Not sold, not found';
+            const size = poolOf(selectionOf(d), pack.collectionId).length;
             tile.insertAdjacentHTML('beforeend', `
                 <span class="tile-name">${app.escapeHtml(d.name)}</span>
                 <span class="tile-coll">${d.cardCount || DEFAULT_COUNT} cards · ${roubles(d.price > 0 ? d.price : DEFAULT_PRICE)}</span>
-                <span class="tile-coll">${pack.collectionId ? app.escapeHtml(app.collName(pack.collectionId)) : 'Global'} · ${where} · ${poolOf(selectionOf(d), pack.collectionId).length} card${poolOf(selectionOf(d), pack.collectionId).length === 1 ? '' : 's'} in it</span>`);
+                <span class="tile-coll">${app.escapeHtml(pack.collectionId ? app.collName(pack.collectionId) : 'No collection')} · ${where} · ${size} card${size === 1 ? '' : 's'} in it</span>`);
             tile.addEventListener('click', () => openPack(pack));
             grid.appendChild(tile);
         }
@@ -354,160 +345,14 @@
         empty.textContent = !app.state.data ? 'Loading…' : 'No booster packs yet. Make one with New booster pack.';
     }
 
-    function readWeights() {
-        const config = app.state.config;
-        const packs = config && config.packs;
-        const weights = { ...DEFAULT_WEIGHTS };
-        if (packs && packs.rarityWeights) {
-            for (const r of RARITIES) {
-                const key = Object.keys(packs.rarityWeights).find((k) => lower(k) === lower(r));
-                if (key != null && packs.rarityWeights[key] >= 0) weights[r] = +packs.rarityWeights[key];
-            }
-        }
-        ps.weights = normalised(weights);
-    }
-
-    function normalised(weights) {
-        const total = RARITIES.reduce((s, r) => s + Math.max(0, weights[r] || 0), 0);
-        if (!(total > 0)) return Object.fromEntries(RARITIES.map((r) => [r, 100 / RARITIES.length]));
-        return Object.fromEntries(RARITIES.map((r) => [r, Math.max(0, weights[r] || 0) * 100 / total]));
-    }
-
-    function odds(rarities, n) {
-        const present = RARITIES.filter((r) => rarities.includes(r));
-        const total = present.reduce((s, r) => s + Math.max(0, ps.weights[r] || 0), 0);
-        return present.map((r) => {
-            const p = total > 0 ? Math.max(0, ps.weights[r] || 0) / total : 1 / present.length;
-            const perPack = 1 - Math.pow(1 - p, n);
-            return { rarity: r, perCard: p, perPack, oneIn: perPack > 0 ? 1 / perPack : Infinity };
-        });
-    }
-
     const oneInText = (o) => (!isFinite(o.oneIn) ? 'never' : o.perPack >= 0.995 ? 'in every pack'
         : o.oneIn < 1.5 ? `in ${Math.round(o.perPack * 100)}% of packs` : `about 1 in ${Math.round(o.oneIn).toLocaleString('en-US')} packs`);
-
-    function renderOdds() {
-        const bar = $('#pk-odds-bar');
-        if (!bar.children.length) {
-            RARITIES.forEach((r) => {
-                const seg = document.createElement('div');
-                seg.className = 'odds-seg';
-                seg.dataset.rarity = r;
-                seg.style.background = app.rarityColor(r);
-                seg.innerHTML = '<span></span>';
-                bar.appendChild(seg);
-            });
-            RARITIES.slice(0, -1).forEach((_, k) => {
-                const handle = document.createElement('div');
-                handle.className = 'odds-handle';
-                handle.dataset.k = k;
-                handle.title = `Drag: ${RARITIES[k]} / ${RARITIES[k + 1]}`;
-                bar.appendChild(handle);
-                wireOddsHandle(handle, k);
-            });
-            const table = $('#pk-odds-table');
-            for (const r of RARITIES) {
-                const pill = document.createElement('span');
-                pill.className = 'facade-pill fx-sm rarity-pill';
-                pill.textContent = r;
-                app.paintRarity(pill, r);
-                table.append(pill);
-                table.insertAdjacentHTML('beforeend',
-                    `<input type="number" class="facade-input" data-rarity="${r}" min="0" max="100" step="0.1" inputmode="decimal" aria-label="${r} chance per card">` +
-                    `<span class="odds-note" data-note="${r}"></span>`);
-            }
-            $('#pk-odds-n').textContent = ODDS_PACK;
-            for (const input of $$('#pk-odds-table input')) input.addEventListener('input', () => setWeight(input.dataset.rarity, parseFloat(input.value), input));
-        }
-        paintOdds();
-    }
-
-    function paintOdds(except = null) {
-        const bar = $('#pk-odds-bar');
-        let acc = 0;
-        for (const seg of $$('.odds-seg', bar)) {
-            const r = seg.dataset.rarity, w = ps.weights[r];
-            seg.style.width = w + '%';
-            seg.querySelector('span').textContent = w >= 7 ? `${r} ${round(w, 1)}%` : w >= 2.5 ? `${round(w, 1)}` : '';
-            seg.title = `${r}: ${round(w, 2)}%`;
-        }
-        $$('.odds-handle', bar).forEach((h, k) => {
-            acc = RARITIES.slice(0, k + 1).reduce((s, r) => s + ps.weights[r], 0);
-            h.style.left = acc + '%';
-        });
-        const table = odds(RARITIES, ODDS_PACK);
-        for (const o of table) {
-            const input = $(`#pk-odds-table input[data-rarity="${o.rarity}"]`);
-            if (input !== except) input.value = round(ps.weights[o.rarity], 2);
-            $(`#pk-odds-table [data-note="${o.rarity}"]`).textContent = oneInText(o);
-        }
-        if (ps.edit) renderPool();
-    }
-
-    function setWeight(rarity, value, input) {
-        if (!(value >= 0)) return;
-        value = Math.min(100, value);
-        const others = RARITIES.filter((r) => r !== rarity);
-        const rest = 100 - value, sum = others.reduce((s, r) => s + ps.weights[r], 0);
-        for (const r of others) ps.weights[r] = sum > 0 ? ps.weights[r] * rest / sum : rest / others.length;
-        ps.weights[rarity] = value;
-        setStatus($('#pk-odds-status'), 'Not saved yet');
-        paintOdds(input);
-    }
-
-    function wireOddsHandle(handle, k) {
-        let drag = null;
-        handle.addEventListener('pointerdown', (e) => {
-            e.preventDefault();
-            handle.setPointerCapture(e.pointerId);
-            const before = RARITIES.slice(0, k).reduce((s, r) => s + ps.weights[r], 0);
-            drag = { lo: before, hi: before + ps.weights[RARITIES[k]] + ps.weights[RARITIES[k + 1]] };
-            handle.classList.add('is-dragging');
-        });
-        handle.addEventListener('pointermove', (e) => {
-            if (!drag) return;
-            const rect = $('#pk-odds-bar').getBoundingClientRect();
-            const span = drag.hi - drag.lo;
-            const p = ((e.clientX - rect.left) / rect.width) * 100;
-            const left = Math.min(span, Math.max(0, Math.round((p - drag.lo) / 0.5) * 0.5));
-            ps.weights[RARITIES[k]] = round(left, 2);
-            ps.weights[RARITIES[k + 1]] = round(span - left, 2);
-            setStatus($('#pk-odds-status'), 'Not saved yet');
-            paintOdds();
-        });
-        const end = () => { drag = null; handle.classList.remove('is-dragging'); };
-        handle.addEventListener('pointerup', end);
-        handle.addEventListener('pointercancel', end);
-    }
-
-    async function saveOdds() {
-        if (!app.state.data) return;
-        const weights = normalised(ps.weights);
-        const packs = Object.assign({}, (app.state.config && app.state.config.packs) || {}, {
-            rarityWeights: Object.fromEntries(RARITIES.map((r) => [r, round(weights[r], 3)])),
-        });
-        const button = $('#pk-odds-save');
-        button.disabled = true;
-        try {
-            await DaApi.put('/api/settings', { packs });
-            await app.readConfig();
-            setStatus($('#pk-odds-status'), 'Saved', true);
-            app.toast.ok('Pack chances saved', 'Restart the SPT server to use them.');
-        } catch (e) {
-            setStatus($('#pk-odds-status'), 'Not saved: ' + e.message, false);
-            app.toast.err('Could not save the chances', e.message);
-        } finally {
-            button.disabled = false;
-        }
-    }
 
     function selectionOf(data) {
         const c = data.cards || {};
         return {
-            all: !!c.all,
-            collections: new Set((c.collections || []).map(lower)),
-            cards: new Set((c.cards || []).map((k) => lower(k).replace(/\\/g, '/'))),
-            rarities: new Set((c.rarities || []).filter((r) => RARITIES.some((x) => lower(x) === lower(r))).map((r) => RARITIES.find((x) => lower(x) === lower(r)))),
+            cards: new Set((Array.isArray(c.cards) ? c.cards : []).map(lower)),
+            rarities: new Set((Array.isArray(c.rarities) ? c.rarities : []).map(lower)),
         };
     }
 
@@ -517,21 +362,39 @@
         return $('#pk-collection').value || null;
     };
 
+    const inCollection = (c, collectionId) => !!collectionId && lower(c.collection) === lower(collectionId);
+    const collectionCards = (collectionId) => (app.state.list || []).filter((c) => inCollection(c, collectionId));
+
+    function allowedRarities(sel, collectionId) {
+        const list = app.raritiesOf(collectionId);
+        const on = list.filter((r) => sel.rarities.has(lower(r.name)));
+        return on.length ? on : list;
+    }
+
     function poolOf(sel, collectionId = editCollection()) {
-        const filter = sel.rarities.size > 0 && sel.rarities.size < RARITIES.length ? sel.rarities : null;
-        const chosen = (c) => (collectionId ? lower(c.collection) === lower(collectionId) : sel.all)
-            || (!collectionId && sel.collections.has(lower(c.collection)))
-            || sel.cards.has(lower(c.key));
-        return (app.state.list || []).filter((c) => chosen(c) && (!filter || filter.has(c.rarity)));
+        if (!collectionId) return [];
+        const all = collectionCards(collectionId);
+        const picked = all.filter((c) => sel.cards.has(lower(c.key)));
+        const allowed = allowedRarities(sel, collectionId);
+        return (picked.length ? picked : all).filter((c) => allowed.some((r) => lower(r.name) === lower(c.rarity)));
+    }
+
+    function packOdds(pool, sel, collectionId, n) {
+        const list = allowedRarities(sel, collectionId);
+        return app.rarityOdds(list, app.rarityCounts(list, pool.map((c) => c.rarity))).map((o) => {
+            const perPack = 1 - Math.pow(1 - o.chance, n);
+            return { ...o, perPack, oneIn: perPack > 0 ? 1 / perPack : Infinity };
+        });
     }
 
     function fillCollections() {
         const sel = $('#pk-collection');
         const value = sel.value;
+        const prompt = !!(ps.edit && ps.edit.needsCollection);
         const list = [...(app.state.collections || [])].sort((a, b) => a.data.name.localeCompare(b.data.name));
-        sel.innerHTML = list.map((c) => `<option value="${app.escapeHtml(c.folder)}">${app.escapeHtml(c.data.name)}</option>`).join('')
-            + '<option value="">Global (any collection)</option>';
-        sel.value = [...sel.options].some((o) => o.value === value) ? value : (list[0] ? list[0].folder : '');
+        sel.innerHTML = (prompt || !list.length ? `<option value="">${list.length ? 'Pick a collection' : 'No collection yet'}</option>` : '')
+            + list.map((c) => `<option value="${app.escapeHtml(c.folder)}">${app.escapeHtml(c.data.name)}</option>`).join('');
+        sel.value = [...sel.options].some((o) => o.value === value) ? value : prompt || !list.length ? '' : list[0].folder;
         app.syncSelect(sel);
     }
 
@@ -540,45 +403,19 @@
         if (!e) return;
         const sel = e.cards;
         const own = editCollection();
-        $('#pk-all').checked = sel.all;
-        $('#pk-all-row').hidden = !!own;
-        $('#pk-colls-field').hidden = !!own;
-        $('#pk-colls-field').classList.toggle('is-off', !own && sel.all);
-        $('#pk-singles-field').classList.toggle('is-off', !own && sel.all);
-
-        const colls = $('#pk-colls');
-        colls.innerHTML = '';
-        const options = app.state.collections.map((c) => ({ key: lower(c.folder), folder: c.folder, name: c.data.name }));
-        for (const o of options) {
-            const count = (app.state.list || []).filter((c) => lower(c.collection) === o.key).length;
-            const chip = document.createElement('button');
-            chip.type = 'button';
-            chip.className = 'chip-toggle';
-            chip.setAttribute('aria-pressed', sel.collections.has(o.key));
-            chip.innerHTML = `${app.escapeHtml(o.name)} <small>${count}</small>`;
-            chip.addEventListener('click', () => {
-                if (sel.collections.has(o.key)) sel.collections.delete(o.key); else sel.collections.add(o.key);
-                e.collFolders.set(o.key, o.folder);
-                renderCardChoice();
-            });
-            e.collFolders.set(o.key, o.folder);
-            colls.appendChild(chip);
-        }
+        $('#pk-collection-note').textContent = own ? 'Its cards and rarities.' : 'Pick one.';
 
         const singles = $('#pk-singles');
         singles.innerHTML = '';
         const byKey = new Map((app.state.list || []).map((c) => [lower(c.key), c]));
         for (const key of sel.cards) {
             const card = byKey.get(key);
+            if (!card || !inCollection(card, own)) continue;
             const chip = document.createElement('span');
             chip.className = 'coll-card';
-            if (card) {
-                app.paintRarity(chip, card.rarity);
-                const src = card.thumbUrl || '';
-                chip.innerHTML = `<img alt="" ${src ? `src="${src}"` : ''}><span>${app.escapeHtml(card.data.name || card.id)}</span>`;
-            } else {
-                chip.innerHTML = `<span>${app.escapeHtml(e.cardKeys.get(key) || key)} (missing)</span>`;
-            }
+            app.paintRarity(chip, card.rarity, card.collection);
+            const src = card.thumbUrl || '';
+            chip.innerHTML = `<img alt="" ${src ? `src="${src}"` : ''}><span>${app.escapeHtml(card.data.name || card.id)}</span>`;
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'facade-iconbtn';
@@ -588,37 +425,36 @@
             chip.appendChild(remove);
             singles.appendChild(chip);
         }
-        const others = (app.state.list || []).filter((c) => !sel.cards.has(lower(c.key)));
-        if (others.length) {
-            const pick = document.createElement('select');
-            pick.className = 'facade-select';
-            pick.innerHTML = '<option value="">Add a card…</option>' + others.map((c) =>
-                `<option value="${app.escapeHtml(c.key)}">${app.escapeHtml(c.data.name || c.id)} (${c.rarity}, ${app.escapeHtml(app.collName(c.collection))})</option>`).join('');
-            pick.addEventListener('change', () => {
-                if (!pick.value) return;
-                sel.cards.add(lower(pick.value));
-                e.cardKeys.set(lower(pick.value), pick.value);
-                renderCardChoice();
-            });
-            singles.appendChild(pick);
-            app.enhanceSelect(pick);
-        }
+        const all = collectionCards(own);
+        if (all.some((c) => !sel.cards.has(lower(c.key))))
+            singles.appendChild(app.cardSearch({
+                skip: (c) => !inCollection(c, own) || sel.cards.has(lower(c.key)),
+                label: (c) => `${c.data.name || c.id} (${c.rarity})`,
+                pick: (c) => {
+                    sel.cards.add(lower(c.key));
+                    renderCardChoice();
+                },
+                placeholder: 'Add a card of this collection',
+            }));
 
         const rarities = $('#pk-rarities');
         rarities.innerHTML = '';
-        for (const r of RARITIES) {
+        const list = own ? app.raritiesOf(own) : [];
+        const anyOn = list.some((r) => sel.rarities.has(lower(r.name)));
+        for (const r of list) {
+            const key = lower(r.name);
             const chip = document.createElement('button');
             chip.type = 'button';
             chip.className = 'chip-toggle is-rarity';
-            app.paintRarity(chip, r);
-            const on = sel.rarities.size === 0 || sel.rarities.has(r);
+            app.paintRarity(chip, r.name, own);
+            const on = !anyOn || sel.rarities.has(key);
             chip.setAttribute('aria-pressed', on);
-            chip.textContent = r;
+            chip.textContent = r.name;
             chip.addEventListener('click', () => {
-                if (sel.rarities.size === 0) RARITIES.forEach((x) => sel.rarities.add(x));
-                if (sel.rarities.has(r)) sel.rarities.delete(r); else sel.rarities.add(r);
-                if (sel.rarities.size === RARITIES.length) sel.rarities.clear();
-                if (sel.rarities.size === 0 && !on) sel.rarities.clear();
+                for (const k of [...sel.rarities]) if (!list.some((x) => lower(x.name) === k)) sel.rarities.delete(k);
+                if (!anyOn) list.forEach((x) => sel.rarities.add(lower(x.name)));
+                if (sel.rarities.has(key)) sel.rarities.delete(key); else sel.rarities.add(key);
+                if (sel.rarities.size === list.length) sel.rarities.clear();
                 renderCardChoice();
             });
             rarities.appendChild(chip);
@@ -634,20 +470,21 @@
     function renderPool() {
         const e = ps.edit;
         if (!e) return;
-        const pool = poolOf(e.cards);
+        const own = editCollection();
+        const pool = poolOf(e.cards, own);
         $('#pk-pool-count').textContent = pool.length;
         const box = $('#pk-pool');
         if (!pool.length) {
-            box.innerHTML = '<p class="pack-pool-empty">No cards match.</p>';
+            box.innerHTML = `<p class="pack-pool-empty">${own ? 'No cards match.' : 'Pick a collection.'}</p>`;
             return;
         }
         const n = cardCount();
-        const rows = odds(pool.map((c) => c.rarity), n).map((o) => {
-            const count = pool.filter((c) => c.rarity === o.rarity).length;
-            return `<span class="facade-pill fx-sm rarity-pill" style="--cc-rarity-rgb:${rgb(app.rarityColor(o.rarity))}">${o.rarity}</span>` +
-                `<span>${count} card${count === 1 ? '' : 's'}</span><span>${round(o.perCard * 100, 2)}% of cards</span><span>${oneInText(o)}</span>`;
-        }).join('');
-        box.innerHTML = `<div class="pool-table"><span class="rt-head">Rarity</span><span class="rt-head">In the pack</span><span class="rt-head">Each card</span><span class="rt-head">A pack of ${n} has one</span>${rows}</div>`;
+        const rows = packOdds(pool, e.cards, own, n).map((o) =>
+            `<span class="facade-pill fx-sm rarity-pill" style="--cc-rarity-rgb:${rgb(o.color)}">${app.escapeHtml(o.name)}</span>` +
+            `<span>${o.count} card${o.count === 1 ? '' : 's'}</span>` +
+            (o.rerolled ? '<span>Re-rolled</span><span></span><span></span>'
+                : `<span>${app.percentText(o.chance * 100)}%</span><span>${app.percentText(o.each * 100)}%</span><span>${oneInText(o)}</span>`)).join('');
+        box.innerHTML = `<div class="pool-table"><span class="rt-head">Rarity</span><span class="rt-head">In the pack</span><span class="rt-head">Per card</span><span class="rt-head">Each card</span><span class="rt-head">A pack of ${n} has one</span>${rows}</div>`;
     }
 
     function rgb(hex) {
@@ -681,14 +518,11 @@
             selected: null,
             maps: {},
             cards: selectionOf(data),
-            collFolders: new Map(),
-            cardKeys: new Map((data.cards && data.cards.cards || []).map((k) => [lower(k).replace(/\\/g, '/'), k])),
+            needsCollection: !!pack && !pack.collectionId,
             loading: !!(pack || template),
         };
         $('#pk-editor').classList.toggle('is-template', !!template);
         $('#pk-save').textContent = template ? 'Save template' : 'Save booster pack';
-        for (const c of (data.cards && data.cards.collections) || []) e.collFolders.set(lower(c), c);
-
         fillCollections();
         if (pack) $('#pk-collection').value = pack.collectionId || '';
         app.syncSelect($('#pk-collection'));
@@ -1500,22 +1334,19 @@
         if (!(price >= 1)) throw Object.assign(new Error('Price: at least 1 ₽'), { field: '#pk-price' });
         const loot = $('#pk-loot').checked ? parseFloat($('#pk-loot-percent').value) : 0;
         if ($('#pk-loot').checked && !(loot > 0 && loot <= 100)) throw Object.assign(new Error('Found in raid: a chance above 0 and up to 100%'), { field: '#pk-loot-percent' });
+        if (!editCollection()) throw Object.assign(new Error('Pick the pack\'s collection.'), { field: '#pk-collection' });
         if (!poolOf(e.cards).length) throw new Error('No card matches the pack\'s card choice.');
         if (e.look === 'textures' && !e.maps.albedo) throw new Error('Own textures need at least the albedo map.');
         return { name, count, price, loot };
     }
 
-    function cardsJson(sel) {
-        const e = ps.edit;
-        const json = { all: sel.all };
-        const collections = [...sel.collections].map((k) => e.collFolders.get(k) || k);
-        const cards = [...sel.cards].map((k) => {
-            const card = (app.state.list || []).find((c) => lower(c.key) === k);
-            return card ? card.key : e.cardKeys.get(k) || k;
-        });
-        if (collections.length) json.collections = collections;
+    function cardsJson(sel, collectionId) {
+        const list = app.raritiesOf(collectionId);
+        const cards = collectionCards(collectionId).filter((c) => sel.cards.has(lower(c.key))).map((c) => c.key);
+        const rarities = list.filter((r) => sel.rarities.has(lower(r.name))).map((r) => r.name);
+        const json = {};
         if (cards.length) json.cards = cards;
-        if (sel.rarities.size > 0 && sel.rarities.size < RARITIES.length) json.rarities = RARITIES.filter((r) => sel.rarities.has(r));
+        if (rarities.length && rarities.length < list.length) json.rarities = rarities;
         return json;
     }
 
@@ -1541,9 +1372,8 @@
                 price: form.price,
                 purchasable: $('#pk-buy').checked,
                 lootPercent: round(form.loot, 3),
-                cards: cardsJson(e.cards),
+                cards: cardsJson(e.cards, collectionId),
             });
-            if (collectionId) delete data.cards.collections;
             for (const [key, value] of [['shortName', $('#pk-short').value.trim()], ['description', $('#pk-desc').value.trim()]]) {
                 if (value) data[key] = value; else delete data[key];
             }
@@ -1716,8 +1546,11 @@
         $('#pk-name').addEventListener('input', updateFolder);
         $('#pk-count').addEventListener('input', renderPool);
         $('#pk-loot').addEventListener('change', updateLootRow);
-        $('#pk-all').addEventListener('change', () => { if (ps.edit) { ps.edit.cards.all = $('#pk-all').checked; renderCardChoice(); } });
-        $('#pk-collection').addEventListener('change', () => { if (ps.edit) renderCardChoice(); });
+        $('#pk-collection').addEventListener('change', () => {
+            if (!ps.edit) return;
+            if ($('#pk-collection').value) { ps.edit.needsCollection = false; fillCollections(); }
+            renderCardChoice();
+        });
         $('#pk-normal-dx').addEventListener('change', () => { if (ps.edit && ps.edit.maps.normal) flipNormal(); });
         for (const tile of $$('.look-choice .look-tile')) tile.addEventListener('click', () => setLook(tile.dataset.look));
 
@@ -1733,17 +1566,13 @@
         });
         for (const id of ['#pk-name', '#pk-short', '#pk-desc']) $(id).addEventListener('input', rerenderTexts);
 
-        $('#pk-odds-save').addEventListener('click', saveOdds);
-        $('#pk-odds-reset').addEventListener('click', () => { readWeights(); renderOdds(); setStatus($('#pk-odds-status'), ''); });
         wirePreview();
     }
 
     window.CCPacks = {
         init(helpers) {
             app = helpers;
-            readWeights();
             wire();
-            renderOdds();
             renderList();
         },
         show() {
@@ -1754,8 +1583,8 @@
         changed(what) {
             if (!app) return;
             if (what === 'config') {
-                readWeights();
-                renderOdds();
+                renderList();
+                if (ps.edit) renderCardChoice();
                 return;
             }
             if (what === 'folder') { scan(); return; }

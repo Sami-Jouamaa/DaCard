@@ -3,10 +3,10 @@
 
     const CARD_W = 490, CARD_H = 684;
     const MAX_SIDE = 1600;          // saved pictures are at most this big (a layer can be scaled up on the card)
-    const MAPS = ['art', 'normal', 'roughness', 'metallic', 'mask'];
-    const MAP_LABEL = { art: 'Albedo', normal: 'Normal', roughness: 'Roughness', metallic: 'Metallic', mask: 'Mask' };
-    const MAP_EMPTY = { art: 'Required', normal: 'None', roughness: 'Default', metallic: 'None', mask: 'Albedo alpha' };
-    const IS_MASK = { mask: true };
+    const MAPS = ['art', 'normal', 'roughness', 'metallic', 'mask', 'foilmask'];
+    const MAP_LABEL = { art: 'Albedo', normal: 'Normal', roughness: 'Roughness', metallic: 'Metallic', mask: 'Mask', foilmask: 'Foil mask' };
+    const MAP_EMPTY = { art: 'Or mask only', normal: 'None', roughness: 'Default', metallic: 'None', mask: 'Albedo alpha', foilmask: 'All foil' };
+    const IS_MASK = { mask: true, foilmask: true };
     const IS_GREY = { roughness: true, metallic: true };
     const LEGACY_MAP = { mask: 'foil' };
     const DEFAULT_ROUGHNESS = 0.3;
@@ -20,21 +20,54 @@
         video: { accept: 'video/*,image/gif,.gif', multiple: false },
     };
     const LAYER_NAME = String.raw`((front|back)_\d+|layer_[0-9a-f]{10}|[0-9a-f]{12})`;
-    const LAYER_FILE = new RegExp(String.raw`^${LAYER_NAME}(\.(normal|roughness|metallic|mask|foil|normalmask))?\.png$`, 'i');
-    const LAYER_FRAMES = new RegExp(String.raw`^frames\.${LAYER_NAME}(\.(normal|roughness|metallic|mask|foil|normalmask))?$`, 'i');
+    const LAYER_FILE = new RegExp(String.raw`^${LAYER_NAME}(\.(normal|roughness|metallic|mask|foil|foilmask|normalmask))?\.png$`, 'i');
+    const LAYER_FRAMES = new RegExp(String.raw`^frames\.${LAYER_NAME}(\.(normal|roughness|metallic|mask|foil|foilmask|normalmask))?$`, 'i');
     const LAYER_FONT = new RegExp(String.raw`^${LAYER_NAME}\.(ttf|otf)$`, 'i');
     const IDENTITY = { x: 0.5, y: 0.5, scale: 1, rotation: 0 };
     const MAX_NAME = 60;
     const LAYER_KINDS = {
         image: { label: 'Image layer', title: 'Add a layer with a picture (image, image sequence, video or GIF)' },
         text: { label: 'Text layer', title: 'Add a layer of text (it can show the card\'s name, description, rarity…)' },
+        variant: { label: 'Variant layer', title: 'One of several pictures, rolled per copy' },
     };
+    const FOIL_TYPES = [
+        { id: 'foil', name: 'Rainbow' }, { id: 'linear', name: 'Linear' }, { id: 'radial', name: 'Radial' }, { id: 'sparkle', name: 'Sparkle' },
+        { id: 'galaxy', name: 'Galaxy' }, { id: 'diamond', name: 'Diamond' }, { id: 'squares', name: 'Squares' }, { id: 'circles', name: 'Circles' },
+        { id: 'surge', name: 'Surge' }, { id: 'ripple', name: 'Ripple' }, { id: 'speckle', name: 'Speckle' }, { id: 'crackle', name: 'Crackle' },
+    ];
+    const DEFAULT_VARIANT_WEIGHT = 10;
     const TEXT_ID = /^[A-Za-z0-9_-]{1,40}$/;
+    const FOIL_CODE_STEP = 20;
+    const foilTypeCode = (type) => {
+        const i = FOIL_TYPES.findIndex((f) => f.id === type);
+        return i < 0 ? 0 : (i + 1) * FOIL_CODE_STEP;
+    };
+    const foilTypeAt = (code) => {
+        const i = Math.round(code / FOIL_CODE_STEP) - 1;
+        return FOIL_TYPES[i] ? FOIL_TYPES[i].id : null;
+    };
 
     let nextUid = 1;
     const newTextId = () => 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const isText = (l) => l.kind === 'text';
-    const hasContent = (l) => (isText(l) ? !!l.text : !!l.maps.art);
+    const isVariant = (l) => l.kind === 'variant';
+    const hasContent = (l) => (isText(l) ? !!l.text : isVariant(l) ? l.variants.some(hasContent) : !!(l.maps.art || l.maps.mask));
+
+    function previewVariant(group) {
+        const list = group.variants.filter(hasContent);
+        return list.find((v) => v.uid === group.preview) || list.reduce((best, v) => (!best || v.chance > best.chance ? v : best), null);
+    }
+
+    const shownLayer = (l) => (l && isVariant(l) ? previewVariant(l) : l);
+    const shapeOf = (l) => {
+        const shown = shownLayer(l);
+        return shown && !isText(shown) ? shown.maps.art || shown.maps.mask : null;
+    };
+
+    function dispose(l) {
+        for (const v of isVariant(l) ? l.variants : []) dispose(v);
+        for (const m of MAPS) if (l.maps[m]) l.maps[m].dispose();
+    }
 
     // Runs change(), then animates el from its size before to its size after, instead of snapping
     function smoothResize(el, change, duration = 220) {
@@ -66,11 +99,17 @@
             text: kind === 'text' ? CardText.defaults() : null,
             chance: 100,
             price: 0,
+            pricePercent: 0,
             canBeFoil: defaults.canBeFoil ?? side === 'front',
+            foilChance: null,
+            foilType: null,
             frame: kind !== 'text' && !!defaults.frame,
             over: false,
             maps: Object.fromEntries(MAPS.map((m) => [m, null])),
             transform: { ...IDENTITY },
+            variants: kind === 'variant' ? [] : null,
+            preview: null,
+            parent: null,
             roughness: null,
             metallic: null,
             hidden: false,
@@ -223,11 +262,13 @@
     }
 
     function layerBox(layer) {
+        layer = shownLayer(layer);
+        if (!layer) return null;
         if (isText(layer)) {
             const t = layer.text;
             return { cx: t.x * CARD_W, cy: (t.y + t.height / 2) * CARD_H, w: t.width * CARD_W, h: t.height * CARD_H, rotation: t.rotation || 0 };
         }
-        const art = layer.maps.art;
+        const art = shapeOf(layer);
         if (!art) return null;
         const t = layer.transform, p = placedSize({ w: art.width, h: art.height }, t);
         return { cx: t.x * CARD_W, cy: t.y * CARD_H, w: p.w, h: p.h, rotation: t.rotation };
@@ -235,8 +276,10 @@
 
     // The placed picture's outline (for the preview): corners in card pixels
     function outline(layer) {
+        layer = shownLayer(layer);
+        if (!layer) return null;
         if (isText(layer)) return CardText.box(layer.text);
-        const art = layer.maps.art;
+        const art = shapeOf(layer);
         if (!art) return null;
         const t = layer.transform, p = placedSize({ w: art.width, h: art.height }, t);
         const a = t.rotation * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
@@ -294,34 +337,41 @@
 
     const asSaved = (map, canvas) => (IS_MASK[map] ? toMask(canvas) : IS_GREY[map] ? toGrey(canvas) : canvas);
 
-    const artSize = (layer) => ({ w: layer.maps.art.width, h: layer.maps.art.height });
+    const artSize = (layer) => ({ w: shapeOf(layer).width, h: shapeOf(layer).height });
 
     // The scale that just covers the card (scale 1 fits inside it)
     function fillScale(layer) {
-        if (!layer.maps.art) return 1;
+        layer = shownLayer(layer);
+        if (!layer || !shapeOf(layer)) return 1;
         const { w, h } = artSize(layer);
         return Math.max(CARD_W / w, CARD_H / h) / Math.min(CARD_W / w, CARD_H / h);
     }
 
     function mapCanvas(layer, map, t) {
         const media = layer.maps[map];
-        if (!media || !layer.maps.art) return null;
+        if (!media || !shapeOf(layer)) return null;
         const size = artSize(layer), img = media.frameAt(t);
         if (IS_MASK[map] || IS_GREY[map]) return drawPlaced(asSaved(map, drawNatural(img, size)), layer.transform, size);
         if (map === 'normal') return drawPlaced(asOpenGL(media, drawNatural(img, size)), layer.transform, size);
         return drawPlaced(img, layer.transform, size);
     }
 
+    const maskShape = (layer, t) => {
+        const size = artSize(layer);
+        return drawPlaced(toMask(drawNatural(layer.maps.mask.frameAt(t), size), true), layer.transform, size);
+    };
+
     function visibleArt(layer, t) {
         const art = mapCanvas(layer, 'art', t), mask = layer.maps.mask;
         if (!art || !mask) return art;
-        const size = artSize(layer);
         const g = art.getContext('2d');
         g.globalCompositeOperation = 'destination-in';
-        g.drawImage(drawPlaced(toMask(drawNatural(mask.frameAt(t), size), true), layer.transform, size), 0, 0);
+        g.drawImage(maskShape(layer, t), 0, 0);
         g.globalCompositeOperation = 'source-over';
         return art;
     }
+
+    const coverage = (layer, t) => (layer.maps.art ? visibleArt(layer, t) : layer.maps.mask ? maskShape(layer, t) : null);
 
     // Bottom to top: the card's layers, the collection's, the card's layers marked over them
     const ordered = (card, coll = []) => [...card.filter((l) => !l.over), ...coll, ...card.filter((l) => l.over)];
@@ -332,16 +382,18 @@
     };
 
     function parts(layers, t, ctx = {}) {
-        return layers.filter((l) => hasContent(l) && !l.hidden).map((l) => {
+        return layers.filter((l) => hasContent(l) && !l.hidden).map((group) => {
+            const l = shownLayer(group);
             if (isText(l)) {
                 const art = CardText.render(textStyle(l, ctx), ctx.vars || {});
-                return art && { art, canBeFoil: l.canBeFoil, frame: l.frame, turn: 0 };
+                return art && { art, canBeFoil: l.canBeFoil, foilType: l.foilType || null, frame: l.frame, turn: 0 };
             }
+            const art = l.maps.art ? visibleArt(l, t) : null;
             return {
-                art: visibleArt(l, t), normal: mapCanvas(l, 'normal', t),
+                art, shape: art ? null : coverage(l, t), normal: mapCanvas(l, 'normal', t), foil: mapCanvas(l, 'foilmask', t),
                 roughness: mapCanvas(l, 'roughness', t), metallic: mapCanvas(l, 'metallic', t),
                 roughnessValue: l.roughness, metallicValue: l.metallic,
-                canBeFoil: l.canBeFoil, frame: l.frame, turn: l.transform.rotation * Math.PI / 180,
+                canBeFoil: l.canBeFoil, foilType: l.foilType || null, frame: l.frame, turn: l.transform.rotation * Math.PI / 180,
             };
         }).filter(Boolean);
     }
@@ -349,7 +401,7 @@
     function composite(list, opts = {}) {
         const color = newCanvas(), foil = newCanvas(), normal = newCanvas(), surface = newCanvas();
         const cg = color.getContext('2d');
-        for (const p of list) cg.drawImage(p.art, 0, 0);
+        for (const p of list) if (p.art) cg.drawImage(p.art, 0, 0);
         const wantFoil = opts.foil !== false, wantNormal = opts.normal !== false, wantSurface = opts.surface === true;
         if (!wantFoil && !wantNormal && !wantSurface) return { color, foil: null, normal: null, surface: null };
         const rough0 = Math.round(255 * (opts.roughness ?? DEFAULT_ROUGHNESS));
@@ -364,9 +416,10 @@
         }
         const read = (c) => (c ? context(c).getImageData(0, 0, CARD_W, CARD_H).data : null);
         for (const p of list) {
-            const a = read(p.art), m = wantFoil ? read(p.foil) : null, n = wantNormal ? read(p.normal) : null;
+            const a = read(p.art || p.shape), m = wantFoil ? read(p.foil) : null, n = wantNormal ? read(p.normal) : null;
             const r = wantSurface ? read(p.roughness) : null, mt = wantSurface ? read(p.metallic) : null;
             const frameValue = p.frame ? 255 : 0;
+            const typeCode = foilTypeCode(p.foilType);
             const roughValue = typeof p.roughnessValue === 'number' ? Math.round(255 * clamp01(p.roughnessValue)) : rough0;
             const metalValue = typeof p.metallicValue === 'number' ? Math.round(255 * clamp01(p.metallicValue)) : 0;
             const c = Math.cos(p.turn || 0), s = Math.sin(p.turn || 0);
@@ -377,10 +430,12 @@
                     const f = p.canBeFoil ? (m ? m[i] : 255) : 0;
                     fd[i] += (f - fd[i]) * al;
                     fd[i + 1] += (frameValue - fd[i + 1]) * al;
+                    if (p.canBeFoil && al > 0.5) fd[i + 2] = typeCode;
                 }
                 if (wantSurface) {
                     sd[i] += ((r ? r[i] : roughValue) - sd[i]) * al;
                     sd[i + 1] += ((mt ? mt[i] : metalValue) - sd[i + 1]) * al;
+                    sd[i + 2] += (255 - sd[i + 2]) * al;
                 }
                 if (!wantNormal) continue;
                 let nx = 0, ny = 0, nz = 255;
@@ -401,28 +456,28 @@
 
     function hitTest(layers, x, y, t = 0) {
         for (let i = layers.length - 1; i >= 0; i--) {
-            const l = layers[i];
-            if (l.hidden || !hasContent(l)) continue;
+            if (layers[i].hidden || !hasContent(layers[i])) continue;
+            const l = shownLayer(layers[i]);
             if (isText(l)) {
                 if (CardText.contains(l.text, x, y)) return l;
                 continue;
             }
             if (x < 0 || y < 0 || x >= CARD_W || y >= CARD_H) continue;
-            const c = visibleArt(l, t);
+            const c = coverage(l, t);
             if (c && c.getContext('2d', { willReadFrequently: true }).getImageData(Math.floor(x), Math.floor(y), 1, 1).data[3] > 16) return l;
         }
         return null;
     }
 
-    const mediaOf = (layers) => layers.flatMap((l) => (isText(l) ? [] : MAPS.map((m) => l.maps[m]).filter(Boolean)));
+    const mediaOf = (layers) => layers.flatMap((l) => (isText(l) ? [] : isVariant(l) ? mediaOf(l.variants) : MAPS.map((m) => l.maps[m]).filter(Boolean)));
 
     async function unreadable(layers, extra = []) {
         const broken = new Set();
         const check = async (blob, what) => {
             try { await blob.slice(0, 1).arrayBuffer(); } catch { broken.add(what); }
         };
-        for (const layer of layers) {
-            const what = layer.name || (isText(layer) ? 'a text layer' : (layer.maps.art && layer.maps.art.name) || 'a layer');
+        for (const layer of layers.flatMap((l) => (isVariant(l) ? l.variants : [l]))) {
+            const what = layer.name || (isText(layer) ? 'a text layer' : (shapeOf(layer) && shapeOf(layer).name) || 'a layer');
             if (isText(layer)) { if (layer.text.font) await check(layer.text.font, what); continue; }
             for (const media of MAPS.map((m) => layer.maps[m]).filter((media, i) => media && !(layer.saved && layer.saved[MAPS[i]] === media)))
                 for (const frame of media.frames || []) if (frame instanceof Blob) await check(frame, what);
@@ -457,22 +512,72 @@
     // Files for these layer lists: [[path, () => Promise<Blob>]] (rendered one at a time while saving) and the json lists
     function files(lists, opts = {}) {
         const out = [], json = {}, keep = new Set(), clear = new Set(), placed = [];
-        const used = new Set(['front', 'back'].flatMap((side) => (lists[side] || []).filter(hasContent)
-            .filter((l) => !!opts.incremental && !!l.saved && typeof l.file === 'string' && STABLE_FILE.test(l.file)).map((l) => l.file)));
+        const stable = (l) => !!opts.incremental && !!l.saved && typeof l.file === 'string' && STABLE_FILE.test(l.file);
+        const everyLayer = ['front', 'back'].flatMap((side) => (lists[side] || []).filter(hasContent))
+            .flatMap((l) => (isVariant(l) ? [l, ...l.variants.filter(hasContent)] : [l]));
+        const used = new Set(everyLayer.filter(stable).map((l) => l.file));
+        const fileOf = (layer) => {
+            const kept = stable(layer);
+            let file = kept ? layer.file : newLayerFile();
+            while (!kept && used.has(file)) file = newLayerFile();
+            used.add(file);
+            placed.push([layer, file]);
+            return { file, kept, saved: kept ? layer.saved : {} };
+        };
+        const extras = (layer, entry) => {
+            if (layer.price > 0) entry.price = layer.price;
+            if (layer.pricePercent > 0) entry.pricePercent = layer.pricePercent;
+            if (layer.canBeFoil && typeof layer.foilChance === 'number') entry.foilChance = layer.foilChance;
+            if (layer.canBeFoil && layer.foilType) entry.foilType = layer.foilType;
+        };
+        const picture = (layer, entry, { file, kept, saved }) => {
+            const t = layer.transform;
+            if (!isIdentity(t)) entry.transform = { x: round(t.x), y: round(t.y), scale: round(t.scale), rotation: round(t.rotation, 100) };
+            for (const key of ['roughness', 'metallic'])
+                if (typeof layer[key] === 'number') entry[key] = round(clamp01(layer[key]), 1000);
+            const size = capped(artSize(layer));
+            const fps = {};
+            for (const map of MAPS) {
+                const media = layer.maps[map];
+                if (!media) continue;
+                const animated = media.animated && media.count > 1;
+                if (animated) fps[map] = media.fps;
+                if (media === saved[map] && (map !== 'normal' || isOpenGL(media) === saved.normalGL)) {
+                    keep.add(mapFile(file, map).toLowerCase());
+                    if (animated) keep.add(framesFolder(file, map).toLowerCase());
+                    continue;
+                }
+                if (kept) clear.add(framesFolder(file, map));
+                const render = (img) => pngBlob(map === 'normal' ? asOpenGL(media, drawNatural(img, size)) : asSaved(map, drawNatural(img, size)));
+                out.push([mapFile(file, map), () => media.withFrame(0, render)]);
+                if (animated) {
+                    for (let f = 0; f < media.count; f++)
+                        out.push([`${framesFolder(file, map)}/frame_${String(f).padStart(3, '0')}.png`, () => media.withFrame(f, render)]);
+                }
+            }
+            if (Object.keys(fps).length) entry.fps = fps;
+            return entry;
+        };
         for (const side of ['front', 'back']) {
             json[side] = [];
-            // Saved bottom first, as the game stacks them (the "over" ones among them)
             const list = (lists[side] || []).filter(hasContent);
-            const stable = (l) => !!opts.incremental && !!l.saved && typeof l.file === 'string' && STABLE_FILE.test(l.file);
             list.forEach((layer) => {
-                const kept = stable(layer);
-                let file = kept ? layer.file : newLayerFile();
-                while (!kept && used.has(file)) file = newLayerFile();
-                used.add(file);
-                const saved = kept ? layer.saved : {};
-                placed.push([layer, file]);
+                const placedAs = fileOf(layer);
+                const { file, saved } = placedAs;
+                if (isVariant(layer)) {
+                    const entry = { file, kind: 'variant', ...(layer.name && { name: layer.name }), chance: layer.chance };
+                    if (layer.over) entry.over = true;
+                    entry.variants = layer.variants.filter(hasContent).map((v) => {
+                        const at = fileOf(v);
+                        const ve = { file: at.file, ...(v.name && { name: v.name }), chance: v.chance, canBeFoil: v.canBeFoil };
+                        extras(v, ve);
+                        return picture(v, ve, at);
+                    });
+                    json[side].push(entry);
+                    return;
+                }
                 const entry = { file, ...(layer.name && { name: layer.name }), chance: layer.chance, canBeFoil: layer.canBeFoil };
-                if (layer.price > 0) entry.price = layer.price;
+                extras(layer, entry);
                 if (layer.over) entry.over = true;
                 if (isText(layer)) {
                     const t = layer.text;
@@ -491,32 +596,7 @@
                     json[side].push(entry);
                     return;
                 }
-                const t = layer.transform;
-                if (!isIdentity(t)) entry.transform = { x: round(t.x), y: round(t.y), scale: round(t.scale), rotation: round(t.rotation, 100) };
-                for (const key of ['roughness', 'metallic'])
-                    if (typeof layer[key] === 'number') entry[key] = round(clamp01(layer[key]), 1000);
-                const size = capped(artSize(layer));
-                const fps = {};
-                for (const map of MAPS) {
-                    const media = layer.maps[map];
-                    if (!media) continue;
-                    const animated = media.animated && media.count > 1;
-                    if (animated) fps[map] = media.fps;
-                    if (media === saved[map] && (map !== 'normal' || isOpenGL(media) === saved.normalGL)) {
-                        keep.add(mapFile(file, map).toLowerCase());
-                        if (animated) keep.add(framesFolder(file, map).toLowerCase());
-                        continue;
-                    }
-                    if (kept) clear.add(framesFolder(file, map));
-                    const render = (img) => pngBlob(map === 'normal' ? asOpenGL(media, drawNatural(img, size)) : asSaved(map, drawNatural(img, size)));
-                    out.push([mapFile(file, map), () => media.withFrame(0, render)]);
-                    if (animated) {
-                        for (let f = 0; f < media.count; f++)
-                            out.push([`${framesFolder(file, map)}/frame_${String(f).padStart(3, '0')}.png`, () => media.withFrame(f, render)]);
-                    }
-                }
-                if (Object.keys(fps).length) entry.fps = fps;
-                json[side].push(entry);
+                json[side].push(picture(layer, entry, placedAs));
             });
         }
         for (const [path] of out) keep.add(path.split('/')[0].toLowerCase());
@@ -571,6 +651,20 @@
         const layers = [];
         for (const entry of entries || []) {
             if (!entry || !/^[A-Za-z0-9_.-]+$/.test(entry.file || '')) continue;
+            if (entry.foil) continue;
+            if (entry.kind === 'variant') {
+                const group = newLayer(side, defaults, 'variant');
+                group.file = entry.file;
+                if (typeof entry.name === 'string') group.name = entry.name.trim().slice(0, MAX_NAME);
+                group.collapsed = true;
+                if (entry.chance != null) group.chance = entry.chance;
+                group.over = !!entry.over;
+                group.variants = await load(dir, side, (Array.isArray(entry.variants) ? entry.variants : []).map((v) => ({ ...v, kind: 'image', over: false })), defaults, opts);
+                for (const v of group.variants) v.parent = group;
+                group.saved = savedState(group);
+                if (hasContent(group)) layers.push(group);
+                continue;
+            }
             const layer = newLayer(side, defaults, entry.text ? 'text' : 'image');
             layer.file = entry.file;
             if (entry.text) {
@@ -585,7 +679,10 @@
             layer.collapsed = true;
             if (entry.chance != null) layer.chance = entry.chance;
             if (entry.price > 0) layer.price = Math.round(entry.price);
+            layer.pricePercent = entry.pricePercent > 0 ? entry.pricePercent : 0;
             if (entry.canBeFoil != null) layer.canBeFoil = !!entry.canBeFoil;
+            if (typeof entry.foilChance === 'number' && Number.isFinite(entry.foilChance)) layer.foilChance = Math.min(100, Math.max(0, entry.foilChance));
+            if (FOIL_TYPES.some((f) => f.id === entry.foilType)) layer.foilType = entry.foilType;
             layer.over = !!entry.over;
             if (entry.transform) layer.transform = { ...IDENTITY, ...entry.transform };
             for (const key of ['roughness', 'metallic'])
@@ -705,6 +802,16 @@
         const foldAll = root.querySelector('[data-fold-all]');
 
         const changed = (what = 'layers', layer = null) => { if (opts.onChange) opts.onChange(what, layer); };
+        const foilTypes = () => (opts.foilTypes && opts.foilTypes()) || FOIL_TYPES;
+        const foilDefault = () => {
+            const v = opts.foilDefault ? opts.foilDefault() : null;
+            return typeof v === 'number' ? String(v) : '';
+        };
+        const foilNote = (layer) => {
+            if (!layer.canBeFoil || (layer.foilChance == null && !layer.foilType)) return '';
+            const type = layer.foilType ? (foilTypes().find((f) => f.id === layer.foilType) || { name: layer.foilType }).name : '';
+            return ['Foil', layer.foilChance != null ? `${layer.foilChance}%` : '', type].filter(Boolean).join(' ');
+        };
 
         const clock = opts.time || (() => performance.now() / 1000);
         const thumbs = new Set();
@@ -768,11 +875,21 @@
             });
         }
 
+        const variantShare = (v) => {
+            const total = v.parent.variants.reduce((sum, x) => sum + Math.max(0, x.chance || 0), 0);
+            return total > 0 ? Math.round((Math.max(0, v.chance) / total) * 1000) / 10 : 0;
+        };
+
         function summary(layer) {
             const bits = [];
             if (isText(layer)) bits.push(`"${layer.text.value.replace(/\s+/g, ' ').trim()}"`);
-            if (layer.chance < 100) bits.push(`${layer.chance}%`);
-            if (layer.chance < 100 && layer.price > 0) bits.push(`${layer.price.toLocaleString()} ₽`);
+            if (isVariant(layer)) bits.push(`${layer.variants.length} variant${layer.variants.length === 1 ? '' : 's'}`);
+            if (layer.parent) bits.push(`${variantShare(layer)}%`);
+            else if (layer.chance < 100) bits.push(`${layer.chance}%`);
+            if (layer.price > 0) bits.push(`+${layer.price.toLocaleString()} ₽`);
+            if (layer.pricePercent > 0) bits.push(`+${layer.pricePercent}%`);
+            const foil = foilNote(layer);
+            if (foil) bits.push(foil);
             return bits.join(' · ');
         }
 
@@ -782,6 +899,11 @@
         function select(layer, how = {}) {
             if (layer && layer.side !== side) { side = layer.side; render(); }
             selected = layer;
+            if (layer && layer.parent && hasContent(layer) && layer.parent.preview !== layer.uid) {
+                layer.parent.preview = layer.uid;
+                showGroup(layer.parent);
+            }
+            if (how.reveal && layer && layer.parent && layer.parent.collapsed) setCollapsed([layer.parent], false);
             for (const el of listEl.querySelectorAll('.layer-card')) el.classList.toggle('is-selected', !!layer && +el.dataset.uid === layer.uid);
             if (how.reveal && layer) {
                 const card = listEl.querySelector(`.layer-card[data-uid="${layer.uid}"]`);
@@ -848,7 +970,7 @@
                 const on = isOn(layer);
                 const row = document.createElement('label');
                 row.className = 'layer-coll-row' + (on ? '' : ' is-hidden');
-                const what = isText(layer) ? `Text: ${layer.text.value}` : layer.maps.art ? layer.maps.art.name : '';
+                const what = isText(layer) ? `Text: ${layer.text.value}` : isVariant(layer) ? `${layer.variants.length} variants` : shapeOf(layer) ? shapeOf(layer).name : '';
                 row.innerHTML = `<span>${layer.name ? escapeHtml(layer.name) : `Layer ${i + 1}`}${layer.chance < 100 ? ` · ${layer.chance}%` : ''}${what ? ` · ${escapeHtml(what)}` : ''}</span>` +
                     (toggle ? '<input type="checkbox" class="facade-switch" title="On this card">' : '');
                 if (toggle) {
@@ -861,35 +983,106 @@
             return box;
         }
 
+        const cardOf = (layer) => listEl.querySelector(`.layer-card[data-uid="${layer.uid}"]`);
+        const redrawThumbs = (layer) => { for (const th of thumbs) if (th.layer === layer || th.layer === layer.parent) drawThumb(th); };
+
+        function showGroup(group) {
+            const card = cardOf(group);
+            if (!card) return;
+            const pick = card.querySelector('.layer-preview-pick');
+            const shown = previewVariant(group);
+            pick.innerHTML = group.variants.map((v, i) => `<option value="${v.uid}"${hasContent(v) ? '' : ' disabled'}>${escapeHtml(v.name || `Variant ${i + 1}`)}</option>`).join('');
+            pick.value = shown ? String(shown.uid) : '';
+            if (window.FacadeSelect) FacadeSelect.sync(pick);
+            card.querySelector('.layer-summary').textContent = summary(group);
+            for (const v of group.variants) {
+                const sub = cardOf(v);
+                if (!sub) continue;
+                sub.querySelector('.variant-share').textContent = `→ ${variantShare(v)}%`;
+                sub.querySelector('.layer-summary').textContent = summary(v);
+            }
+            for (const th of thumbs) if (th.layer === group) drawThumb(th);
+        }
+
+        function newVariant(group) {
+            const v = newLayer(group.side, opts.sides[group.side] && opts.sides[group.side].defaults, 'image');
+            v.chance = DEFAULT_VARIANT_WEIGHT;
+            v.parent = group;
+            return v;
+        }
+
+        function maskControl(card, layer, showSummary) {
+            const box = card.querySelector('.layer-mask');
+            const sw = box.querySelector('input[type="checkbox"]'), canvas = box.querySelector('canvas'), input = box.querySelector('input[type="file"]');
+            const show = () => {
+                sw.checked = !!layer.maps.mask;
+                canvas.hidden = !layer.maps.mask;
+            };
+            thumb(canvas, () => layer.maps.mask, layer);
+            sw.addEventListener('change', () => {
+                if (sw.checked) {
+                    sw.checked = false;
+                    input.click();
+                    return;
+                }
+                if (layer.maps.mask) layer.maps.mask.dispose();
+                layer.maps.mask = null;
+                show();
+                redrawThumbs(layer);
+                showSummary();
+                changed('media', layer);
+            });
+            canvas.addEventListener('click', () => input.click());
+            input.addEventListener('change', async () => {
+                const list = [...input.files];
+                input.value = '';
+                if (!list.length) return;
+                let media;
+                try {
+                    media = await CardMedia.open(CardMedia.kindOf(list), list);
+                } catch (e) {
+                    if (opts.onError) opts.onError(`Could not open ${list[0].name}`, e.message);
+                    return;
+                }
+                const old = layer.maps.mask;
+                layer.maps.mask = media;
+                if (old) old.dispose();
+                show();
+                redrawThumbs(layer);
+                select(layer);
+                if (layer.parent) showGroup(layer.parent);
+                changed('media', layer);
+            });
+            show();
+        }
+
         function layerCard(layer) {
-            const list = lists[layer.side];
+            const group = layer.parent;
+            const variant = isVariant(layer), picture = !variant && !isText(layer);
+            const list = group ? group.variants : lists[layer.side];
             const index = list.indexOf(layer);
             const top = index === list.length - 1, bottom = index === 0;
+            const upOff = group ? bottom : top && (!opts.collectionBlock || layer.over);
+            const downOff = group ? top : bottom && (!opts.collectionBlock || !layer.over);
             const card = document.createElement('div');
-            card.className = 'layer-card' + (isText(layer) ? ' is-text' : '') + (layer === selected ? ' is-selected' : '') + (layer.hidden ? ' is-hidden' : '') + (layer.collapsed ? ' is-collapsed' : '');
+            card.className = 'layer-card' + (isText(layer) ? ' is-text' : '') + (variant ? ' is-group' : '') + (group ? ' is-variant' : '')
+                + (layer === selected ? ' is-selected' : '') + (layer.hidden ? ' is-hidden' : '') + (layer.collapsed ? ' is-collapsed' : '');
             card.dataset.uid = layer.uid;
-            const t = layer.transform;
-            card.innerHTML = `
-                <div class="layer-head">
-                    <span class="layer-grip" title="Drag to move this layer up or down the stack" aria-hidden="true"></span>
-                    <button type="button" class="facade-iconbtn layer-fold" data-act="fold" aria-expanded="${!layer.collapsed}" title="${layer.collapsed ? 'Expand' : 'Collapse'}"></button>
-                    ${isText(layer) ? '<span class="layer-thumb layer-thumb-text" aria-hidden="true">T</span>' : '<canvas class="layer-thumb" width="96" height="96"></canvas>'}
-                    <input type="text" class="facade-input layer-name" maxlength="${MAX_NAME}" spellcheck="false" autocomplete="off" placeholder="Layer ${index + 1}" aria-label="Layer name" title="Layer name (click to rename)" value="${escapeHtml(layer.name)}">
-                    ${opts.collectionBlock && layer.over ? '<small class="layer-tag">Over the collection</small>' : ''}
-                    <small class="layer-summary"></small>
-                    <span class="spacer"></span>
-                    <button type="button" class="facade-iconbtn" data-act="eye" title="${layer.hidden ? 'Show in the preview' : 'Hide in the preview (to see the card without it)'}">${layer.hidden ? '◌' : '◉'}</button>
-                    <button type="button" class="facade-iconbtn" data-act="up" title="Move up" ${top && (!opts.collectionBlock || layer.over) ? 'disabled' : ''}>↑</button>
-                    <button type="button" class="facade-iconbtn" data-act="down" title="Move down" ${bottom && (!opts.collectionBlock || !layer.over) ? 'disabled' : ''}>↓</button>
-                    <button type="button" class="facade-iconbtn" data-act="remove" title="Remove this layer">×</button>
-                </div>
-                <div class="layer-body">
-                    <div class="layer-props">
-                        <label class="layer-chance" title="% of copies of the card that show this layer (rolled per copy in game)"><span>Chance</span><input type="number" class="facade-input" min="0" max="100" step="0.1" inputmode="decimal" value="${layer.chance}"><span>%</span></label>
-                        <label class="layer-chance layer-price" title="A layer under 100% chance is a sticker on the copies that roll it: this is what it adds to the copy's price (in roubles)."><span>Sticker</span><input type="number" class="facade-input" min="0" max="100000000" step="100" inputmode="numeric" value="${layer.price}"><span>₽</span></label>
-                        <label class="facade-check-row" title="Foil version shines here"><input type="checkbox" class="facade-switch" data-k="foil" ${layer.canBeFoil ? 'checked' : ''}><span>Can Be Foil</span></label>
-                    </div>
-                    ${isText(layer) ? '<div class="layer-text"></div>' : `<div class="layer-maps"></div>
+            const chanceHtml = group
+                ? `<label class="layer-chance layer-weight" title="Weight among the variants"><span>Weight</span><input type="number" class="facade-input" min="0" step="1" inputmode="decimal" value="${layer.chance}"><span class="variant-share">→ ${variantShare(layer)}%</span></label>`
+                : `<label class="layer-chance" title="% of copies of the card that show this layer (rolled per copy in game)"><span>Chance</span><input type="number" class="facade-input" min="0" max="100" step="0.1" inputmode="decimal" value="${layer.chance}"><span>%</span></label>`;
+            const extraHtml = variant
+                ? '<label class="layer-chance layer-preview" title="Shown in the previews"><span>Preview</span><select class="facade-select layer-preview-pick" aria-label="Variant to preview"></select></label>'
+                : `<label class="layer-chance layer-price" title="Added to a copy's price when it shows this layer"><span>Price</span><input type="number" class="facade-input" min="0" max="100000000" step="100" inputmode="numeric" value="${layer.price}"><span>₽</span></label>
+                        <label class="layer-chance layer-percent" title="Added to a copy's price when it shows this layer: a share of the card's price"><span>+</span><input type="number" class="facade-input" min="0" max="10000" step="1" inputmode="decimal" value="${layer.pricePercent}"><span>% of card</span></label>
+                        <label class="facade-check-row" title="Foil copies shine here"><input type="checkbox" class="facade-switch" data-k="foil" ${layer.canBeFoil ? 'checked' : ''}><span>Can Be Foil</span></label>
+                        <span class="layer-foil"${layer.canBeFoil ? '' : ' hidden'}>
+                            <label class="layer-chance layer-foil-chance" title="Foil chance of this layer (empty: the collection's)"><span>Foil</span><input type="number" class="facade-input" min="0" max="100" step="0.1" inputmode="decimal" value="${layer.foilChance ?? ''}"><span>%</span></label>
+                            <select class="facade-select layer-foil-type" aria-label="Foil type"><option value="">Random</option>${foilTypes().map((f) => `<option value="${escapeHtml(f.id)}"${layer.foilType === f.id ? ' selected' : ''}>${escapeHtml(f.name)}</option>`).join('')}</select>
+                        </span>`;
+            const bodyHtml = variant
+                ? '<div class="layer-variants"></div><div class="guide-actions"><button type="button" class="facade-btn fx-sm" data-act="add-variant">Add variant</button></div>'
+                : isText(layer) ? '<div class="layer-text"></div>' : `<div class="layer-maps"></div>
                     <div class="layer-transform">
                         <div class="scrub-grid"></div>
                         <div class="guide-actions">
@@ -897,40 +1090,68 @@
                             <button type="button" class="facade-btn fx-sm fx-grey" data-tr="straight" title="No turn">Straighten</button>
                             <button type="button" class="facade-btn fx-sm fx-grey" data-tr="fit" title="Just cover the card, in the middle, straight">Fill the card</button>
                         </div>
-                    </div>`}
+                    </div>`;
+            card.innerHTML = `
+                <div class="layer-head">
+                    ${group ? '' : '<span class="layer-grip" title="Drag to move this layer up or down the stack" aria-hidden="true"></span>'}
+                    <button type="button" class="facade-iconbtn layer-fold" data-act="fold" aria-expanded="${!layer.collapsed}" title="${layer.collapsed ? 'Expand' : 'Collapse'}"></button>
+                    ${isText(layer) ? '<span class="layer-thumb layer-thumb-text" aria-hidden="true">T</span>' : '<canvas class="layer-thumb" width="96" height="96"></canvas>'}
+                    <input type="text" class="facade-input layer-name" maxlength="${MAX_NAME}" spellcheck="false" autocomplete="off" placeholder="${group ? 'Variant' : 'Layer'} ${index + 1}" aria-label="Layer name" title="Layer name (click to rename)" value="${escapeHtml(layer.name)}">
+                    ${opts.collectionBlock && layer.over && !group ? '<small class="layer-tag">Over the collection</small>' : ''}
+                    ${variant ? '<small class="layer-tag">Variants</small>' : ''}
+                    ${picture ? '<span class="layer-mask"><label class="facade-check-row" title="Cut the layer with a mask"><input type="checkbox" class="facade-switch"><span>Mask</span></label><canvas class="layer-mask-thumb" width="64" height="64" title="Pick another mask"></canvas><input type="file" accept="image/*,video/*,.gif" hidden></span>' : ''}
+                    <small class="layer-summary"></small>
+                    <span class="spacer"></span>
+                    ${group ? '' : `<button type="button" class="facade-iconbtn" data-act="eye" title="${layer.hidden ? 'Show in the preview' : 'Hide in the preview (to see the card without it)'}">${layer.hidden ? '◌' : '◉'}</button>`}
+                    <button type="button" class="facade-iconbtn" data-act="up" title="Move up" ${upOff ? 'disabled' : ''}>↑</button>
+                    <button type="button" class="facade-iconbtn" data-act="down" title="Move down" ${downOff ? 'disabled' : ''}>↓</button>
+                    <button type="button" class="facade-iconbtn" data-act="remove" title="Remove" ${group && list.length === 1 ? 'disabled' : ''}>×</button>
+                </div>
+                <div class="layer-body">
+                    <div class="layer-props">
+                        ${chanceHtml}
+                        ${extraHtml}
+                    </div>
+                    ${bodyHtml}
                 </div>`;
-            if (isText(layer)) textBlock(card.querySelector('.layer-text'), layer);
-            else {
-                const maps = card.querySelector('.layer-maps');
-                for (const map of MAPS) maps.appendChild(mediaBlock(layer, map));
-                thumb(card.querySelector('.layer-thumb'), () => layer.maps.art, layer);
-                transformFields(card, layer);
-            }
             const summaryEl = card.querySelector('.layer-summary');
             const showSummary = () => { summaryEl.textContent = summary(layer); };
             showSummary();
+            if (isText(layer)) textBlock(card.querySelector('.layer-text'), layer);
+            else if (!variant) {
+                const maps = card.querySelector('.layer-maps');
+                for (const map of MAPS) if (map !== 'mask') maps.appendChild(mediaBlock(layer, map));
+                thumb(card.querySelector('.layer-thumb'), () => shapeOf(layer), layer);
+                transformFields(card, layer);
+                maskControl(card, layer, showSummary);
+            } else {
+                thumb(card.querySelector('.layer-thumb'), () => shapeOf(layer), layer);
+            }
 
-            card.addEventListener('pointerdown', () => { if (selected !== layer) select(layer); });
-            card.querySelector('.layer-head').addEventListener('pointerdown', (e) => {
-                if (e.button === 0 && !e.target.closest('button, input, textarea')) card.draggable = true;
-            });
-            card.addEventListener('pointerup', () => { if (!dragging) card.draggable = false; });
-            card.addEventListener('dragstart', (e) => {
-                if (!card.draggable || e.target !== card) return;
-                dragging = { layer, card };
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', layer.name || 'layer');
-                requestAnimationFrame(() => card.classList.add('is-dragging'));
-            });
-            card.addEventListener('dragend', () => {
-                card.draggable = false;
-                card.classList.remove('is-dragging');
-                dropMarker.remove();
-                dragging = null;
-            });
+            card.addEventListener('pointerdown', (e) => { if (e.target.closest('.layer-card') === card && selected !== layer) select(layer); });
+            if (!group) {
+                card.querySelector('.layer-head').addEventListener('pointerdown', (e) => {
+                    if (e.button === 0 && !e.target.closest('button, input, textarea, canvas, label')) card.draggable = true;
+                });
+                card.addEventListener('pointerup', () => { if (!dragging) card.draggable = false; });
+                card.addEventListener('dragstart', (e) => {
+                    if (!card.draggable || e.target !== card) return;
+                    dragging = { layer, card };
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', layer.name || 'layer');
+                    requestAnimationFrame(() => card.classList.add('is-dragging'));
+                });
+                card.addEventListener('dragend', () => {
+                    card.draggable = false;
+                    card.classList.remove('is-dragging');
+                    dropMarker.remove();
+                    dragging = null;
+                });
+                card.querySelector('[data-act="eye"]').addEventListener('click', () => { layer.hidden = !layer.hidden; render(); changed('preview', layer); });
+            }
             card.querySelector('[data-act="fold"]').addEventListener('click', () => setCollapsed([layer], !layer.collapsed));
             card.querySelector('.layer-head').addEventListener('dblclick', (e) => {
-                if (!e.target.closest('button, input')) setCollapsed([layer], !layer.collapsed);
+                if (!e.target.closest('button, input, canvas, label')) setCollapsed([layer], !layer.collapsed);
             });
             const name = card.querySelector('.layer-name');
             name.addEventListener('keydown', (e) => {
@@ -942,33 +1163,68 @@
                 name.value = value;
                 if (value === layer.name) return;
                 layer.name = value;
+                if (group) showGroup(group);
                 changed('name', layer);
-            });
-            const price = card.querySelector('.layer-price input');
-            price.addEventListener('change', () => {
-                const v = parseFloat(price.value);
-                layer.price = v > 0 ? Math.round(v) : 0;
-                price.value = layer.price;
-                showSummary();
-                changed('price', layer);
             });
             const chance = card.querySelector('.layer-chance input');
             chance.addEventListener('change', () => {
                 const v = parseFloat(chance.value);
-                layer.chance = Number.isFinite(v) ? Math.min(100, Math.max(0, Math.round(v * 10) / 10)) : 100;
+                if (group) layer.chance = v > 0 ? Math.min(1000000, Math.round(v * 1000) / 1000) : layer.chance;
+                else layer.chance = Number.isFinite(v) ? Math.min(100, Math.max(0, Math.round(v * 10) / 10)) : 100;
                 chance.value = layer.chance;
                 showSummary();
+                if (group) showGroup(group);
                 changed('chance', layer);
             });
-            card.querySelector('[data-k="foil"]').addEventListener('change', (e) => { layer.canBeFoil = e.target.checked; changed('layers', layer); });
-            card.querySelector('[data-act="eye"]').addEventListener('click', () => { layer.hidden = !layer.hidden; render(); changed('preview', layer); });
-            card.querySelector('[data-act="up"]').addEventListener('click', () => move(layer, true));
-            card.querySelector('[data-act="down"]').addEventListener('click', () => move(layer, false));
+            if (!variant) {
+                const price = card.querySelector('.layer-price input');
+                price.addEventListener('change', () => {
+                    const v = parseFloat(price.value);
+                    layer.price = v > 0 ? Math.round(v) : 0;
+                    price.value = layer.price;
+                    showSummary();
+                    changed('price', layer);
+                });
+                const percent = card.querySelector('.layer-percent input');
+                percent.addEventListener('change', () => {
+                    const v = parseFloat(percent.value);
+                    layer.pricePercent = v > 0 ? Math.round(v * 10) / 10 : 0;
+                    percent.value = layer.pricePercent;
+                    showSummary();
+                    changed('price', layer);
+                });
+                const foilBox = card.querySelector('.layer-foil');
+                const foilChance = foilBox.querySelector('input'), foilType = foilBox.querySelector('select');
+                foilChance.placeholder = foilDefault();
+                if (window.FacadeSelect) FacadeSelect.enhance(foilType, { buttonClass: 'cc-select' });
+                card.querySelector('[data-k="foil"]').addEventListener('change', (e) => {
+                    layer.canBeFoil = e.target.checked;
+                    foilBox.hidden = !layer.canBeFoil;
+                    const foilMap = card.querySelector('.media-foilmask');
+                    if (foilMap) foilMap.hidden = !layer.canBeFoil;
+                    showSummary();
+                    changed('layers', layer);
+                });
+                foilChance.addEventListener('change', () => {
+                    const text = foilChance.value.trim();
+                    const v = parseFloat(text);
+                    layer.foilChance = text && Number.isFinite(v) ? Math.min(100, Math.max(0, Math.round(v * 10) / 10)) : null;
+                    foilChance.value = layer.foilChance ?? '';
+                    showSummary();
+                    changed('foil', layer);
+                });
+                foilType.addEventListener('change', () => {
+                    layer.foilType = foilType.value || null;
+                    showSummary();
+                    changed('foil', layer);
+                });
+            }
+            card.querySelector('[data-act="up"]').addEventListener('click', () => (group ? moveVariant(layer, -1) : move(layer, true)));
+            card.querySelector('[data-act="down"]').addEventListener('click', () => (group ? moveVariant(layer, 1) : move(layer, false)));
             card.querySelector('[data-act="remove"]').addEventListener('click', () => {
-                const l = lists[layer.side];
-                l.splice(l.indexOf(layer), 1);
-                for (const m of MAPS) if (layer.maps[m]) layer.maps[m].dispose();
-                if (selected === layer) select(null);
+                list.splice(list.indexOf(layer), 1);
+                dispose(layer);
+                if (selected === layer) select(group || null);
                 render();
                 changed('layers', layer);
             });
@@ -976,12 +1232,41 @@
                 const tr = layer.transform;
                 if (b.dataset.tr === 'centre') Object.assign(tr, { x: 0.5, y: 0.5 });
                 if (b.dataset.tr === 'straight') tr.rotation = 0;
-                // Fill: in the middle, straight, just covering the card
                 if (b.dataset.tr === 'fit') Object.assign(tr, IDENTITY, { scale: fillScale(layer) });
                 showTransform(card, layer);
                 changed('transform', layer);
             });
+            if (variant) {
+                const pick = card.querySelector('.layer-preview-pick');
+                if (window.FacadeSelect) FacadeSelect.enhance(pick, { buttonClass: 'cc-select' });
+                pick.addEventListener('change', () => {
+                    const v = layer.variants.find((x) => String(x.uid) === pick.value);
+                    if (!v) return;
+                    layer.preview = v.uid;
+                    showGroup(layer);
+                    changed('preview', layer);
+                });
+                card.querySelector('[data-act="add-variant"]').addEventListener('click', () => {
+                    const v = newVariant(layer);
+                    layer.variants.push(v);
+                    layer.collapsed = false;
+                    render();
+                    select(v);
+                    changed('layers', v);
+                });
+                const box = card.querySelector('.layer-variants');
+                for (const v of layer.variants) box.appendChild(layerCard(v));
+                requestAnimationFrame(() => showGroup(layer));
+            }
             return card;
+        }
+
+        function moveVariant(v, by) {
+            const list = v.parent.variants, i = list.indexOf(v), to = i + by;
+            if (to < 0 || to >= list.length) return;
+            [list[i], list[to]] = [list[to], list[i]];
+            render();
+            changed('layers', v);
         }
 
         const TRANSFORM_FIELDS = [
@@ -1057,7 +1342,7 @@
                     <div class="align-buttons">${CardText.ALIGNS.map((a) => `<button type="button" class="facade-btn fx-sm" data-align="${a}">${ALIGN_LABEL[a]}</button>`).join('')}</div>
                     <div class="align-buttons">${CardText.VALIGNS.map((a) => `<button type="button" class="facade-btn fx-sm" data-valign="${a}" title="Where the lines sit in the text box">${VALIGN_LABEL[a]}</button>`).join('')}</div>
                     <label class="color-pick"><span>Colour</span><input type="color" data-x="color"></label>
-                    <label class="facade-check-row" title="The card's rarity colour (Settings > Rarities)"><input type="checkbox" class="facade-switch" data-x="rarity"><span>Rarity colour</span></label>
+                    <label class="facade-check-row" title="The card's rarity colour"><input type="checkbox" class="facade-switch" data-x="rarity"><span>Rarity colour</span></label>
                     <label class="facade-check-row" title="Show the text in capital letters (the name, description… too)"><input type="checkbox" class="facade-switch" data-x="uppercase"><span>Uppercase</span></label>
                     <label class="facade-check-row" title="Make the text smaller when it doesn't fit its box at its size (down to a fifth of it)"><input type="checkbox" class="facade-switch" data-x="autoSize"><span>Shrink to fit</span></label>
                 </div>
@@ -1144,7 +1429,8 @@
 
         function mediaBlock(layer, map) {
             const box = document.createElement('div');
-            box.className = 'media layer-media';
+            box.className = 'media layer-media media-' + map;
+            if (map === 'foilmask') box.hidden = !layer.canBeFoil;
             box.innerHTML = `
                 <div class="drop drop-sm">
                     <b>${MAP_LABEL[map]}</b>
@@ -1225,7 +1511,8 @@
             };
             const refresh = () => {
                 show();
-                for (const th of thumbs) if (th.layer === layer) drawThumb(th);
+                redrawThumbs(layer);
+                if (layer.parent) showGroup(layer.parent);
             };
             thumb(preview, () => layer.maps[map], layer);
 
@@ -1293,6 +1580,7 @@
         CardMedia.picker(root.querySelector('.layer-add'), (kind) => {
             const layer = newLayer(side, opts.sides[side] && opts.sides[side].defaults, kind);
             if (kind === 'text') layer.canBeFoil = false;
+            if (kind === 'variant') layer.variants.push(newVariant(layer));
             lists[side].push(layer);
             render();
             select(layer);
@@ -1304,12 +1592,12 @@
             get front() { return lists.front; },
             get back() { return lists.back; },
             get side() { return side; },
-            get selected() { return selected; },
+            get selected() { return shownLayer(selected); },
             lists: () => ({ front: ordered(lists.front), back: ordered(lists.back) }),
             // opts.keep: the lists shown before stay usable (their media isn't released)
             set(front, back, setOpts = {}) {
                 if (!setOpts.keep)
-                    for (const l of [...lists.front, ...lists.back]) for (const m of MAPS) if (l.maps[m] && !front.includes(l) && !back.includes(l)) l.maps[m].dispose();
+                    for (const l of [...lists.front, ...lists.back]) if (!front.includes(l) && !back.includes(l)) dispose(l);
                 lists.front = front || [];
                 lists.back = back || [];
                 selected = null;
@@ -1335,7 +1623,7 @@
 
     window.CardLayerKit = {
         CARD_W, CARD_H, MAPS, IDENTITY, DEFAULT_ROUGHNESS,
-        newLayer, textLayer, setFont, isText, hasContent, unreadable, createEditor, load, loadMap, files, removeFiles, splitAll, smoothResize,
+        FOIL_TYPES, FOIL_CODE_STEP, foilTypeAt, isVariant, shownLayer, previewVariant, dispose, newLayer, textLayer, setFont, isText, hasContent, shapeOf, unreadable, createEditor, load, loadMap, files, removeFiles, splitAll, smoothResize,
         ordered, parts, composite, animated, mediaOf, outline, layerBox, fillScale, hitTest,
         drawPlaced, drawNatural, toMask, toGrey, asOpenGL, newCanvas, cropRect, drawCropped, scrubField,
     };

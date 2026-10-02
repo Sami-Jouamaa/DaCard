@@ -95,7 +95,7 @@
         uniform sampler2D uPictureRoughness, uPictureMetallic;
         uniform float uHasPictureRoughness, uHasPictureMetallic, uPictureRoughnessValue, uPictureMetallicValue;
         // Material floats (MATERIAL below)
-        uniform float uArtGlow, uBorderGlow, uFoilScale, uFoilShift;
+        uniform float uArtGlow, uBorderGlow, uFoilScale, uFoilShift, uFoilType;
         uniform float uSteps, uNear, uFar, uHeightMin, uHeightMax, uBackPlane, uStrength;
         uniform float uEdgeFade, uDepthDarken, uSkyScale, uSkyBrightness, uNormalStrength;
         out vec4 outColor;
@@ -227,10 +227,193 @@
             return vec4(mix(artCol, wall, wallAmount), art.a);
         }
 
+        float foilKind = 0.0;
+
+        float foilKindAt(sampler2D map, vec2 uv) {
+            ivec2 size = textureSize(map, 0);
+            vec4 t = texelFetch(map, clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1), 0);
+            float code = floor(t.b * 255.0 / 20.0 + 0.5);
+            return code < 0.5 ? uFoilType : code - 1.0;
+        }
+
+        float fwUV = 1e-3;
+
+        float dcHash(vec2 c) {
+            vec2 q = fract(c * vec2(123.34, 456.21));
+            q += dot(q, q + 45.32);
+            return fract(q.x * q.y);
+        }
+        vec3 dcBump(float x, vec3 c, vec3 o, vec3 y) {
+            vec3 a = c * (x - o);
+            return clamp(1.0 - a * a - y, 0.0, 1.0);
+        }
+        vec3 dcSpectral(float x) {
+            return dcBump(x, vec3(3.54585104, 2.93225262, 2.41593945), vec3(0.69549072, 0.49228336, 0.27699880), vec3(0.02312639, 0.15225084, 0.52607955))
+                + dcBump(x, vec3(3.90307140, 3.21182957, 3.96587128), vec3(0.11748627, 0.86755042, 0.66077860), vec3(0.84897130, 0.88445281, 0.73949448));
+        }
+        vec3 dcSpec(float t) { return dcSpectral(fract(t)); }
+        float dcCount(float s, float m, float k) { return m + (s - m) * inversesqrt(max(k, 1.0)); }
+        vec3 dcCount3(vec3 s, float m, float k) { return vec3(m) + (s - vec3(m)) * inversesqrt(max(k, 1.0)); }
+        bool patterned() { return foilKind > 0.5 && foilKind < 11.5; }
+
+        vec4 foilPattern(vec2 uv, vec3 viewTS, float type, vec3 normalTS) {
+            vec3 nb = normalize(normalTS);
+            vec3 v = normalize(viewTS);
+            vec3 p = vec3(uv.x - 0.5, (uv.y - 0.5) * 1.397, 0.0);
+            vec3 up = normalize(vec3(0.0, 1.0, 0.0) - v * v.y);
+            vec3 eye = v * 2.0;
+            vec3 V = normalize(eye - p);
+            vec3 L = normalize(eye + (up * 0.7 + cross(up, v) * 0.35) * 2.0 - p);
+            vec2 h = (L - nb * dot(L, nb)).xy + (V - nb * dot(V, nb)).xy;
+            vec2 nh = normalize(h + 1e-5);
+            float vn = dot(v, nb);
+            vec2 tilt = (v - nb * vn).xy / max(vn, 0.25);
+            float spot = 0.55 + 0.75 * pow(clamp(dot(nb, normalize(L + V)), 0.0, 1.0), 12.0);
+            float fw = fwUV;
+            vec2 dir = vec2(0.866, 0.5);
+            float gate = 1.0;
+            float sheen = 0.0;
+            vec3 col = vec3(0.0);
+            float glint = 0.0;
+            bool grating = type > 0.5 && type < 11.5;
+            if (type > 10.5) {
+                vec2 q = uv * vec2(9.0, 12.573);
+                vec2 b = floor(q);
+                float d1 = 8.0;
+                vec2 id = b;
+                for (int j = -1; j <= 1; j++)
+                    for (int i = -1; i <= 1; i++) {
+                        vec2 nc = b + vec2(float(i), float(j));
+                        vec2 o = nc + 0.1 + 0.8 * vec2(dcHash(nc + vec2(0.0, 3.3)), dcHash(nc + vec2(5.7, 0.0)));
+                        float d = length(q - o);
+                        if (d < d1) { d1 = d; id = nc; }
+                    }
+                float turn = dcHash(id + vec2(1.7, 9.2)) * 6.2831853;
+                dir = vec2(cos(turn), sin(turn));
+                gate = 0.45 + 0.55 * dcHash(id + vec2(6.6, 2.2));
+                sheen = 0.25;
+            } else if (type > 9.5) {
+                grating = false;
+                vec2 cn = uv * vec2(7.0, 9.779);
+                vec2 ci = floor(cn);
+                vec2 cf = fract(cn);
+                cf = cf * cf * (3.0 - 2.0 * cf);
+                float dens = mix(mix(dcHash(ci), dcHash(ci + vec2(1.0, 0.0)), cf.x), mix(dcHash(ci + vec2(0.0, 1.0)), dcHash(ci + vec2(1.0, 1.0)), cf.x), cf.y);
+                dens = 0.45 + 0.3 * dens;
+                vec2 pp = vec2(uv.x, uv.y * 1.397);
+                for (int k = 0; k < 3; k++) {
+                    float fk = float(k);
+                    float s = k == 0 ? 113.0 : (k == 1 ? 139.0 : 167.0);
+                    float an = k == 0 ? 0.31 : (k == 1 ? 1.13 : 2.07);
+                    vec2 q = vec2(cos(an) * pp.x - sin(an) * pp.y, sin(an) * pp.x + cos(an) * pp.y) * s + vec2(0.37, 0.61) * fk;
+                    vec2 c = floor(q) + vec2(41.3, 27.1) * fk;
+                    float rad = 0.0026 * s * (0.85 + 0.3 * dcHash(c + vec2(7.7, 3.3)));
+                    vec2 o = (vec2(dcHash(c + vec2(1.3, 0.0)), dcHash(c + vec2(0.0, 2.9))) - 0.5) * (1.0 - 2.0 * rad);
+                    float d = length(fract(q) - 0.5 - o);
+                    float turn = dcHash(c + vec2(4.1, 2.3)) * 6.2831853;
+                    float tw = pow(clamp(dot(vec2(cos(turn), sin(turn)), nh), 0.0, 1.0), 3.0);
+                    float dotMask = clamp((rad - d) / max(fw * s * 1.5, 0.05) + 0.5, 0.0, 1.0) * step(1.0 - dens, dcHash(c));
+                    vec3 tint = dcSpec(uv.x * 0.35 + uv.y * 0.75 + dot(tilt, vec2(0.6, 0.5)) + dcHash(c + vec2(8.8, 0.0)) * 0.15);
+                    float kk = fw * s * fw * s;
+                    float mn = dens * 3.14159 * rad * rad * 0.6;
+                    col += tint * dcCount(dotMask * (0.45 + 1.1 * tw), mn, kk) * 1.7;
+                    glint += dcCount(dotMask * tw * tw * tw, mn * 0.1, kk) * 0.45;
+                }
+            } else if (type > 8.5) {
+                grating = false;
+                float ph = length(p.xy - vec2(-0.45, 1.0)) * 2.4 - dot(tilt, vec2(0.8, 0.6)) * 0.9;
+                col = dcSpec(ph) * (0.6 + 0.4 * cos(6.2831853 * ph * 0.5)) * 1.6;
+                glint = pow(clamp(1.0 - abs(fract(ph * 0.5) - 0.5) * 8.0, 0.0, 1.0), 3.0) * 0.5;
+            } else if (type > 7.5) {
+                grating = false;
+                float ph = dot(p.xy, vec2(0.8, 0.6)) * 1.4 + dot(tilt, vec2(1.1, 0.8)) * 1.6;
+                float band = pow(0.5 + 0.5 * cos(6.2831853 * ph), 3.0);
+                float band2 = pow(0.5 + 0.5 * cos(6.2831853 * (ph * 2.7 + 0.3)), 10.0) * 0.6;
+                col = dcSpec(ph * 0.8 + p.y * 0.25) * (band + band2) * 2.0;
+                glint = pow(band, 6.0) * 0.5;
+            } else if (type > 6.5) {
+                vec2 q = uv * vec2(8.0, 11.176);
+                vec2 fa = fract(q) - 0.5;
+                vec2 fb = fract(q + 0.5) - 0.5;
+                vec2 f = length(fb) < 0.5 ? fb : fa;
+                float d = length(f);
+                float rings = 0.5 + 0.5 * cos(d * 6.2831853 * 9.0);
+                dir = f / max(d, 1e-4);
+                gate = 0.45 + 0.55 * rings;
+                sheen = 0.35;
+            } else if (type > 4.5) {
+                float cells = type > 5.5 ? 12.0 : 10.0;
+                vec2 q = uv * vec2(cells, cells * 1.397);
+                vec2 c = floor(q);
+                vec2 f = fract(q) - 0.5;
+                if (type < 5.5) {
+                    float sec = floor(fract(atan(f.y, f.x) / 6.2831853 + dcHash(c)) * 7.0);
+                    float turn = dcHash(c + sec * vec2(3.7, 1.9)) * 6.2831853;
+                    dir = vec2(cos(turn), sin(turn));
+                    gate = 0.55 + 0.45 * dcHash(c + sec * vec2(5.3, 0.0) + vec2(1.1, 2.2));
+                    sheen = 0.25;
+                } else {
+                    dir = normalize(f + 1e-5);
+                    gate = 0.65 + 0.35 * clamp(max(abs(f.x), abs(f.y)) * 2.5, 0.0, 1.0);
+                }
+            } else if (type > 3.5) {
+                grating = false;
+                for (int k = 0; k < 3; k++) {
+                    float fk = float(k);
+                    float s = k == 0 ? 6.0 : (k == 1 ? 20.0 : 64.0);
+                    float prob = k == 0 ? 0.35 : (k == 1 ? 0.55 : 0.7);
+                    float r0 = k == 0 ? 0.18 : (k == 1 ? 0.14 : 0.16);
+                    float r1 = k == 0 ? 0.4 : (k == 1 ? 0.34 : 0.36);
+                    float br = k == 0 ? 2.8 : (k == 1 ? 2.5 : 2.4);
+                    vec2 q = uv * vec2(s, s * 1.397);
+                    vec2 c = floor(q) + vec2(31.7, 17.9) * fk;
+                    vec2 f = fract(q) - 0.5;
+                    float r = mix(r0, r1, dcHash(c + vec2(3.1, 7.7)));
+                    vec2 o = (vec2(dcHash(c + vec2(11.3, 0.0)), dcHash(c + vec2(0.0, 5.9))) - 0.5) * (1.0 - 2.0 * r);
+                    float d = length(f - o);
+                    float disc = clamp((r - d) / max(fw * s * 1.5, 0.02) + 0.5 * clamp(fw * s * 1.5 / r - 1.0, 0.0, 1.0), 0.0, 1.0) * step(1.0 - prob, dcHash(c));
+                    vec3 dotCol = dcSpec(dcHash(c + vec2(2.7, 1.3)) + uv.y * 0.6 + dot(tilt, vec2(0.6, 0.45))) * (0.7 + 0.3 * cos(d / max(r, 1e-3) * 4.0 + dot(tilt, vec2(2.0, 1.5))));
+                    float kk = fw * s * fw * s;
+                    float mn = prob * 3.14159 * (r0 + r1) * (r0 + r1) * 0.25 * 0.35;
+                    col += dcCount3(dotCol * disc, mn, kk) * br;
+                    if (k == 2) glint = dcCount(disc * step(0.7, dcHash(c + vec2(9.1, 4.4))), mn * 0.3, kk) * 0.5;
+                }
+                for (int m = 0; m < 2; m++) {
+                    vec2 sd = p.xy - (m == 0 ? vec2(0.25, 0.55) : vec2(-0.3, -0.2));
+                    float sr = length(sd) + 1e-4;
+                    float swirl = pow(clamp(sin(atan(sd.y, sd.x) * 2.0 - log(sr) * 7.0 + tilt.x + tilt.y), 0.0, 1.0), 8.0) * clamp(1.0 - sr * 5.0, 0.0, 1.0);
+                    col += dcSpec(sr * 3.0 + dot(tilt, vec2(0.5, 0.5))) * swirl * (m == 0 ? 0.6 : 0.5);
+                }
+            } else if (type > 2.5) {
+                vec2 cell = floor(uv * vec2(60.0, 83.8));
+                float turn = dcHash(cell) * 6.2831853;
+                gate = dcCount(step(0.4, dcHash(cell + 17.13)), 0.6, fw * 60.0 * fw * 60.0);
+                dir = vec2(cos(turn), sin(turn));
+                sheen = 0.2;
+            } else if (type > 1.5) {
+                dir = normalize(p.xy + 1e-5);
+            }
+            if (grating) {
+                float g = abs(dot(h, dir));
+                vec3 diff = vec3(0.0);
+                for (int n = 1; n <= 8; n++) {
+                    float w = g * 1600.0 / float(n);
+                    if (w >= 400.0 && w <= 700.0) diff += dcSpectral(clamp((w - 400.0) / 300.0, 0.0, 1.0));
+                }
+                col = clamp(diff, 0.0, 1.0) * gate + sheen * gate * pow(clamp(dot(dir, nh) * 0.5 + 0.5, 0.0, 1.0), 16.0);
+                glint = pow(clamp(1.0 - g * 4.0, 0.0, 1.0), 4.0) * gate;
+            }
+            return vec4(col, glint) * spot;
+        }
+
         // Port of the CardFoil node (both card shaders)
-        vec3 cardFoil(vec2 uv, vec3 viewTS, vec4 foilMask, float border, vec4 baseColor) {
+        vec3 cardFoil(vec2 uv, vec3 viewTS, vec4 foilMask, float border, vec4 baseColor, float glow, vec4 pattern) {
             float area = foilMask.r * foilMask.a * (1.0 - border);
             vec3 v = normalize(viewTS);
+            if (patterned()) {
+                float pl = dot(baseColor.rgb, vec3(0.299, 0.587, 0.114));
+                return (pattern.rgb * (0.3 + 0.7 * pl) * (abs(foilKind - 3.0) < 0.5 ? 1.4 : 1.0) + pattern.a * 0.25) * uFoil * area;
+            }
             vec2 tilt = v.xy / max(v.z, 0.25);
             float grain = sin(dot(uv, vec2(173.1, 61.7))) * sin(dot(uv, vec2(-47.3, 211.9)));
             float phase = dot(uv, vec2(0.6, 1.0)) * uFoilScale + dot(tilt, vec2(0.8, 0.5)) * uFoilShift + grain * 0.06;
@@ -244,11 +427,19 @@
 
         // Ports of the CardFoilMetal / CardFoilAlbedo nodes: the foil is a metal film, so the lights' highlights
         // and reflections come back in its rainbow instead of white
-        float foilMetal(vec4 foilMask, float border) {
-            return foilMask.r * foilMask.a * (1.0 - border) * clamp(uFoil * 1.5, 0.0, 1.0);
-        }
-        vec3 foilAlbedo(vec3 albedo, float metal, vec2 uv, vec3 viewTS) {
+        float foilMetal(vec4 foilMask, float border, vec4 pattern, vec2 uv, vec3 viewTS) {
+            float m = foilMask.r * foilMask.a * (1.0 - border) * clamp(uFoil * 1.5, 0.0, 1.0);
             vec3 v = normalize(viewTS);
+            vec2 tilt = v.xy / max(v.z, 0.25);
+            float sweep = dot(uv - 0.5, vec2(0.8, 0.6)) + dot(tilt, vec2(0.45, 0.3)) * uFoilShift;
+            float glint = pow(clamp(1.0 - abs(sweep) * 2.5, 0.0, 1.0), 4.0);
+            float lum = dot(pattern.rgb, vec3(0.299, 0.587, 0.114)) + pattern.a;
+            return m * (patterned() ? clamp(lum * 2.5, 0.0, 1.0) : 0.25 + 0.75 * glint);
+        }
+        vec3 foilAlbedo(vec3 albedo, float metal, vec2 uv, vec3 viewTS, vec4 pattern) {
+            vec3 v = normalize(viewTS);
+            if (patterned())
+                return mix(albedo, clamp(0.35 + pattern.rgb * 0.6 + albedo * 0.3, 0.0, 1.0), metal);
             vec2 tilt = v.xy / max(v.z, 0.25);
             float grain = sin(dot(uv, vec2(173.1, 61.7))) * sin(dot(uv, vec2(-47.3, 211.9)));
             float phase = dot(uv, vec2(0.6, 1.0)) * uFoilScale + dot(tilt, vec2(0.8, 0.5)) * uFoilShift + grain * 0.06;
@@ -302,17 +493,19 @@
             nt = normalize(nt);
             vec3 nLit = normalize(T * nt.x + B * nt.y + n * nt.z);
             vec4 foilMask = vec4(vec3(foil), 1.0);
-            float shine = foilMetal(foilMask, 0.0);
+            vec4 pattern = patterned() && uFoil > 0.0 && foil > 0.0 ? foilPattern(vUV, viewTS, foilKind, nt) : vec4(0.0);
+            float shine = foilMetal(foilMask, 0.0, pattern, vUV, viewTS);
             float metal = max(metal0, shine);
             float smoothness = mix(1.0 - rough0, 0.9, shine);
-            vec3 albedo = foilAlbedo(base.rgb * (1.0 - glow), shine, vUV, viewTS);
+            vec3 albedo = foilAlbedo(base.rgb * (1.0 - glow), shine, vUV, viewTS, pattern);
             vec3 color = albedo * light(nLit, v, smoothness, metal) + base.rgb * glow;
             float rough = clamp(1.0 - smoothness, 0.1, 1.0);
             vec3 f0 = mix(vec3(0.04), pow(max(albedo, vec3(0.0)), vec3(2.2)), metal);
-            return lit(color, nLit, v, rough, f0) + cardFoil(vUV, viewTS, foilMask, 0.0, base);
+            return lit(color, nLit, v, rough, f0) + cardFoil(vUV, viewTS, foilMask, 0.0, base, glow, pattern);
         }
 
         void main() {
+            fwUV = max(fwidth(vUV.x), 1e-6);
             vec3 n = normalize(vNrm);
             vec3 v = normalize(uEye - vPos);
             if (uPart == 2) { outColor = vec4(lit(EDGE_COLOR * light(n, v, 0.3), n, v, 0.7, vec3(0.04)), 1.0); return; }
@@ -321,6 +514,7 @@
                 vec3 T = normalize(mat3(uModel) * vec3(-1, 0, 0)), B = normalize(mat3(uModel) * vec3(0, 1, 0));
                 vec3 viewTS = vec3(dot(v, T), dot(v, B), dot(v, n));
                 vec4 foil = texture(uBackFoil, vUV);
+                foilKind = foilKindAt(uBackFoil, vUV);
                 vec4 surface = texture(uBackSurface, vUV);
                 vec3 nt = texture(uBackNormal, vUV).xyz * 2.0 - 1.0;
                 outColor = vec4(shade(texture(uBack, vUV), foil.g, nt, foil.r, mix(uRoughness, surface.r, surface.a), surface.g, n, T, B, v, viewTS), 1.0);
@@ -330,6 +524,7 @@
             vec3 viewTS = vec3(dot(v, T), dot(v, B), dot(v, n));
             vec4 layers = texture(uOverlay, vUV);          // the layer stack, on the glass
             vec4 layerFoil = texture(uLayerFoil, vUV);
+            foilKind = foilKindAt(uLayerFoil, vUV);
             vec3 hit = vec3(vUV, 1.0);                     // 2D card: the picture itself (3D cards: set by the parallax)
             vec4 art = uDeep ? parallaxWindow(vUV, viewTS, hit) : texture(uArt, vUV);
             vec4 base = mix(art, layers, layers.a);
@@ -337,18 +532,19 @@
             // under the layers' where they cover it
             vec3 np = textureGrad(uNormal, hit.xy, dFdx(vUV), dFdy(vUV)).xyz * 2.0 - 1.0;
             np = mix(vec3(0, 0, 1), np, clamp(hit.z, 0.0, 1.0));
-            vec3 nt = mix(np, texture(uLayerNormal, vUV).xyz * 2.0 - 1.0, layers.a);
-            vec4 pictureFoil = texture(uFoilMask, vUV);
-            float foil = mix(pictureFoil.r * pictureFoil.a, layerFoil.r, layers.a);
             vec4 surface = texture(uLayerSurface, vUV);
+            float cover = max(layers.a, surface.b * surface.a);
+            vec3 nt = mix(np, texture(uLayerNormal, vUV).xyz * 2.0 - 1.0, cover);
+            vec4 pictureFoil = texture(uFoilMask, vUV);
+            float foil = mix(pictureFoil.r * pictureFoil.a, layerFoil.r, cover);
             float pictureRough = uRoughness, pictureMetal = 0.0;
             if (uDeep) {
                 float onArt = clamp(hit.z, 0.0, 1.0);
                 pictureRough = mix(uPictureRoughnessValue, textureGrad(uPictureRoughness, hit.xy, dFdx(vUV), dFdy(vUV)).r, uHasPictureRoughness * onArt);
                 pictureMetal = mix(uPictureMetallicValue, textureGrad(uPictureMetallic, hit.xy, dFdx(vUV), dFdy(vUV)).r, uHasPictureMetallic * onArt);
             }
-            float rough = mix(pictureRough, surface.r, surface.a * layers.a);
-            float metal = surface.g * surface.a + pictureMetal * (1.0 - layers.a);
+            float rough = mix(pictureRough, surface.r, surface.a * cover);
+            float metal = surface.g * surface.a + pictureMetal * (1.0 - cover);
             outColor = vec4(shade(base, layerFoil.g, nt, foil, rough, metal, n, T, B, v, viewTS), 1.0);
         }`;
 
@@ -428,7 +624,7 @@
         }
         for (const key of Object.keys(units)) upload(key, null);
 
-        const params = { type: '2d', foil: false, rarity: [1, 1, 1], material: { ...MATERIAL }, has: {} };
+        const params = { type: '2d', foil: false, foilType: 0, rarity: [1, 1, 1], material: { ...MATERIAL }, has: {} };
         const view = { yaw: 0, pitch: 0, dist: DIST, sway: true };
         const IDLE_MS = 3000, BLEND_MS = 1000;
         let frame = 0, t0 = performance.now(), idleTimer = 0, blend = null;
@@ -498,6 +694,7 @@
             gl.uniform1f(u.uHasPictureRoughness, params.has.pictureRoughness ? 1 : 0);
             gl.uniform1f(u.uHasPictureMetallic, params.has.pictureMetallic ? 1 : 0);
             gl.uniform1f(u.uFoil, params.foil ? params.material.FoilStrength : 0);
+            gl.uniform1f(u.uFoilType, params.foilType);
             gl.uniform3fv(u.uRarity, params.rarity);
             const material = params.type === '3d' ? params.material : { ...params.material, ...MATERIAL_2D };
             for (const [key, name] of Object.entries(UNIFORMS)) gl.uniform1f(u[name], material[key]);
@@ -551,6 +748,7 @@
                 params.has = { pictureRoughness: !!s.pictureRoughness, pictureMetallic: !!s.pictureMetallic };
                 params.type = s.type === '3d' ? '3d' : '2d';
                 params.foil = !!s.foil;
+                params.foilType = Math.max(0, FOIL_TYPE_IDS.indexOf(s.foilType));
                 const m = /^#?([0-9a-f]{6})$/i.exec(s.rarityColor || '');
                 const n = m ? parseInt(m[1], 16) : 0xffffff;
                 params.rarity = [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
@@ -572,6 +770,7 @@
         };
     }
 
+    const FOIL_TYPE_IDS = ['foil', 'linear', 'radial', 'sparkle', 'galaxy', 'diamond', 'squares', 'circles', 'surge', 'ripple', 'speckle', 'crackle'];
     const roughnessOf = (type) => (type === '3d' ? 1 : 0.3);
 
     window.CardView = {

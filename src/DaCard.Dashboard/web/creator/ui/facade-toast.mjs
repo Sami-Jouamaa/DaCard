@@ -84,6 +84,14 @@
             link.textContent = o.link.text;
             card.appendChild(link);
         }
+        if (o.action && o.action.text && typeof o.action.onClick === 'function') {
+            const action = document.createElement('button');
+            action.type = 'button';
+            action.className = 'facade-btn fx-sm facade-toast-action';
+            action.textContent = o.action.text;
+            action.addEventListener('click', () => o.action.onClick(card));
+            card.appendChild(action);
+        }
 
         const node = host();
         node.appendChild(card);

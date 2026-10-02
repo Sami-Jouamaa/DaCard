@@ -246,7 +246,8 @@
                                     <button type="button" class="facade-btn fx-sm" data-view="3d" title="The card as it looks in game">3D</button>
                                     <button type="button" class="facade-btn fx-sm fx-on" data-view="place" title="The card flat: click a layer to select it, drag to move it">2D</button>
                                 </div>
-                                <label class="facade-check-row" title="Show the card's foil version: every card also drops as a foil card (chance in Settings)"><input type="checkbox" class="facade-switch" id="f-holo"><span>Holo</span></label>
+                                <label class="facade-check-row" title="Show the card as foil"><input type="checkbox" class="facade-switch" id="f-holo"><span>Holo</span></label>
+                                <span class="foil-pick" hidden><select class="facade-select" id="f-foil-type" aria-label="Foil type"><option value="foil">Rainbow</option><option value="linear">Linear</option><option value="radial">Radial</option><option value="sparkle">Sparkle</option></select></span>
                                 <label class="facade-check-row" title="Show the collection's layers with a chance under 100%"><input type="checkbox" class="facade-switch" id="f-rare"><span>Rare layers</span></label>
                             </div>
                             <canvas id="crop" width="490" height="684" aria-label="Card preview"></canvas>
@@ -298,6 +299,7 @@
                     <button type="button" class="facade-btn" id="cards-refresh">Refresh</button>
                 </div>
                 <div class="cards-grid" id="cards-grid"></div>
+                <div class="pager" id="cards-pager" hidden></div>
                 <div class="empty" id="cards-empty">Loading…</div>
                 <p class="field-note">Restart SPT to apply.</p>
                 </div>
@@ -310,22 +312,6 @@
 
                 <div id="packs-list-view">
                     <p class="hint first">Sealed packs of random cards.</p>
-
-                    <fieldset class="card">
-                        <legend class="card-title">Card chances in packs</legend>
-                        <div class="card-body odds-editor">
-                            <div class="odds-bar" id="pk-odds-bar" aria-label="Share of pack cards per rarity"></div>
-                            <div class="odds-table" id="pk-odds-table">
-                                <span class="rt-head">Rarity</span><span class="rt-head">Chance per card %</span><span class="rt-head">In a pack of <span id="pk-odds-n">3</span></span>
-                            </div>
-                            <p class="field-note">Rarity chance per card.</p>
-                            <div class="save-bar">
-                                <span class="facade-status" id="pk-odds-status" hidden></span>
-                                <button type="button" class="facade-btn" id="pk-odds-reset">Undo changes</button>
-                                <button type="button" class="facade-btn fx-blue fx-on" id="pk-odds-save">Save chances</button>
-                            </div>
-                        </div>
-                    </fieldset>
 
                     <div class="cards-toolbar coll-toolbar">
                         <span></span>
@@ -348,7 +334,7 @@
                                 <label class="field pk-pack-only">
                                     <span>Collection</span>
                                     <select class="facade-select" id="pk-collection"></select>
-                                    <small class="field-note">Global: cards from any collection.</small>
+                                    <small class="field-note" id="pk-collection-note">Its cards and rarities.</small>
                                 </label>
                                 <label class="field pk-pack-only">
                                     <span>Short name</span>
@@ -389,14 +375,10 @@
                         <fieldset class="card pk-pack-only">
                             <legend class="card-title">Cards in the pack <span class="facade-chip fx-grey" id="pk-pool-count">0</span></legend>
                             <div class="card-body pack-cards">
-                                <label class="facade-check-row" id="pk-all-row"><input type="checkbox" class="facade-switch" id="pk-all"><span>Every collection</span></label>
-                                <div class="field" id="pk-colls-field">
-                                    <span>Whole collections</span>
-                                    <div class="chip-toggles" id="pk-colls"></div>
-                                </div>
                                 <div class="field" id="pk-singles-field">
-                                    <span>Single cards</span>
+                                    <span>Only these cards</span>
                                     <div class="coll-cards" id="pk-singles"></div>
+                                    <small class="field-note">None = whole collection.</small>
                                 </div>
                                 <div class="field">
                                     <span>Rarities</span>
@@ -512,25 +494,28 @@
                     <fieldset class="card">
                         <legend class="card-title">Rarities</legend>
                         <div class="card-body">
+                            <div class="odds-bar rarity-bar" id="s-rarity-bar" aria-label="Rarity ranges"></div>
                             <div class="rarity-table" id="s-rarities">
-                                <span class="rt-head">Rarity</span><span class="rt-head">Price ₽</span><span class="rt-head">Spawn chance %</span>
+                                <span class="rt-head">Rarity</span><span class="rt-head">Price ₽</span><span class="rt-head">Chance</span><span class="rt-head">Range</span>
                             </div>
-                            <p class="field-note"><b>Spawn chance</b>: per card container.</p>
+                            <p class="field-note">Chance: share of rolls.</p>
+                            <div class="form-grid loot-grid">
+                                <label class="field">
+                                    <span>Card chance %</span>
+                                    <input type="number" class="facade-input" id="s-loot-percent" min="0" max="100" step="0.01" inputmode="decimal">
+                                    <small class="field-note">Per card container.</small>
+                                </label>
+                            </div>
                         </div>
                     </fieldset>
 
                     <fieldset class="card">
-                        <legend class="card-title">Foil cards</legend>
+                        <legend class="card-title">Foil</legend>
                         <div class="card-body form-grid">
                             <label class="field">
                                 <span>Foil chance %</span>
                                 <input type="number" class="facade-input" id="s-foil-percent" min="0" max="100" step="0.1" inputmode="decimal">
-                                <small class="field-note">Chance a found card is foil.</small>
-                            </label>
-                            <label class="field">
-                                <span>Foil price ×</span>
-                                <input type="number" class="facade-input" id="s-foil-multiplier" min="0.1" step="0.1" inputmode="decimal">
-                                <small class="field-note">× the rarity's price.</small>
+                                <small class="field-note">Per foil-able layer.</small>
                             </label>
                         </div>
                     </fieldset>
@@ -541,7 +526,6 @@
                             <img class="geek-avatar" src="traders/geek.png" alt="">
                             <div class="field">
                                 <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="s-geek-cards"><span>Geek sells cards</span></label>
-                                <label class="facade-check-row"><input type="checkbox" class="facade-switch" id="s-geek-foils"><span>Geek sells foil cards</span></label>
                                 <small class="field-note">Only Geek buys cards.</small>
                             </div>
                         </div>
@@ -626,6 +610,36 @@
             </fieldset>
 
             <fieldset class="card">
+                <legend class="card-title">Rarities</legend>
+                <div class="card-body coll-rarities">
+                    <label class="facade-check-row" title="Off: the default rarities (Settings)"><input type="checkbox" class="facade-switch" id="c-own-rarities"><span>Own rarities</span></label>
+                    <div class="odds-bar rarity-bar" id="c-rarity-bar" aria-label="Rarity ranges"></div>
+                    <div class="coll-rarity-table" id="c-rarities"></div>
+                    <div class="guide-actions" id="c-rarity-actions">
+                        <button type="button" class="facade-btn fx-sm" id="c-rarity-add">Add rarity</button>
+                    </div>
+                    <div class="coll-rarity-moves" id="c-rarity-moves" hidden></div>
+                    <small class="field-note">Chance: share of rolls.</small>
+                </div>
+            </fieldset>
+
+            <fieldset class="card">
+                <legend class="card-title">Foil</legend>
+                <div class="card-body form-grid">
+                    <label class="field">
+                        <span>Foil chance %</span>
+                        <input type="number" class="facade-input" id="c-foil-chance" min="0" max="100" step="0.1" inputmode="decimal">
+                        <small class="field-note">Per foil-able layer.</small>
+                    </label>
+                    <div class="field">
+                        <span>Foil types</span>
+                        <div class="chip-toggles" id="c-foil-types"></div>
+                        <small class="field-note">Random per copy.</small>
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset class="card">
                 <legend class="card-title">Stickers</legend>
                 <div class="card-body sticker-editor">
                     <div class="sticker-controls">
@@ -676,6 +690,7 @@
                                 <button type="button" class="facade-btn fx-sm fx-on" data-view="place" title="The side of the Front / Back tab, flat: click a layer to select it, drag to move it">2D</button>
                             </div>
                             <label class="facade-check-row" title="Show the card's foil version"><input type="checkbox" class="facade-switch" id="coll-holo"><span>Holo</span></label>
+                            <span class="foil-pick" hidden><select class="facade-select" id="coll-foil-type" aria-label="Foil type"><option value="foil">Rainbow</option><option value="linear">Linear</option><option value="radial">Radial</option><option value="sparkle">Sparkle</option></select></span>
                             <label class="facade-check-row" title="Show layers with a chance under 100%"><input type="checkbox" class="facade-switch" id="coll-rare"><span>Rare layers</span></label>
                         </div>
                         <canvas class="card-preview" id="coll-preview" width="490" height="684" aria-label="Card preview"></canvas>

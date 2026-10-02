@@ -1,7 +1,6 @@
 (() => {
     'use strict';
 
-    const RARITIES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'];
     const DEFAULT_RARITY = 'Rare';
     const PREVIEW_W = 172, PREVIEW_H = 240;
     const SHORT_MAX = 24;
@@ -87,12 +86,13 @@
         el.innerHTML = `<canvas class="batch-preview" width="${PREVIEW_W}" height="${PREVIEW_H}" title="Click or drop an image"></canvas>
             <input type="file" class="batch-file" accept="image/png,image/jpeg,image/webp,image/bmp,image/avif" hidden>
             <input type="text" class="facade-input b-name" maxlength="80" autocomplete="off" placeholder="Name">
-            <select class="facade-select b-rarity">${RARITIES.map((r) => `<option${r === (defaults.rarity || DEFAULT_RARITY) ? ' selected' : ''}>${r}</option>`).join('')}</select>
+            <select class="facade-select b-rarity"></select>
             <textarea class="facade-input b-desc" rows="3" placeholder="Description"></textarea>
             <button type="button" class="facade-btn fx-sm fx-grey batch-remove" title="Remove">×</button>`;
         const row = { el, layer: null };
         rows.push(row);
         $('#b-rows').appendChild(el);
+        app.fillRaritySelect($('.b-rarity', el), $('#b-collection').value || null, defaults.rarity || DEFAULT_RARITY);
         app.enhanceSelect($('.b-rarity', el));
         const canvas = $('.batch-preview', el), input = $('.batch-file', el);
         canvas.addEventListener('click', () => input.click());
@@ -181,6 +181,7 @@
         const all = await app.collectionLayers(found);
         if (($('#b-collection').value || null) !== folder) return;
         coll = { folder, all };
+        for (const row of rows) app.fillRaritySelect($('.b-rarity', row.el), folder);
         $('#b-coll-layers').disabled = !folder;
         redrawAll();
     }
