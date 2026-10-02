@@ -4,7 +4,7 @@
   <PropertyGroup>
     <ModName>DaCard</ModName>
     <ModAuthor>Guro</ModAuthor>
-    <Version>2.0.1</Version>
+    <Version>2.1.0</Version>
 
     <SptPackageVersion>4.1.5</SptPackageVersion>
 
