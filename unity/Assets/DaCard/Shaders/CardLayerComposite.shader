@@ -6,6 +6,8 @@ Shader "Hidden/DaCard/Layer Composite"
         _Layer ("Layer albedo", 2D) = "black" {}
         _MaskMap ("Layer mask", 2D) = "white" {}
         _HasMask ("Has a mask", Float) = 0
+        _FoilMaskMap ("Layer foil mask", 2D) = "white" {}
+        _HasFoilMask ("Has a foil mask", Float) = 0
         _NormalMap ("Layer normal map", 2D) = "bump" {}
         _HasNormal ("Has a normal map", Float) = 0
         _RoughnessMap ("Layer roughness", 2D) = "white" {}
@@ -13,7 +15,9 @@ Shader "Hidden/DaCard/Layer Composite"
         _MetallicMap ("Layer metallic", 2D) = "black" {}
         _HasMetallic ("Has a metallic map", Float) = 0
         _DefaultRoughness ("Card roughness", Float) = 0.3
-        _CanBeFoil ("Can be foil", Float) = 1
+        _CanBeFoil ("Foiled on this copy", Float) = 1
+        _FoilType ("Foil type", Float) = 0
+        _HasAlbedo ("Has a picture", Float) = 1
         _Frame ("Frame glow", Float) = 0
         _Premultiplied ("Layer colour is premultiplied", Float) = 0
         _LayerU ("Layer U = x u + y v + z", Vector) = (1, 0, 0, 0)
@@ -24,8 +28,8 @@ Shader "Hidden/DaCard/Layer Composite"
     CGINCLUDE
     #include "UnityCG.cginc"
 
-    sampler2D _MainTex, _Layer, _MaskMap, _NormalMap, _RoughnessMap, _MetallicMap;
-    float _HasMask, _HasNormal, _HasRoughness, _HasMetallic, _DefaultRoughness, _CanBeFoil, _Frame, _Premultiplied;
+    sampler2D _MainTex, _Layer, _MaskMap, _NormalMap, _RoughnessMap, _MetallicMap, _FoilMaskMap;
+    float _HasMask, _HasNormal, _HasRoughness, _HasMetallic, _DefaultRoughness, _CanBeFoil, _Frame, _Premultiplied, _FoilType, _HasAlbedo, _HasFoilMask;
     float4 _LayerU, _LayerV, _NormalRot;
 
     float2 LayerUV(float2 uv) { return float2(dot(_LayerU.xyz, float3(uv, 1)), dot(_LayerV.xyz, float3(uv, 1))); }
@@ -34,6 +38,7 @@ Shader "Hidden/DaCard/Layer Composite"
     float Coverage(float2 l, float alpha)
     {
         float4 m = tex2D(_MaskMap, l);
+        if (_HasAlbedo < 0.5) return m.r * m.a * Inside(l);
         return alpha * (_HasMask > 0.5 ? m.r * m.a : 1.0) * Inside(l);
     }
 
@@ -51,6 +56,7 @@ Shader "Hidden/DaCard/Layer Composite"
     {
         float2 l = LayerUV(i.uv);
         float4 below = tex2D(_MainTex, i.uv), layer = tex2D(_Layer, l);
+        if (_HasAlbedo < 0.5) return below;
         if (_Premultiplied > 0.5) layer.rgb /= max(layer.a, 1e-5);
         layer.a = Coverage(l, layer.a);
         float a = layer.a + below.a * (1.0 - layer.a);
@@ -65,7 +71,9 @@ Shader "Hidden/DaCard/Layer Composite"
         float a = Coverage(l, tex2D(_Layer, l).a);
         float rough = _HasRoughness > 0.5 ? tex2D(_RoughnessMap, l).r : _DefaultRoughness;
         float metal = _HasMetallic > 0.5 ? tex2D(_MetallicMap, l).r : 0.0;
-        return lerp(below, float4(_CanBeFoil, _Frame, rough, metal), a);
+        float4 fm = tex2D(_FoilMaskMap, l);
+        float foil = _CanBeFoil * (_HasFoilMask > 0.5 ? fm.r * fm.a : 1.0);
+        return lerp(below, float4(foil, _Frame, rough, metal), a);
     }
 
     float4 fragNormal(v2f i) : SV_Target
@@ -75,7 +83,8 @@ Shader "Hidden/DaCard/Layer Composite"
         float a = Coverage(l, tex2D(_Layer, l).a);
         float3 n = _HasNormal > 0.5 ? tex2D(_NormalMap, l).rgb * 2 - 1 : float3(0, 0, 1);
         n.xy = float2(_NormalRot.x * n.x + _NormalRot.y * n.y, -_NormalRot.y * n.x + _NormalRot.x * n.y);
-        return float4(lerp(below.rgb, n * 0.5 + 0.5, a), 1);
+        float type = _CanBeFoil > 0.5 && a > 0.5 ? _FoilType / 255.0 : below.a;
+        return float4(lerp(below.rgb, n * 0.5 + 0.5, a), type);
     }
     ENDCG
 

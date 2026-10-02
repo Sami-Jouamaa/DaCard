@@ -295,15 +295,15 @@ Shader "AmplifyCardShader2D"
 				uniform sampler2D _BackFoil;
 				uniform sampler2D _FoilMask;
 				uniform float _FoilStrength;
-				uniform float _FoilScale;
-				uniform float _FoilShift;
-				uniform sampler2D _NormalMap;
-				uniform float _NormalStrength;
 				uniform sampler2D _LayerNormal;
 				uniform sampler2D _BackNormal;
+				uniform sampler2D _NormalMap;
+				uniform float _NormalStrength;
+				uniform float _FoilShift;
+				uniform float _FoilScale;
+				uniform float _Roughness;
 				uniform float _DaCardWorld;
 				uniform float _WorldGlow;
-				uniform float _Roughness;
 
 
 				float CardLayerGlow145( float4 layerFoil, float4 backFoil, float frontMask )
@@ -321,33 +321,12 @@ Shader "AmplifyCardShader2D"
 					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
 				}
 				
-				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
+				float CardFoilType163( float2 uv, float frontMask, sampler2D layerNormal, sampler2D backNormal )
 				{
-					return foilMask.r * saturate( strength * 1.5 );
-				}
-				
-				float CardSmoothness132( float4 surface, float strength, float roughness )
-				{
-					float rough = lerp( roughness, surface.g, surface.a );
-					return lerp( 1.0 - rough, 0.9, surface.r * saturate( strength * 1.5 ) );
-				}
-				
-				float CardMetallic154( float4 surface, float foilMetal )
-				{
-					return max( surface.b, foilMetal );
-				}
-				
-				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift )
-				{
-					// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its
-					// reflections, so this gives the lights' highlights and the reflections the same sliding rainbow bands as CardFoil.
-					float3 v = normalize(viewTS);
-					float2 tilt = v.xy / max(v.z, 0.25);
-					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
-					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
-					float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)));
-					float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35);
-					return lerp(albedo.rgb, foil, metal);
+					float2 size = float2( 735.0, 1026.0 );
+					float4 uvc = float4( ( clamp( floor( uv * size ), 0.0, size - 1.0 ) + 0.5 ) / size, 0.0, 0.0 );
+					float a = frontMask > 0.5 ? tex2Dlod( layerNormal, uvc ).a : tex2Dlod( backNormal, uvc ).a;
+					return round( a * 255.0 );
 				}
 				
 				float3 CardNormal127( float2 uv, sampler2D normalMap, float strength, float frontMask, float border, sampler2D layerNormal, sampler2D backNormal )
@@ -363,14 +342,237 @@ Shader "AmplifyCardShader2D"
 					return normalize( n );
 				}
 				
-				float3 CardFoil120( float2 uv, float3 viewTS, float frontMask, float4 foilMask, float border, float4 baseColor, float strength, float scale, float tiltShift )
+				float4 CardFoilPattern170( float2 uv, float3 viewTS, float type, float3 normalTS )
 				{
-					// Holographic foil on the card art: rainbow bands that slide across the card as it tilts,
-					// plus a brighter glint band sweeping diagonally. Added on top of emission.
+					#define DC_HASH(c) frac((frac((c).x * 123.34) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)) * (frac((c).y * 456.21) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)))
+					#define DC_BUMP(x, c, o, y) saturate(1.0 - ((c) * ((x) - (o))) * ((c) * ((x) - (o))) - (y))
+					#define DC_SPEC(t) (DC_BUMP(frac(t), float3(3.54585104, 2.93225262, 2.41593945), float3(0.69549072, 0.49228336, 0.27699880), float3(0.02312639, 0.15225084, 0.52607955)) + DC_BUMP(frac(t), float3(3.90307140, 3.21182957, 3.96587128), float3(0.11748627, 0.86755042, 0.66077860), float3(0.84897130, 0.88445281, 0.73949448)))
+					#define DC_COUNT(s, m, k) ((m) + ((s) - (m)) * rsqrt(max((k), 1.0)))
+					float3 nb = normalize(normalTS);
+					float3 v = normalize(viewTS);
+					float3 p = float3(uv.x - 0.5, (uv.y - 0.5) * 1.397, 0.0);
+					float3 up = normalize(float3(0.0, 1.0, 0.0) - v * v.y);
+					float3 eye = v * 2.0;
+					float3 V = normalize(eye - p);
+					float3 L = normalize(eye + (up * 0.7 + cross(up, v) * 0.35) * 2.0 - p);
+					float2 h = (L - nb * dot(L, nb)).xy + (V - nb * dot(V, nb)).xy;
+					float2 nh = normalize(h + 1e-5);
+					float vn = dot(v, nb);
+					float2 tilt = (v - nb * vn).xy / max(vn, 0.25);
+					float lit = 0.55 + 0.75 * pow(saturate(dot(nb, normalize(L + V))), 12.0);
+					float fw = max(fwidth(uv.x), 1e-6);
+					float2 dir = float2(0.866, 0.5);
+					float gate = 1.0;
+					float sheen = 0.0;
+					float3 col = 0.0;
+					float glint = 0.0;
+					bool grating = type > 0.5 && type < 11.5;
+					if (type > 10.5)
+					{
+					    float2 q = uv * float2(9.0, 12.573);
+					    float2 b = floor(q);
+					    float d1 = 8.0;
+					    float2 id = b;
+					    [unroll] for (int j = -1; j <= 1; j++)
+					    [unroll] for (int i = -1; i <= 1; i++)
+					    {
+					        float2 nc = b + float2(i, j);
+					        float2 o = nc + 0.1 + 0.8 * float2(DC_HASH(nc + float2(0.0, 3.3)), DC_HASH(nc + float2(5.7, 0.0)));
+					        float d = length(q - o);
+					        if (d < d1) { d1 = d; id = nc; }
+					    }
+					    float turn = DC_HASH(id + float2(1.7, 9.2)) * 6.2831853;
+					    dir = float2(cos(turn), sin(turn));
+					    gate = 0.45 + 0.55 * DC_HASH(id + float2(6.6, 2.2));
+					    sheen = 0.25;
+					}
+					else if (type > 9.5)
+					{
+					    grating = false;
+					    float2 cn = uv * float2(7.0, 9.779);
+					    float2 ci = floor(cn);
+					    float2 cf = frac(cn);
+					    cf = cf * cf * (3.0 - 2.0 * cf);
+					    float dens = lerp(lerp(DC_HASH(ci), DC_HASH(ci + float2(1.0, 0.0)), cf.x), lerp(DC_HASH(ci + float2(0.0, 1.0)), DC_HASH(ci + float2(1.0, 1.0)), cf.x), cf.y);
+					    dens = 0.45 + 0.3 * dens;
+					    float2 pp = float2(uv.x, uv.y * 1.397);
+					    [unroll] for (int k = 0; k < 3; k++)
+					    {
+					        float s = k == 0 ? 113.0 : (k == 1 ? 139.0 : 167.0);
+					        float an = k == 0 ? 0.31 : (k == 1 ? 1.13 : 2.07);
+					        float2 q = float2(cos(an) * pp.x - sin(an) * pp.y, sin(an) * pp.x + cos(an) * pp.y) * s + float2(0.37, 0.61) * k;
+					        float2 c = floor(q) + float2(41.3, 27.1) * k;
+					        float rad = 0.0026 * s * (0.85 + 0.3 * DC_HASH(c + float2(7.7, 3.3)));
+					        float2 o = (float2(DC_HASH(c + float2(1.3, 0.0)), DC_HASH(c + float2(0.0, 2.9))) - 0.5) * (1.0 - 2.0 * rad);
+					        float d = length(frac(q) - 0.5 - o);
+					        float turn = DC_HASH(c + float2(4.1, 2.3)) * 6.2831853;
+					        float tw = pow(saturate(dot(float2(cos(turn), sin(turn)), nh)), 3.0);
+					        float dotMask = saturate((rad - d) / max(fw * s * 1.5, 0.05) + 0.5) * step(1.0 - dens, DC_HASH(c));
+					        float3 tint = DC_SPEC(uv.x * 0.35 + uv.y * 0.75 + dot(tilt, float2(0.6, 0.5)) + DC_HASH(c + float2(8.8, 0.0)) * 0.15);
+					        float kk = fw * s * fw * s;
+					        float mn = dens * 3.14159 * rad * rad * 0.6;
+					        col += tint * DC_COUNT(dotMask * (0.45 + 1.1 * tw), mn, kk) * 1.7;
+					        glint += DC_COUNT(dotMask * tw * tw * tw, mn * 0.1, kk) * 0.45;
+					    }
+					}
+					else if (type > 8.5)
+					{
+					    grating = false;
+					    float ph = length(p.xy - float2(-0.45, 1.0)) * 2.4 - dot(tilt, float2(0.8, 0.6)) * 0.9;
+					    col = DC_SPEC(ph) * (0.6 + 0.4 * cos(6.2831853 * ph * 0.5)) * 1.6;
+					    glint = pow(saturate(1.0 - abs(frac(ph * 0.5) - 0.5) * 8.0), 3.0) * 0.5;
+					}
+					else if (type > 7.5)
+					{
+					    grating = false;
+					    float ph = dot(p.xy, float2(0.8, 0.6)) * 1.4 + dot(tilt, float2(1.1, 0.8)) * 1.6;
+					    float band = pow(0.5 + 0.5 * cos(6.2831853 * ph), 3.0);
+					    float band2 = pow(0.5 + 0.5 * cos(6.2831853 * (ph * 2.7 + 0.3)), 10.0) * 0.6;
+					    col = DC_SPEC(ph * 0.8 + p.y * 0.25) * (band + band2) * 2.0;
+					    glint = pow(band, 6.0) * 0.5;
+					}
+					else if (type > 6.5)
+					{
+					    float2 q = uv * float2(8.0, 11.176);
+					    float2 fa = frac(q) - 0.5;
+					    float2 fb = frac(q + 0.5) - 0.5;
+					    float2 f = length(fb) < 0.5 ? fb : fa;
+					    float d = length(f);
+					    float rings = 0.5 + 0.5 * cos(d * 6.2831853 * 9.0);
+					    dir = f / max(d, 1e-4);
+					    gate = 0.45 + 0.55 * rings;
+					    sheen = 0.35;
+					}
+					else if (type > 4.5)
+					{
+					    float cells = type > 5.5 ? 12.0 : 10.0;
+					    float2 q = uv * float2(cells, cells * 1.397);
+					    float2 c = floor(q);
+					    float2 f = frac(q) - 0.5;
+					    if (type < 5.5)
+					    {
+					        float sec = floor(frac(atan2(f.y, f.x) / 6.2831853 + DC_HASH(c)) * 7.0);
+					        float turn = DC_HASH(c + sec * float2(3.7, 1.9)) * 6.2831853;
+					        dir = float2(cos(turn), sin(turn));
+					        gate = 0.55 + 0.45 * DC_HASH(c + sec * float2(5.3, 0.0) + float2(1.1, 2.2));
+					        sheen = 0.25;
+					    }
+					    else
+					    {
+					        dir = normalize(f + 1e-5);
+					        gate = 0.65 + 0.35 * saturate(max(abs(f.x), abs(f.y)) * 2.5);
+					    }
+					}
+					else if (type > 3.5)
+					{
+					    grating = false;
+					    [unroll] for (int k = 0; k < 3; k++)
+					    {
+					        float s = k == 0 ? 6.0 : (k == 1 ? 20.0 : 64.0);
+					        float prob = k == 0 ? 0.35 : (k == 1 ? 0.55 : 0.7);
+					        float r0 = k == 0 ? 0.18 : (k == 1 ? 0.14 : 0.16);
+					        float r1 = k == 0 ? 0.4 : (k == 1 ? 0.34 : 0.36);
+					        float br = k == 0 ? 2.8 : (k == 1 ? 2.5 : 2.4);
+					        float2 q = uv * float2(s, s * 1.397);
+					        float2 c = floor(q) + float2(31.7, 17.9) * k;
+					        float2 f = frac(q) - 0.5;
+					        float r = lerp(r0, r1, DC_HASH(c + float2(3.1, 7.7)));
+					        float2 o = (float2(DC_HASH(c + float2(11.3, 0.0)), DC_HASH(c + float2(0.0, 5.9))) - 0.5) * (1.0 - 2.0 * r);
+					        float d = length(f - o);
+					        float disc = saturate((r - d) / max(fw * s * 1.5, 0.02) + 0.5 * saturate(fw * s * 1.5 / r - 1.0)) * step(1.0 - prob, DC_HASH(c));
+					        float3 dotCol = DC_SPEC(DC_HASH(c + float2(2.7, 1.3)) + uv.y * 0.6 + dot(tilt, float2(0.6, 0.45))) * (0.7 + 0.3 * cos(d / max(r, 1e-3) * 4.0 + dot(tilt, float2(2.0, 1.5))));
+					        float kk = fw * s * fw * s;
+					        float mn = prob * 3.14159 * (r0 + r1) * (r0 + r1) * 0.25 * 0.35;
+					        col += DC_COUNT(dotCol * disc, mn, kk) * br;
+					        if (k == 2)
+					            glint = DC_COUNT(disc * step(0.7, DC_HASH(c + float2(9.1, 4.4))), mn * 0.3, kk) * 0.5;
+					    }
+					    [unroll] for (int m = 0; m < 2; m++)
+					    {
+					        float2 sd = p.xy - (m == 0 ? float2(0.25, 0.55) : float2(-0.3, -0.2));
+					        float sr = length(sd) + 1e-4;
+					        float swirl = pow(saturate(sin(atan2(sd.y, sd.x) * 2.0 - log(sr) * 7.0 + tilt.x + tilt.y)), 8.0) * saturate(1.0 - sr * 5.0);
+					        col += DC_SPEC(sr * 3.0 + dot(tilt, float2(0.5, 0.5))) * swirl * (m == 0 ? 0.6 : 0.5);
+					    }
+					}
+					else if (type > 2.5)
+					{
+					    float2 cell = floor(uv * float2(60.0, 83.8));
+					    float2 q = frac(cell * float2(123.34, 456.21));
+					    q += dot(q, q + 45.32);
+					    float turn = frac(q.x * q.y) * 6.2831853;
+					    q = frac((cell + 17.13) * float2(123.34, 456.21));
+					    q += dot(q, q + 45.32);
+					    gate = DC_COUNT(step(0.4, frac(q.x * q.y)), 0.6, fw * 60.0 * fw * 60.0);
+					    dir = float2(cos(turn), sin(turn));
+					    sheen = 0.2;
+					}
+					else if (type > 1.5)
+					    dir = normalize(p.xy + 1e-5);
+					if (grating)
+					{
+					    float g = abs(dot(h, dir));
+					    float3 diff = 0.0;
+					    [unroll] for (int n = 1; n <= 8; n++)
+					    {
+					        float w = g * 1600.0 / n;
+					        float x = saturate((w - 400.0) / 300.0);
+					        float3 a = float3(3.54585104, 2.93225262, 2.41593945) * (x - float3(0.69549072, 0.49228336, 0.27699880));
+					        float3 b = float3(3.90307140, 3.21182957, 3.96587128) * (x - float3(0.11748627, 0.86755042, 0.66077860));
+					        diff += (w >= 400.0 && w <= 700.0) ? saturate(1.0 - a * a - float3(0.02312639, 0.15225084, 0.52607955)) + saturate(1.0 - b * b - float3(0.84897130, 0.88445281, 0.73949448)) : 0.0;
+					    }
+					    col = saturate(diff) * gate + sheen * gate * pow(saturate(dot(dir, nh) * 0.5 + 0.5), 16.0);
+					    glint = pow(saturate(1.0 - g * 4.0), 4.0) * gate;
+					}
+					return float4(col, glint) * lit;
+				}
+				
+				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength, float type, float4 pattern, float2 uv, float3 viewTS, float tiltShift )
+				{
+					float m = foilMask.r * saturate( strength * 1.5 );
+					float3 v = normalize( viewTS );
+					float2 tilt = v.xy / max( v.z, 0.25 );
+					float sweep = dot( uv - 0.5, float2( 0.8, 0.6 ) ) + dot( tilt, float2( 0.45, 0.3 ) ) * tiltShift;
+					float glint = pow( saturate( 1.0 - abs( sweep ) * 2.5 ), 4.0 );
+					float lum = dot( pattern.rgb, float3( 0.299, 0.587, 0.114 ) ) + pattern.a;
+					return m * ( type > 0.5 && type < 11.5 ? saturate( lum * 2.5 ) : 0.25 + 0.75 * glint );
+				}
+				
+				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift, float type, float4 pattern )
+				{
+					// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its
+					// reflections, so this gives the lights' highlights and the reflections the same foil pattern (type) as CardFoil.
+					float3 v = normalize(viewTS);
+					float3 holo = saturate(0.35 + pattern.rgb * 0.6 + albedo.rgb * 0.3);
+					float2 tilt = v.xy / max(v.z, 0.25);
+					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
+					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
+					float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)));
+					float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35);
+					return lerp(albedo.rgb, type > 0.5 && type < 11.5 ? holo : foil, metal);
+				}
+				
+				float CardMetallic154( float4 surface, float foilMetal )
+				{
+					return max( surface.b, foilMetal );
+				}
+				
+				float CardSmoothness132( float4 surface, float roughness, float foilMetal )
+				{
+					float rough = lerp( roughness, surface.g, surface.a );
+					return lerp( 1.0 - rough, 0.9, foilMetal );
+				}
+				
+				float3 CardFoil120( float2 uv, float3 viewTS, float frontMask, float4 foilMask, float border, float4 baseColor, float strength, float scale, float tiltShift, float type, float4 pattern )
+				{
+					// Holographic foil on the card art, added on top of emission. type 0 (rainbow): rainbow bands that slide across the
+					// card as it tilts, plus a brighter glint band sweeping diagonally. 1 to 11: the CardFoilPattern foils (pattern).
 					// Only where frontMask is set (not the back), not under the frame (border = frame alpha), and inside
 					// foilMask (card.foil.png: white/opaque = foil, black/transparent = plain print, default white = the whole art).
 					float area = foilMask.r;   // CardLayerFoil: layers and picture, front and back
 					float3 v = normalize(viewTS);
+					float patternLuma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114));
+					float3 holo = (pattern.rgb * (0.3 + 0.7 * patternLuma) * (abs(type - 3.0) < 0.5 ? 1.4 : 1.0) + pattern.a * 0.25) * strength * area;
 					float2 tilt = v.xy / max(v.z, 0.25);
 					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
 					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
@@ -379,7 +581,7 @@ Shader "AmplifyCardShader2D"
 					float glint = pow(saturate(1.0 - abs(sweep) * 2.5), 4.0);
 					float luma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114));
 					float3 foil = rainbow * (0.3 + 0.7 * luma) * (0.35 + 0.65 * glint) + glint * 0.25;
-					return foil * strength * area;
+					return type > 0.5 && type < 11.5 ? holo : foil * strength * area;
 				}
 				
 				float3 CardWorldEmission152( float3 emission, float world, float worldGlow )
@@ -619,19 +821,20 @@ Shader "AmplifyCardShader2D"
 					float4 foilMask130 = localCardLayerFoil144;
 					float border130 = tex2DNode70.a;
 					float strength130 = _FoilStrength;
-					float localCardFoilMetal130 = CardFoilMetal130( frontMask130 , foilMask130 , border130 , strength130 );
-					float metal131 = localCardFoilMetal130;
-					float2 uv131 = texCoord117;
+					float2 uv163 = texCoord117;
+					float frontMask163 = tex2DNode41.r;
+					sampler2D layerNormal163 = _LayerNormal;
+					sampler2D backNormal163 = _BackNormal;
+					float localCardFoilType163 = CardFoilType163( uv163 , frontMask163 , layerNormal163 , backNormal163 );
+					float type130 = localCardFoilType163;
+					float2 uv170 = texCoord117;
 					float3 tanToWorld0 = float3( TangentWS.x, BitangentWS.x, NormalWS.x );
 					float3 tanToWorld1 = float3( TangentWS.y, BitangentWS.y, NormalWS.y );
 					float3 tanToWorld2 = float3( TangentWS.z, BitangentWS.z, NormalWS.z );
 					float3 ase_viewVectorTS =  tanToWorld0 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).x + tanToWorld1 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).y  + tanToWorld2 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).z;
 					float3 ase_viewDirTS = normalize( ase_viewVectorTS );
-					float3 viewTS131 = ase_viewDirTS;
-					float scale131 = _FoilScale;
-					float tiltShift131 = _FoilShift;
-					float3 localCardFoilAlbedo131 = CardFoilAlbedo131( albedo131 , metal131 , uv131 , viewTS131 , scale131 , tiltShift131 );
-					
+					float3 viewTS170 = ase_viewDirTS;
+					float type170 = localCardFoilType163;
 					float2 uv127 = texCoord117;
 					sampler2D normalMap127 = _NormalMap;
 					float strength127 = _NormalStrength;
@@ -640,14 +843,30 @@ Shader "AmplifyCardShader2D"
 					sampler2D layerNormal127 = _LayerNormal;
 					sampler2D backNormal127 = _BackNormal;
 					float3 localCardNormal127 = CardNormal127( uv127 , normalMap127 , strength127 , frontMask127 , border127 , layerNormal127 , backNormal127 );
+					float3 normalTS170 = localCardNormal127;
+					float4 localCardFoilPattern170 = CardFoilPattern170( uv170 , viewTS170 , type170 , normalTS170 );
+					float4 pattern130 = localCardFoilPattern170;
+					float2 uv130 = texCoord117;
+					float3 viewTS130 = ase_viewDirTS;
+					float tiltShift130 = _FoilShift;
+					float localCardFoilMetal130 = CardFoilMetal130( frontMask130 , foilMask130 , border130 , strength130 , type130 , pattern130 , uv130 , viewTS130 , tiltShift130 );
+					float metal131 = localCardFoilMetal130;
+					float2 uv131 = texCoord117;
+					float3 viewTS131 = ase_viewDirTS;
+					float scale131 = _FoilScale;
+					float tiltShift131 = _FoilShift;
+					float type131 = localCardFoilType163;
+					float4 pattern131 = localCardFoilPattern170;
+					float3 localCardFoilAlbedo131 = CardFoilAlbedo131( albedo131 , metal131 , uv131 , viewTS131 , scale131 , tiltShift131 , type131 , pattern131 );
 					
-					float4 surface132 = localCardLayerFoil144;
-					float strength132 = _FoilStrength;
-					float roughness132 = _Roughness;
-					float localCardSmoothness132 = CardSmoothness132( surface132 , strength132 , roughness132 );
 					float4 surface154 = localCardLayerFoil144;
 					float foilMetal154 = localCardFoilMetal130;
 					float localCardMetallic154 = CardMetallic154( surface154 , foilMetal154 );
+					
+					float4 surface132 = localCardLayerFoil144;
+					float roughness132 = _Roughness;
+					float foilMetal132 = localCardFoilMetal130;
+					float localCardSmoothness132 = CardSmoothness132( surface132 , roughness132 , foilMetal132 );
 					
 					float2 uv120 = texCoord117;
 					float3 viewTS120 = ase_viewDirTS;
@@ -658,7 +877,9 @@ Shader "AmplifyCardShader2D"
 					float strength120 = _FoilStrength;
 					float scale120 = _FoilScale;
 					float tiltShift120 = _FoilShift;
-					float3 localCardFoil120 = CardFoil120( uv120 , viewTS120 , frontMask120 , foilMask120 , border120 , baseColor120 , strength120 , scale120 , tiltShift120 );
+					float type120 = localCardFoilType163;
+					float4 pattern120 = localCardFoilPattern170;
+					float3 localCardFoil120 = CardFoil120( uv120 , viewTS120 , frontMask120 , foilMask120 , border120 , baseColor120 , strength120 , scale120 , tiltShift120 , type120 , pattern120 );
 					float3 emission152 = ( ( lerpResult109 * lerpResult112 ) + float4( localCardFoil120 , 0.0 ) ).rgb;
 					float world152 = _DaCardWorld;
 					float worldGlow152 = _WorldGlow;
@@ -963,15 +1184,15 @@ Shader "AmplifyCardShader2D"
 				uniform sampler2D _BackFoil;
 				uniform sampler2D _FoilMask;
 				uniform float _FoilStrength;
-				uniform float _FoilScale;
-				uniform float _FoilShift;
-				uniform sampler2D _NormalMap;
-				uniform float _NormalStrength;
 				uniform sampler2D _LayerNormal;
 				uniform sampler2D _BackNormal;
+				uniform sampler2D _NormalMap;
+				uniform float _NormalStrength;
+				uniform float _FoilShift;
+				uniform float _FoilScale;
+				uniform float _Roughness;
 				uniform float _DaCardWorld;
 				uniform float _WorldGlow;
-				uniform float _Roughness;
 
 
 				float CardLayerGlow145( float4 layerFoil, float4 backFoil, float frontMask )
@@ -989,33 +1210,12 @@ Shader "AmplifyCardShader2D"
 					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
 				}
 				
-				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
+				float CardFoilType163( float2 uv, float frontMask, sampler2D layerNormal, sampler2D backNormal )
 				{
-					return foilMask.r * saturate( strength * 1.5 );
-				}
-				
-				float CardSmoothness132( float4 surface, float strength, float roughness )
-				{
-					float rough = lerp( roughness, surface.g, surface.a );
-					return lerp( 1.0 - rough, 0.9, surface.r * saturate( strength * 1.5 ) );
-				}
-				
-				float CardMetallic154( float4 surface, float foilMetal )
-				{
-					return max( surface.b, foilMetal );
-				}
-				
-				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift )
-				{
-					// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its
-					// reflections, so this gives the lights' highlights and the reflections the same sliding rainbow bands as CardFoil.
-					float3 v = normalize(viewTS);
-					float2 tilt = v.xy / max(v.z, 0.25);
-					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
-					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
-					float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)));
-					float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35);
-					return lerp(albedo.rgb, foil, metal);
+					float2 size = float2( 735.0, 1026.0 );
+					float4 uvc = float4( ( clamp( floor( uv * size ), 0.0, size - 1.0 ) + 0.5 ) / size, 0.0, 0.0 );
+					float a = frontMask > 0.5 ? tex2Dlod( layerNormal, uvc ).a : tex2Dlod( backNormal, uvc ).a;
+					return round( a * 255.0 );
 				}
 				
 				float3 CardNormal127( float2 uv, sampler2D normalMap, float strength, float frontMask, float border, sampler2D layerNormal, sampler2D backNormal )
@@ -1031,14 +1231,237 @@ Shader "AmplifyCardShader2D"
 					return normalize( n );
 				}
 				
-				float3 CardFoil120( float2 uv, float3 viewTS, float frontMask, float4 foilMask, float border, float4 baseColor, float strength, float scale, float tiltShift )
+				float4 CardFoilPattern170( float2 uv, float3 viewTS, float type, float3 normalTS )
 				{
-					// Holographic foil on the card art: rainbow bands that slide across the card as it tilts,
-					// plus a brighter glint band sweeping diagonally. Added on top of emission.
+					#define DC_HASH(c) frac((frac((c).x * 123.34) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)) * (frac((c).y * 456.21) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)))
+					#define DC_BUMP(x, c, o, y) saturate(1.0 - ((c) * ((x) - (o))) * ((c) * ((x) - (o))) - (y))
+					#define DC_SPEC(t) (DC_BUMP(frac(t), float3(3.54585104, 2.93225262, 2.41593945), float3(0.69549072, 0.49228336, 0.27699880), float3(0.02312639, 0.15225084, 0.52607955)) + DC_BUMP(frac(t), float3(3.90307140, 3.21182957, 3.96587128), float3(0.11748627, 0.86755042, 0.66077860), float3(0.84897130, 0.88445281, 0.73949448)))
+					#define DC_COUNT(s, m, k) ((m) + ((s) - (m)) * rsqrt(max((k), 1.0)))
+					float3 nb = normalize(normalTS);
+					float3 v = normalize(viewTS);
+					float3 p = float3(uv.x - 0.5, (uv.y - 0.5) * 1.397, 0.0);
+					float3 up = normalize(float3(0.0, 1.0, 0.0) - v * v.y);
+					float3 eye = v * 2.0;
+					float3 V = normalize(eye - p);
+					float3 L = normalize(eye + (up * 0.7 + cross(up, v) * 0.35) * 2.0 - p);
+					float2 h = (L - nb * dot(L, nb)).xy + (V - nb * dot(V, nb)).xy;
+					float2 nh = normalize(h + 1e-5);
+					float vn = dot(v, nb);
+					float2 tilt = (v - nb * vn).xy / max(vn, 0.25);
+					float lit = 0.55 + 0.75 * pow(saturate(dot(nb, normalize(L + V))), 12.0);
+					float fw = max(fwidth(uv.x), 1e-6);
+					float2 dir = float2(0.866, 0.5);
+					float gate = 1.0;
+					float sheen = 0.0;
+					float3 col = 0.0;
+					float glint = 0.0;
+					bool grating = type > 0.5 && type < 11.5;
+					if (type > 10.5)
+					{
+					    float2 q = uv * float2(9.0, 12.573);
+					    float2 b = floor(q);
+					    float d1 = 8.0;
+					    float2 id = b;
+					    [unroll] for (int j = -1; j <= 1; j++)
+					    [unroll] for (int i = -1; i <= 1; i++)
+					    {
+					        float2 nc = b + float2(i, j);
+					        float2 o = nc + 0.1 + 0.8 * float2(DC_HASH(nc + float2(0.0, 3.3)), DC_HASH(nc + float2(5.7, 0.0)));
+					        float d = length(q - o);
+					        if (d < d1) { d1 = d; id = nc; }
+					    }
+					    float turn = DC_HASH(id + float2(1.7, 9.2)) * 6.2831853;
+					    dir = float2(cos(turn), sin(turn));
+					    gate = 0.45 + 0.55 * DC_HASH(id + float2(6.6, 2.2));
+					    sheen = 0.25;
+					}
+					else if (type > 9.5)
+					{
+					    grating = false;
+					    float2 cn = uv * float2(7.0, 9.779);
+					    float2 ci = floor(cn);
+					    float2 cf = frac(cn);
+					    cf = cf * cf * (3.0 - 2.0 * cf);
+					    float dens = lerp(lerp(DC_HASH(ci), DC_HASH(ci + float2(1.0, 0.0)), cf.x), lerp(DC_HASH(ci + float2(0.0, 1.0)), DC_HASH(ci + float2(1.0, 1.0)), cf.x), cf.y);
+					    dens = 0.45 + 0.3 * dens;
+					    float2 pp = float2(uv.x, uv.y * 1.397);
+					    [unroll] for (int k = 0; k < 3; k++)
+					    {
+					        float s = k == 0 ? 113.0 : (k == 1 ? 139.0 : 167.0);
+					        float an = k == 0 ? 0.31 : (k == 1 ? 1.13 : 2.07);
+					        float2 q = float2(cos(an) * pp.x - sin(an) * pp.y, sin(an) * pp.x + cos(an) * pp.y) * s + float2(0.37, 0.61) * k;
+					        float2 c = floor(q) + float2(41.3, 27.1) * k;
+					        float rad = 0.0026 * s * (0.85 + 0.3 * DC_HASH(c + float2(7.7, 3.3)));
+					        float2 o = (float2(DC_HASH(c + float2(1.3, 0.0)), DC_HASH(c + float2(0.0, 2.9))) - 0.5) * (1.0 - 2.0 * rad);
+					        float d = length(frac(q) - 0.5 - o);
+					        float turn = DC_HASH(c + float2(4.1, 2.3)) * 6.2831853;
+					        float tw = pow(saturate(dot(float2(cos(turn), sin(turn)), nh)), 3.0);
+					        float dotMask = saturate((rad - d) / max(fw * s * 1.5, 0.05) + 0.5) * step(1.0 - dens, DC_HASH(c));
+					        float3 tint = DC_SPEC(uv.x * 0.35 + uv.y * 0.75 + dot(tilt, float2(0.6, 0.5)) + DC_HASH(c + float2(8.8, 0.0)) * 0.15);
+					        float kk = fw * s * fw * s;
+					        float mn = dens * 3.14159 * rad * rad * 0.6;
+					        col += tint * DC_COUNT(dotMask * (0.45 + 1.1 * tw), mn, kk) * 1.7;
+					        glint += DC_COUNT(dotMask * tw * tw * tw, mn * 0.1, kk) * 0.45;
+					    }
+					}
+					else if (type > 8.5)
+					{
+					    grating = false;
+					    float ph = length(p.xy - float2(-0.45, 1.0)) * 2.4 - dot(tilt, float2(0.8, 0.6)) * 0.9;
+					    col = DC_SPEC(ph) * (0.6 + 0.4 * cos(6.2831853 * ph * 0.5)) * 1.6;
+					    glint = pow(saturate(1.0 - abs(frac(ph * 0.5) - 0.5) * 8.0), 3.0) * 0.5;
+					}
+					else if (type > 7.5)
+					{
+					    grating = false;
+					    float ph = dot(p.xy, float2(0.8, 0.6)) * 1.4 + dot(tilt, float2(1.1, 0.8)) * 1.6;
+					    float band = pow(0.5 + 0.5 * cos(6.2831853 * ph), 3.0);
+					    float band2 = pow(0.5 + 0.5 * cos(6.2831853 * (ph * 2.7 + 0.3)), 10.0) * 0.6;
+					    col = DC_SPEC(ph * 0.8 + p.y * 0.25) * (band + band2) * 2.0;
+					    glint = pow(band, 6.0) * 0.5;
+					}
+					else if (type > 6.5)
+					{
+					    float2 q = uv * float2(8.0, 11.176);
+					    float2 fa = frac(q) - 0.5;
+					    float2 fb = frac(q + 0.5) - 0.5;
+					    float2 f = length(fb) < 0.5 ? fb : fa;
+					    float d = length(f);
+					    float rings = 0.5 + 0.5 * cos(d * 6.2831853 * 9.0);
+					    dir = f / max(d, 1e-4);
+					    gate = 0.45 + 0.55 * rings;
+					    sheen = 0.35;
+					}
+					else if (type > 4.5)
+					{
+					    float cells = type > 5.5 ? 12.0 : 10.0;
+					    float2 q = uv * float2(cells, cells * 1.397);
+					    float2 c = floor(q);
+					    float2 f = frac(q) - 0.5;
+					    if (type < 5.5)
+					    {
+					        float sec = floor(frac(atan2(f.y, f.x) / 6.2831853 + DC_HASH(c)) * 7.0);
+					        float turn = DC_HASH(c + sec * float2(3.7, 1.9)) * 6.2831853;
+					        dir = float2(cos(turn), sin(turn));
+					        gate = 0.55 + 0.45 * DC_HASH(c + sec * float2(5.3, 0.0) + float2(1.1, 2.2));
+					        sheen = 0.25;
+					    }
+					    else
+					    {
+					        dir = normalize(f + 1e-5);
+					        gate = 0.65 + 0.35 * saturate(max(abs(f.x), abs(f.y)) * 2.5);
+					    }
+					}
+					else if (type > 3.5)
+					{
+					    grating = false;
+					    [unroll] for (int k = 0; k < 3; k++)
+					    {
+					        float s = k == 0 ? 6.0 : (k == 1 ? 20.0 : 64.0);
+					        float prob = k == 0 ? 0.35 : (k == 1 ? 0.55 : 0.7);
+					        float r0 = k == 0 ? 0.18 : (k == 1 ? 0.14 : 0.16);
+					        float r1 = k == 0 ? 0.4 : (k == 1 ? 0.34 : 0.36);
+					        float br = k == 0 ? 2.8 : (k == 1 ? 2.5 : 2.4);
+					        float2 q = uv * float2(s, s * 1.397);
+					        float2 c = floor(q) + float2(31.7, 17.9) * k;
+					        float2 f = frac(q) - 0.5;
+					        float r = lerp(r0, r1, DC_HASH(c + float2(3.1, 7.7)));
+					        float2 o = (float2(DC_HASH(c + float2(11.3, 0.0)), DC_HASH(c + float2(0.0, 5.9))) - 0.5) * (1.0 - 2.0 * r);
+					        float d = length(f - o);
+					        float disc = saturate((r - d) / max(fw * s * 1.5, 0.02) + 0.5 * saturate(fw * s * 1.5 / r - 1.0)) * step(1.0 - prob, DC_HASH(c));
+					        float3 dotCol = DC_SPEC(DC_HASH(c + float2(2.7, 1.3)) + uv.y * 0.6 + dot(tilt, float2(0.6, 0.45))) * (0.7 + 0.3 * cos(d / max(r, 1e-3) * 4.0 + dot(tilt, float2(2.0, 1.5))));
+					        float kk = fw * s * fw * s;
+					        float mn = prob * 3.14159 * (r0 + r1) * (r0 + r1) * 0.25 * 0.35;
+					        col += DC_COUNT(dotCol * disc, mn, kk) * br;
+					        if (k == 2)
+					            glint = DC_COUNT(disc * step(0.7, DC_HASH(c + float2(9.1, 4.4))), mn * 0.3, kk) * 0.5;
+					    }
+					    [unroll] for (int m = 0; m < 2; m++)
+					    {
+					        float2 sd = p.xy - (m == 0 ? float2(0.25, 0.55) : float2(-0.3, -0.2));
+					        float sr = length(sd) + 1e-4;
+					        float swirl = pow(saturate(sin(atan2(sd.y, sd.x) * 2.0 - log(sr) * 7.0 + tilt.x + tilt.y)), 8.0) * saturate(1.0 - sr * 5.0);
+					        col += DC_SPEC(sr * 3.0 + dot(tilt, float2(0.5, 0.5))) * swirl * (m == 0 ? 0.6 : 0.5);
+					    }
+					}
+					else if (type > 2.5)
+					{
+					    float2 cell = floor(uv * float2(60.0, 83.8));
+					    float2 q = frac(cell * float2(123.34, 456.21));
+					    q += dot(q, q + 45.32);
+					    float turn = frac(q.x * q.y) * 6.2831853;
+					    q = frac((cell + 17.13) * float2(123.34, 456.21));
+					    q += dot(q, q + 45.32);
+					    gate = DC_COUNT(step(0.4, frac(q.x * q.y)), 0.6, fw * 60.0 * fw * 60.0);
+					    dir = float2(cos(turn), sin(turn));
+					    sheen = 0.2;
+					}
+					else if (type > 1.5)
+					    dir = normalize(p.xy + 1e-5);
+					if (grating)
+					{
+					    float g = abs(dot(h, dir));
+					    float3 diff = 0.0;
+					    [unroll] for (int n = 1; n <= 8; n++)
+					    {
+					        float w = g * 1600.0 / n;
+					        float x = saturate((w - 400.0) / 300.0);
+					        float3 a = float3(3.54585104, 2.93225262, 2.41593945) * (x - float3(0.69549072, 0.49228336, 0.27699880));
+					        float3 b = float3(3.90307140, 3.21182957, 3.96587128) * (x - float3(0.11748627, 0.86755042, 0.66077860));
+					        diff += (w >= 400.0 && w <= 700.0) ? saturate(1.0 - a * a - float3(0.02312639, 0.15225084, 0.52607955)) + saturate(1.0 - b * b - float3(0.84897130, 0.88445281, 0.73949448)) : 0.0;
+					    }
+					    col = saturate(diff) * gate + sheen * gate * pow(saturate(dot(dir, nh) * 0.5 + 0.5), 16.0);
+					    glint = pow(saturate(1.0 - g * 4.0), 4.0) * gate;
+					}
+					return float4(col, glint) * lit;
+				}
+				
+				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength, float type, float4 pattern, float2 uv, float3 viewTS, float tiltShift )
+				{
+					float m = foilMask.r * saturate( strength * 1.5 );
+					float3 v = normalize( viewTS );
+					float2 tilt = v.xy / max( v.z, 0.25 );
+					float sweep = dot( uv - 0.5, float2( 0.8, 0.6 ) ) + dot( tilt, float2( 0.45, 0.3 ) ) * tiltShift;
+					float glint = pow( saturate( 1.0 - abs( sweep ) * 2.5 ), 4.0 );
+					float lum = dot( pattern.rgb, float3( 0.299, 0.587, 0.114 ) ) + pattern.a;
+					return m * ( type > 0.5 && type < 11.5 ? saturate( lum * 2.5 ) : 0.25 + 0.75 * glint );
+				}
+				
+				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift, float type, float4 pattern )
+				{
+					// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its
+					// reflections, so this gives the lights' highlights and the reflections the same foil pattern (type) as CardFoil.
+					float3 v = normalize(viewTS);
+					float3 holo = saturate(0.35 + pattern.rgb * 0.6 + albedo.rgb * 0.3);
+					float2 tilt = v.xy / max(v.z, 0.25);
+					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
+					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
+					float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)));
+					float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35);
+					return lerp(albedo.rgb, type > 0.5 && type < 11.5 ? holo : foil, metal);
+				}
+				
+				float CardMetallic154( float4 surface, float foilMetal )
+				{
+					return max( surface.b, foilMetal );
+				}
+				
+				float CardSmoothness132( float4 surface, float roughness, float foilMetal )
+				{
+					float rough = lerp( roughness, surface.g, surface.a );
+					return lerp( 1.0 - rough, 0.9, foilMetal );
+				}
+				
+				float3 CardFoil120( float2 uv, float3 viewTS, float frontMask, float4 foilMask, float border, float4 baseColor, float strength, float scale, float tiltShift, float type, float4 pattern )
+				{
+					// Holographic foil on the card art, added on top of emission. type 0 (rainbow): rainbow bands that slide across the
+					// card as it tilts, plus a brighter glint band sweeping diagonally. 1 to 11: the CardFoilPattern foils (pattern).
 					// Only where frontMask is set (not the back), not under the frame (border = frame alpha), and inside
 					// foilMask (card.foil.png: white/opaque = foil, black/transparent = plain print, default white = the whole art).
 					float area = foilMask.r;   // CardLayerFoil: layers and picture, front and back
 					float3 v = normalize(viewTS);
+					float patternLuma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114));
+					float3 holo = (pattern.rgb * (0.3 + 0.7 * patternLuma) * (abs(type - 3.0) < 0.5 ? 1.4 : 1.0) + pattern.a * 0.25) * strength * area;
 					float2 tilt = v.xy / max(v.z, 0.25);
 					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
 					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
@@ -1047,7 +1470,7 @@ Shader "AmplifyCardShader2D"
 					float glint = pow(saturate(1.0 - abs(sweep) * 2.5), 4.0);
 					float luma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114));
 					float3 foil = rainbow * (0.3 + 0.7 * luma) * (0.35 + 0.65 * glint) + glint * 0.25;
-					return foil * strength * area;
+					return type > 0.5 && type < 11.5 ? holo : foil * strength * area;
 				}
 				
 				float3 CardWorldEmission152( float3 emission, float world, float worldGlow )
@@ -1270,19 +1693,20 @@ Shader "AmplifyCardShader2D"
 					float4 foilMask130 = localCardLayerFoil144;
 					float border130 = tex2DNode70.a;
 					float strength130 = _FoilStrength;
-					float localCardFoilMetal130 = CardFoilMetal130( frontMask130 , foilMask130 , border130 , strength130 );
-					float metal131 = localCardFoilMetal130;
-					float2 uv131 = texCoord117;
+					float2 uv163 = texCoord117;
+					float frontMask163 = tex2DNode41.r;
+					sampler2D layerNormal163 = _LayerNormal;
+					sampler2D backNormal163 = _BackNormal;
+					float localCardFoilType163 = CardFoilType163( uv163 , frontMask163 , layerNormal163 , backNormal163 );
+					float type130 = localCardFoilType163;
+					float2 uv170 = texCoord117;
 					float3 tanToWorld0 = float3( TangentWS.x, BitangentWS.x, NormalWS.x );
 					float3 tanToWorld1 = float3( TangentWS.y, BitangentWS.y, NormalWS.y );
 					float3 tanToWorld2 = float3( TangentWS.z, BitangentWS.z, NormalWS.z );
 					float3 ase_viewVectorTS =  tanToWorld0 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).x + tanToWorld1 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).y  + tanToWorld2 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).z;
 					float3 ase_viewDirTS = normalize( ase_viewVectorTS );
-					float3 viewTS131 = ase_viewDirTS;
-					float scale131 = _FoilScale;
-					float tiltShift131 = _FoilShift;
-					float3 localCardFoilAlbedo131 = CardFoilAlbedo131( albedo131 , metal131 , uv131 , viewTS131 , scale131 , tiltShift131 );
-					
+					float3 viewTS170 = ase_viewDirTS;
+					float type170 = localCardFoilType163;
 					float2 uv127 = texCoord117;
 					sampler2D normalMap127 = _NormalMap;
 					float strength127 = _NormalStrength;
@@ -1291,14 +1715,30 @@ Shader "AmplifyCardShader2D"
 					sampler2D layerNormal127 = _LayerNormal;
 					sampler2D backNormal127 = _BackNormal;
 					float3 localCardNormal127 = CardNormal127( uv127 , normalMap127 , strength127 , frontMask127 , border127 , layerNormal127 , backNormal127 );
+					float3 normalTS170 = localCardNormal127;
+					float4 localCardFoilPattern170 = CardFoilPattern170( uv170 , viewTS170 , type170 , normalTS170 );
+					float4 pattern130 = localCardFoilPattern170;
+					float2 uv130 = texCoord117;
+					float3 viewTS130 = ase_viewDirTS;
+					float tiltShift130 = _FoilShift;
+					float localCardFoilMetal130 = CardFoilMetal130( frontMask130 , foilMask130 , border130 , strength130 , type130 , pattern130 , uv130 , viewTS130 , tiltShift130 );
+					float metal131 = localCardFoilMetal130;
+					float2 uv131 = texCoord117;
+					float3 viewTS131 = ase_viewDirTS;
+					float scale131 = _FoilScale;
+					float tiltShift131 = _FoilShift;
+					float type131 = localCardFoilType163;
+					float4 pattern131 = localCardFoilPattern170;
+					float3 localCardFoilAlbedo131 = CardFoilAlbedo131( albedo131 , metal131 , uv131 , viewTS131 , scale131 , tiltShift131 , type131 , pattern131 );
 					
-					float4 surface132 = localCardLayerFoil144;
-					float strength132 = _FoilStrength;
-					float roughness132 = _Roughness;
-					float localCardSmoothness132 = CardSmoothness132( surface132 , strength132 , roughness132 );
 					float4 surface154 = localCardLayerFoil144;
 					float foilMetal154 = localCardFoilMetal130;
 					float localCardMetallic154 = CardMetallic154( surface154 , foilMetal154 );
+					
+					float4 surface132 = localCardLayerFoil144;
+					float roughness132 = _Roughness;
+					float foilMetal132 = localCardFoilMetal130;
+					float localCardSmoothness132 = CardSmoothness132( surface132 , roughness132 , foilMetal132 );
 					
 					float2 uv120 = texCoord117;
 					float3 viewTS120 = ase_viewDirTS;
@@ -1309,7 +1749,9 @@ Shader "AmplifyCardShader2D"
 					float strength120 = _FoilStrength;
 					float scale120 = _FoilScale;
 					float tiltShift120 = _FoilShift;
-					float3 localCardFoil120 = CardFoil120( uv120 , viewTS120 , frontMask120 , foilMask120 , border120 , baseColor120 , strength120 , scale120 , tiltShift120 );
+					float type120 = localCardFoilType163;
+					float4 pattern120 = localCardFoilPattern170;
+					float3 localCardFoil120 = CardFoil120( uv120 , viewTS120 , frontMask120 , foilMask120 , border120 , baseColor120 , strength120 , scale120 , tiltShift120 , type120 , pattern120 );
 					float3 emission152 = ( ( lerpResult109 * lerpResult112 ) + float4( localCardFoil120 , 0.0 ) ).rgb;
 					float world152 = _DaCardWorld;
 					float worldGlow152 = _WorldGlow;
@@ -1553,15 +1995,15 @@ Shader "AmplifyCardShader2D"
 				uniform sampler2D _BackFoil;
 				uniform sampler2D _FoilMask;
 				uniform float _FoilStrength;
-				uniform float _FoilScale;
-				uniform float _FoilShift;
-				uniform sampler2D _NormalMap;
-				uniform float _NormalStrength;
 				uniform sampler2D _LayerNormal;
 				uniform sampler2D _BackNormal;
+				uniform sampler2D _NormalMap;
+				uniform float _NormalStrength;
+				uniform float _FoilShift;
+				uniform float _FoilScale;
+				uniform float _Roughness;
 				uniform float _DaCardWorld;
 				uniform float _WorldGlow;
-				uniform float _Roughness;
 
 
 				float CardLayerGlow145( float4 layerFoil, float4 backFoil, float frontMask )
@@ -1579,33 +2021,12 @@ Shader "AmplifyCardShader2D"
 					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
 				}
 				
-				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
+				float CardFoilType163( float2 uv, float frontMask, sampler2D layerNormal, sampler2D backNormal )
 				{
-					return foilMask.r * saturate( strength * 1.5 );
-				}
-				
-				float CardSmoothness132( float4 surface, float strength, float roughness )
-				{
-					float rough = lerp( roughness, surface.g, surface.a );
-					return lerp( 1.0 - rough, 0.9, surface.r * saturate( strength * 1.5 ) );
-				}
-				
-				float CardMetallic154( float4 surface, float foilMetal )
-				{
-					return max( surface.b, foilMetal );
-				}
-				
-				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift )
-				{
-					// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its
-					// reflections, so this gives the lights' highlights and the reflections the same sliding rainbow bands as CardFoil.
-					float3 v = normalize(viewTS);
-					float2 tilt = v.xy / max(v.z, 0.25);
-					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
-					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
-					float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)));
-					float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35);
-					return lerp(albedo.rgb, foil, metal);
+					float2 size = float2( 735.0, 1026.0 );
+					float4 uvc = float4( ( clamp( floor( uv * size ), 0.0, size - 1.0 ) + 0.5 ) / size, 0.0, 0.0 );
+					float a = frontMask > 0.5 ? tex2Dlod( layerNormal, uvc ).a : tex2Dlod( backNormal, uvc ).a;
+					return round( a * 255.0 );
 				}
 				
 				float3 CardNormal127( float2 uv, sampler2D normalMap, float strength, float frontMask, float border, sampler2D layerNormal, sampler2D backNormal )
@@ -1621,14 +2042,237 @@ Shader "AmplifyCardShader2D"
 					return normalize( n );
 				}
 				
-				float3 CardFoil120( float2 uv, float3 viewTS, float frontMask, float4 foilMask, float border, float4 baseColor, float strength, float scale, float tiltShift )
+				float4 CardFoilPattern170( float2 uv, float3 viewTS, float type, float3 normalTS )
 				{
-					// Holographic foil on the card art: rainbow bands that slide across the card as it tilts,
-					// plus a brighter glint band sweeping diagonally. Added on top of emission.
+					#define DC_HASH(c) frac((frac((c).x * 123.34) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)) * (frac((c).y * 456.21) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)))
+					#define DC_BUMP(x, c, o, y) saturate(1.0 - ((c) * ((x) - (o))) * ((c) * ((x) - (o))) - (y))
+					#define DC_SPEC(t) (DC_BUMP(frac(t), float3(3.54585104, 2.93225262, 2.41593945), float3(0.69549072, 0.49228336, 0.27699880), float3(0.02312639, 0.15225084, 0.52607955)) + DC_BUMP(frac(t), float3(3.90307140, 3.21182957, 3.96587128), float3(0.11748627, 0.86755042, 0.66077860), float3(0.84897130, 0.88445281, 0.73949448)))
+					#define DC_COUNT(s, m, k) ((m) + ((s) - (m)) * rsqrt(max((k), 1.0)))
+					float3 nb = normalize(normalTS);
+					float3 v = normalize(viewTS);
+					float3 p = float3(uv.x - 0.5, (uv.y - 0.5) * 1.397, 0.0);
+					float3 up = normalize(float3(0.0, 1.0, 0.0) - v * v.y);
+					float3 eye = v * 2.0;
+					float3 V = normalize(eye - p);
+					float3 L = normalize(eye + (up * 0.7 + cross(up, v) * 0.35) * 2.0 - p);
+					float2 h = (L - nb * dot(L, nb)).xy + (V - nb * dot(V, nb)).xy;
+					float2 nh = normalize(h + 1e-5);
+					float vn = dot(v, nb);
+					float2 tilt = (v - nb * vn).xy / max(vn, 0.25);
+					float lit = 0.55 + 0.75 * pow(saturate(dot(nb, normalize(L + V))), 12.0);
+					float fw = max(fwidth(uv.x), 1e-6);
+					float2 dir = float2(0.866, 0.5);
+					float gate = 1.0;
+					float sheen = 0.0;
+					float3 col = 0.0;
+					float glint = 0.0;
+					bool grating = type > 0.5 && type < 11.5;
+					if (type > 10.5)
+					{
+					    float2 q = uv * float2(9.0, 12.573);
+					    float2 b = floor(q);
+					    float d1 = 8.0;
+					    float2 id = b;
+					    [unroll] for (int j = -1; j <= 1; j++)
+					    [unroll] for (int i = -1; i <= 1; i++)
+					    {
+					        float2 nc = b + float2(i, j);
+					        float2 o = nc + 0.1 + 0.8 * float2(DC_HASH(nc + float2(0.0, 3.3)), DC_HASH(nc + float2(5.7, 0.0)));
+					        float d = length(q - o);
+					        if (d < d1) { d1 = d; id = nc; }
+					    }
+					    float turn = DC_HASH(id + float2(1.7, 9.2)) * 6.2831853;
+					    dir = float2(cos(turn), sin(turn));
+					    gate = 0.45 + 0.55 * DC_HASH(id + float2(6.6, 2.2));
+					    sheen = 0.25;
+					}
+					else if (type > 9.5)
+					{
+					    grating = false;
+					    float2 cn = uv * float2(7.0, 9.779);
+					    float2 ci = floor(cn);
+					    float2 cf = frac(cn);
+					    cf = cf * cf * (3.0 - 2.0 * cf);
+					    float dens = lerp(lerp(DC_HASH(ci), DC_HASH(ci + float2(1.0, 0.0)), cf.x), lerp(DC_HASH(ci + float2(0.0, 1.0)), DC_HASH(ci + float2(1.0, 1.0)), cf.x), cf.y);
+					    dens = 0.45 + 0.3 * dens;
+					    float2 pp = float2(uv.x, uv.y * 1.397);
+					    [unroll] for (int k = 0; k < 3; k++)
+					    {
+					        float s = k == 0 ? 113.0 : (k == 1 ? 139.0 : 167.0);
+					        float an = k == 0 ? 0.31 : (k == 1 ? 1.13 : 2.07);
+					        float2 q = float2(cos(an) * pp.x - sin(an) * pp.y, sin(an) * pp.x + cos(an) * pp.y) * s + float2(0.37, 0.61) * k;
+					        float2 c = floor(q) + float2(41.3, 27.1) * k;
+					        float rad = 0.0026 * s * (0.85 + 0.3 * DC_HASH(c + float2(7.7, 3.3)));
+					        float2 o = (float2(DC_HASH(c + float2(1.3, 0.0)), DC_HASH(c + float2(0.0, 2.9))) - 0.5) * (1.0 - 2.0 * rad);
+					        float d = length(frac(q) - 0.5 - o);
+					        float turn = DC_HASH(c + float2(4.1, 2.3)) * 6.2831853;
+					        float tw = pow(saturate(dot(float2(cos(turn), sin(turn)), nh)), 3.0);
+					        float dotMask = saturate((rad - d) / max(fw * s * 1.5, 0.05) + 0.5) * step(1.0 - dens, DC_HASH(c));
+					        float3 tint = DC_SPEC(uv.x * 0.35 + uv.y * 0.75 + dot(tilt, float2(0.6, 0.5)) + DC_HASH(c + float2(8.8, 0.0)) * 0.15);
+					        float kk = fw * s * fw * s;
+					        float mn = dens * 3.14159 * rad * rad * 0.6;
+					        col += tint * DC_COUNT(dotMask * (0.45 + 1.1 * tw), mn, kk) * 1.7;
+					        glint += DC_COUNT(dotMask * tw * tw * tw, mn * 0.1, kk) * 0.45;
+					    }
+					}
+					else if (type > 8.5)
+					{
+					    grating = false;
+					    float ph = length(p.xy - float2(-0.45, 1.0)) * 2.4 - dot(tilt, float2(0.8, 0.6)) * 0.9;
+					    col = DC_SPEC(ph) * (0.6 + 0.4 * cos(6.2831853 * ph * 0.5)) * 1.6;
+					    glint = pow(saturate(1.0 - abs(frac(ph * 0.5) - 0.5) * 8.0), 3.0) * 0.5;
+					}
+					else if (type > 7.5)
+					{
+					    grating = false;
+					    float ph = dot(p.xy, float2(0.8, 0.6)) * 1.4 + dot(tilt, float2(1.1, 0.8)) * 1.6;
+					    float band = pow(0.5 + 0.5 * cos(6.2831853 * ph), 3.0);
+					    float band2 = pow(0.5 + 0.5 * cos(6.2831853 * (ph * 2.7 + 0.3)), 10.0) * 0.6;
+					    col = DC_SPEC(ph * 0.8 + p.y * 0.25) * (band + band2) * 2.0;
+					    glint = pow(band, 6.0) * 0.5;
+					}
+					else if (type > 6.5)
+					{
+					    float2 q = uv * float2(8.0, 11.176);
+					    float2 fa = frac(q) - 0.5;
+					    float2 fb = frac(q + 0.5) - 0.5;
+					    float2 f = length(fb) < 0.5 ? fb : fa;
+					    float d = length(f);
+					    float rings = 0.5 + 0.5 * cos(d * 6.2831853 * 9.0);
+					    dir = f / max(d, 1e-4);
+					    gate = 0.45 + 0.55 * rings;
+					    sheen = 0.35;
+					}
+					else if (type > 4.5)
+					{
+					    float cells = type > 5.5 ? 12.0 : 10.0;
+					    float2 q = uv * float2(cells, cells * 1.397);
+					    float2 c = floor(q);
+					    float2 f = frac(q) - 0.5;
+					    if (type < 5.5)
+					    {
+					        float sec = floor(frac(atan2(f.y, f.x) / 6.2831853 + DC_HASH(c)) * 7.0);
+					        float turn = DC_HASH(c + sec * float2(3.7, 1.9)) * 6.2831853;
+					        dir = float2(cos(turn), sin(turn));
+					        gate = 0.55 + 0.45 * DC_HASH(c + sec * float2(5.3, 0.0) + float2(1.1, 2.2));
+					        sheen = 0.25;
+					    }
+					    else
+					    {
+					        dir = normalize(f + 1e-5);
+					        gate = 0.65 + 0.35 * saturate(max(abs(f.x), abs(f.y)) * 2.5);
+					    }
+					}
+					else if (type > 3.5)
+					{
+					    grating = false;
+					    [unroll] for (int k = 0; k < 3; k++)
+					    {
+					        float s = k == 0 ? 6.0 : (k == 1 ? 20.0 : 64.0);
+					        float prob = k == 0 ? 0.35 : (k == 1 ? 0.55 : 0.7);
+					        float r0 = k == 0 ? 0.18 : (k == 1 ? 0.14 : 0.16);
+					        float r1 = k == 0 ? 0.4 : (k == 1 ? 0.34 : 0.36);
+					        float br = k == 0 ? 2.8 : (k == 1 ? 2.5 : 2.4);
+					        float2 q = uv * float2(s, s * 1.397);
+					        float2 c = floor(q) + float2(31.7, 17.9) * k;
+					        float2 f = frac(q) - 0.5;
+					        float r = lerp(r0, r1, DC_HASH(c + float2(3.1, 7.7)));
+					        float2 o = (float2(DC_HASH(c + float2(11.3, 0.0)), DC_HASH(c + float2(0.0, 5.9))) - 0.5) * (1.0 - 2.0 * r);
+					        float d = length(f - o);
+					        float disc = saturate((r - d) / max(fw * s * 1.5, 0.02) + 0.5 * saturate(fw * s * 1.5 / r - 1.0)) * step(1.0 - prob, DC_HASH(c));
+					        float3 dotCol = DC_SPEC(DC_HASH(c + float2(2.7, 1.3)) + uv.y * 0.6 + dot(tilt, float2(0.6, 0.45))) * (0.7 + 0.3 * cos(d / max(r, 1e-3) * 4.0 + dot(tilt, float2(2.0, 1.5))));
+					        float kk = fw * s * fw * s;
+					        float mn = prob * 3.14159 * (r0 + r1) * (r0 + r1) * 0.25 * 0.35;
+					        col += DC_COUNT(dotCol * disc, mn, kk) * br;
+					        if (k == 2)
+					            glint = DC_COUNT(disc * step(0.7, DC_HASH(c + float2(9.1, 4.4))), mn * 0.3, kk) * 0.5;
+					    }
+					    [unroll] for (int m = 0; m < 2; m++)
+					    {
+					        float2 sd = p.xy - (m == 0 ? float2(0.25, 0.55) : float2(-0.3, -0.2));
+					        float sr = length(sd) + 1e-4;
+					        float swirl = pow(saturate(sin(atan2(sd.y, sd.x) * 2.0 - log(sr) * 7.0 + tilt.x + tilt.y)), 8.0) * saturate(1.0 - sr * 5.0);
+					        col += DC_SPEC(sr * 3.0 + dot(tilt, float2(0.5, 0.5))) * swirl * (m == 0 ? 0.6 : 0.5);
+					    }
+					}
+					else if (type > 2.5)
+					{
+					    float2 cell = floor(uv * float2(60.0, 83.8));
+					    float2 q = frac(cell * float2(123.34, 456.21));
+					    q += dot(q, q + 45.32);
+					    float turn = frac(q.x * q.y) * 6.2831853;
+					    q = frac((cell + 17.13) * float2(123.34, 456.21));
+					    q += dot(q, q + 45.32);
+					    gate = DC_COUNT(step(0.4, frac(q.x * q.y)), 0.6, fw * 60.0 * fw * 60.0);
+					    dir = float2(cos(turn), sin(turn));
+					    sheen = 0.2;
+					}
+					else if (type > 1.5)
+					    dir = normalize(p.xy + 1e-5);
+					if (grating)
+					{
+					    float g = abs(dot(h, dir));
+					    float3 diff = 0.0;
+					    [unroll] for (int n = 1; n <= 8; n++)
+					    {
+					        float w = g * 1600.0 / n;
+					        float x = saturate((w - 400.0) / 300.0);
+					        float3 a = float3(3.54585104, 2.93225262, 2.41593945) * (x - float3(0.69549072, 0.49228336, 0.27699880));
+					        float3 b = float3(3.90307140, 3.21182957, 3.96587128) * (x - float3(0.11748627, 0.86755042, 0.66077860));
+					        diff += (w >= 400.0 && w <= 700.0) ? saturate(1.0 - a * a - float3(0.02312639, 0.15225084, 0.52607955)) + saturate(1.0 - b * b - float3(0.84897130, 0.88445281, 0.73949448)) : 0.0;
+					    }
+					    col = saturate(diff) * gate + sheen * gate * pow(saturate(dot(dir, nh) * 0.5 + 0.5), 16.0);
+					    glint = pow(saturate(1.0 - g * 4.0), 4.0) * gate;
+					}
+					return float4(col, glint) * lit;
+				}
+				
+				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength, float type, float4 pattern, float2 uv, float3 viewTS, float tiltShift )
+				{
+					float m = foilMask.r * saturate( strength * 1.5 );
+					float3 v = normalize( viewTS );
+					float2 tilt = v.xy / max( v.z, 0.25 );
+					float sweep = dot( uv - 0.5, float2( 0.8, 0.6 ) ) + dot( tilt, float2( 0.45, 0.3 ) ) * tiltShift;
+					float glint = pow( saturate( 1.0 - abs( sweep ) * 2.5 ), 4.0 );
+					float lum = dot( pattern.rgb, float3( 0.299, 0.587, 0.114 ) ) + pattern.a;
+					return m * ( type > 0.5 && type < 11.5 ? saturate( lum * 2.5 ) : 0.25 + 0.75 * glint );
+				}
+				
+				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift, float type, float4 pattern )
+				{
+					// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its
+					// reflections, so this gives the lights' highlights and the reflections the same foil pattern (type) as CardFoil.
+					float3 v = normalize(viewTS);
+					float3 holo = saturate(0.35 + pattern.rgb * 0.6 + albedo.rgb * 0.3);
+					float2 tilt = v.xy / max(v.z, 0.25);
+					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
+					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
+					float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)));
+					float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35);
+					return lerp(albedo.rgb, type > 0.5 && type < 11.5 ? holo : foil, metal);
+				}
+				
+				float CardMetallic154( float4 surface, float foilMetal )
+				{
+					return max( surface.b, foilMetal );
+				}
+				
+				float CardSmoothness132( float4 surface, float roughness, float foilMetal )
+				{
+					float rough = lerp( roughness, surface.g, surface.a );
+					return lerp( 1.0 - rough, 0.9, foilMetal );
+				}
+				
+				float3 CardFoil120( float2 uv, float3 viewTS, float frontMask, float4 foilMask, float border, float4 baseColor, float strength, float scale, float tiltShift, float type, float4 pattern )
+				{
+					// Holographic foil on the card art, added on top of emission. type 0 (rainbow): rainbow bands that slide across the
+					// card as it tilts, plus a brighter glint band sweeping diagonally. 1 to 11: the CardFoilPattern foils (pattern).
 					// Only where frontMask is set (not the back), not under the frame (border = frame alpha), and inside
 					// foilMask (card.foil.png: white/opaque = foil, black/transparent = plain print, default white = the whole art).
 					float area = foilMask.r;   // CardLayerFoil: layers and picture, front and back
 					float3 v = normalize(viewTS);
+					float patternLuma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114));
+					float3 holo = (pattern.rgb * (0.3 + 0.7 * patternLuma) * (abs(type - 3.0) < 0.5 ? 1.4 : 1.0) + pattern.a * 0.25) * strength * area;
 					float2 tilt = v.xy / max(v.z, 0.25);
 					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
 					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
@@ -1637,7 +2281,7 @@ Shader "AmplifyCardShader2D"
 					float glint = pow(saturate(1.0 - abs(sweep) * 2.5), 4.0);
 					float luma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114));
 					float3 foil = rainbow * (0.3 + 0.7 * luma) * (0.35 + 0.65 * glint) + glint * 0.25;
-					return foil * strength * area;
+					return type > 0.5 && type < 11.5 ? holo : foil * strength * area;
 				}
 				
 				float3 CardWorldEmission152( float3 emission, float world, float worldGlow )
@@ -1867,19 +2511,20 @@ Shader "AmplifyCardShader2D"
 					float4 foilMask130 = localCardLayerFoil144;
 					float border130 = tex2DNode70.a;
 					float strength130 = _FoilStrength;
-					float localCardFoilMetal130 = CardFoilMetal130( frontMask130 , foilMask130 , border130 , strength130 );
-					float metal131 = localCardFoilMetal130;
-					float2 uv131 = texCoord117;
+					float2 uv163 = texCoord117;
+					float frontMask163 = tex2DNode41.r;
+					sampler2D layerNormal163 = _LayerNormal;
+					sampler2D backNormal163 = _BackNormal;
+					float localCardFoilType163 = CardFoilType163( uv163 , frontMask163 , layerNormal163 , backNormal163 );
+					float type130 = localCardFoilType163;
+					float2 uv170 = texCoord117;
 					float3 tanToWorld0 = float3( TangentWS.x, BitangentWS.x, NormalWS.x );
 					float3 tanToWorld1 = float3( TangentWS.y, BitangentWS.y, NormalWS.y );
 					float3 tanToWorld2 = float3( TangentWS.z, BitangentWS.z, NormalWS.z );
 					float3 ase_viewVectorTS =  tanToWorld0 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).x + tanToWorld1 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).y  + tanToWorld2 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - PositionWS : UNITY_MATRIX_V[ 2 ].xyz ).z;
 					float3 ase_viewDirTS = normalize( ase_viewVectorTS );
-					float3 viewTS131 = ase_viewDirTS;
-					float scale131 = _FoilScale;
-					float tiltShift131 = _FoilShift;
-					float3 localCardFoilAlbedo131 = CardFoilAlbedo131( albedo131 , metal131 , uv131 , viewTS131 , scale131 , tiltShift131 );
-					
+					float3 viewTS170 = ase_viewDirTS;
+					float type170 = localCardFoilType163;
 					float2 uv127 = texCoord117;
 					sampler2D normalMap127 = _NormalMap;
 					float strength127 = _NormalStrength;
@@ -1888,14 +2533,30 @@ Shader "AmplifyCardShader2D"
 					sampler2D layerNormal127 = _LayerNormal;
 					sampler2D backNormal127 = _BackNormal;
 					float3 localCardNormal127 = CardNormal127( uv127 , normalMap127 , strength127 , frontMask127 , border127 , layerNormal127 , backNormal127 );
+					float3 normalTS170 = localCardNormal127;
+					float4 localCardFoilPattern170 = CardFoilPattern170( uv170 , viewTS170 , type170 , normalTS170 );
+					float4 pattern130 = localCardFoilPattern170;
+					float2 uv130 = texCoord117;
+					float3 viewTS130 = ase_viewDirTS;
+					float tiltShift130 = _FoilShift;
+					float localCardFoilMetal130 = CardFoilMetal130( frontMask130 , foilMask130 , border130 , strength130 , type130 , pattern130 , uv130 , viewTS130 , tiltShift130 );
+					float metal131 = localCardFoilMetal130;
+					float2 uv131 = texCoord117;
+					float3 viewTS131 = ase_viewDirTS;
+					float scale131 = _FoilScale;
+					float tiltShift131 = _FoilShift;
+					float type131 = localCardFoilType163;
+					float4 pattern131 = localCardFoilPattern170;
+					float3 localCardFoilAlbedo131 = CardFoilAlbedo131( albedo131 , metal131 , uv131 , viewTS131 , scale131 , tiltShift131 , type131 , pattern131 );
 					
-					float4 surface132 = localCardLayerFoil144;
-					float strength132 = _FoilStrength;
-					float roughness132 = _Roughness;
-					float localCardSmoothness132 = CardSmoothness132( surface132 , strength132 , roughness132 );
 					float4 surface154 = localCardLayerFoil144;
 					float foilMetal154 = localCardFoilMetal130;
 					float localCardMetallic154 = CardMetallic154( surface154 , foilMetal154 );
+					
+					float4 surface132 = localCardLayerFoil144;
+					float roughness132 = _Roughness;
+					float foilMetal132 = localCardFoilMetal130;
+					float localCardSmoothness132 = CardSmoothness132( surface132 , roughness132 , foilMetal132 );
 					
 					float2 uv120 = texCoord117;
 					float3 viewTS120 = ase_viewDirTS;
@@ -1906,7 +2567,9 @@ Shader "AmplifyCardShader2D"
 					float strength120 = _FoilStrength;
 					float scale120 = _FoilScale;
 					float tiltShift120 = _FoilShift;
-					float3 localCardFoil120 = CardFoil120( uv120 , viewTS120 , frontMask120 , foilMask120 , border120 , baseColor120 , strength120 , scale120 , tiltShift120 );
+					float type120 = localCardFoilType163;
+					float4 pattern120 = localCardFoilPattern170;
+					float3 localCardFoil120 = CardFoil120( uv120 , viewTS120 , frontMask120 , foilMask120 , border120 , baseColor120 , strength120 , scale120 , tiltShift120 , type120 , pattern120 );
 					float3 emission152 = ( ( lerpResult109 * lerpResult112 ) + float4( localCardFoil120 , 0.0 ) ).rgb;
 					float world152 = _DaCardWorld;
 					float worldGlow152 = _WorldGlow;
@@ -2143,8 +2806,12 @@ Shader "AmplifyCardShader2D"
 				uniform sampler2D _BackFoil;
 				uniform sampler2D _FoilMask;
 				uniform float _FoilStrength;
-				uniform float _FoilScale;
+				uniform sampler2D _LayerNormal;
+				uniform sampler2D _BackNormal;
+				uniform sampler2D _NormalMap;
+				uniform float _NormalStrength;
 				uniform float _FoilShift;
+				uniform float _FoilScale;
 				uniform float _DaCardWorld;
 				uniform float _WorldGlow;
 
@@ -2164,32 +2831,247 @@ Shader "AmplifyCardShader2D"
 					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
 				}
 				
-				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
+				float CardFoilType163( float2 uv, float frontMask, sampler2D layerNormal, sampler2D backNormal )
 				{
-					return foilMask.r * saturate( strength * 1.5 );
+					float2 size = float2( 735.0, 1026.0 );
+					float4 uvc = float4( ( clamp( floor( uv * size ), 0.0, size - 1.0 ) + 0.5 ) / size, 0.0, 0.0 );
+					float a = frontMask > 0.5 ? tex2Dlod( layerNormal, uvc ).a : tex2Dlod( backNormal, uvc ).a;
+					return round( a * 255.0 );
 				}
 				
-				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift )
+				float3 CardNormal127( float2 uv, sampler2D normalMap, float strength, float frontMask, float border, sampler2D layerNormal, sampler2D backNormal )
+				{
+					// Bump detail, tangent space (OpenGL / Unity convention: green = up), so the card catches the game's lights. Front: the
+					// card layers' normals (_LayerNormal, stacked by the client) over card.normal.png where no layer covers it (border = the
+					// layers' coverage). Back: the back layers' (_BackNormal). Default textures "bump" = flat.
+					float3 base = tex2D( normalMap, uv ).xyz * 2.0 - 1.0;
+					float3 layer = tex2D( layerNormal, uv ).xyz * 2.0 - 1.0;
+					float3 back = tex2D( backNormal, uv ).xyz * 2.0 - 1.0;
+					float3 n = lerp( back, lerp( base, layer, border ), saturate( frontMask ) );
+					n.xy *= strength;
+					return normalize( n );
+				}
+				
+				float4 CardFoilPattern170( float2 uv, float3 viewTS, float type, float3 normalTS )
+				{
+					#define DC_HASH(c) frac((frac((c).x * 123.34) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)) * (frac((c).y * 456.21) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)))
+					#define DC_BUMP(x, c, o, y) saturate(1.0 - ((c) * ((x) - (o))) * ((c) * ((x) - (o))) - (y))
+					#define DC_SPEC(t) (DC_BUMP(frac(t), float3(3.54585104, 2.93225262, 2.41593945), float3(0.69549072, 0.49228336, 0.27699880), float3(0.02312639, 0.15225084, 0.52607955)) + DC_BUMP(frac(t), float3(3.90307140, 3.21182957, 3.96587128), float3(0.11748627, 0.86755042, 0.66077860), float3(0.84897130, 0.88445281, 0.73949448)))
+					#define DC_COUNT(s, m, k) ((m) + ((s) - (m)) * rsqrt(max((k), 1.0)))
+					float3 nb = normalize(normalTS);
+					float3 v = normalize(viewTS);
+					float3 p = float3(uv.x - 0.5, (uv.y - 0.5) * 1.397, 0.0);
+					float3 up = normalize(float3(0.0, 1.0, 0.0) - v * v.y);
+					float3 eye = v * 2.0;
+					float3 V = normalize(eye - p);
+					float3 L = normalize(eye + (up * 0.7 + cross(up, v) * 0.35) * 2.0 - p);
+					float2 h = (L - nb * dot(L, nb)).xy + (V - nb * dot(V, nb)).xy;
+					float2 nh = normalize(h + 1e-5);
+					float vn = dot(v, nb);
+					float2 tilt = (v - nb * vn).xy / max(vn, 0.25);
+					float lit = 0.55 + 0.75 * pow(saturate(dot(nb, normalize(L + V))), 12.0);
+					float fw = max(fwidth(uv.x), 1e-6);
+					float2 dir = float2(0.866, 0.5);
+					float gate = 1.0;
+					float sheen = 0.0;
+					float3 col = 0.0;
+					float glint = 0.0;
+					bool grating = type > 0.5 && type < 11.5;
+					if (type > 10.5)
+					{
+					    float2 q = uv * float2(9.0, 12.573);
+					    float2 b = floor(q);
+					    float d1 = 8.0;
+					    float2 id = b;
+					    [unroll] for (int j = -1; j <= 1; j++)
+					    [unroll] for (int i = -1; i <= 1; i++)
+					    {
+					        float2 nc = b + float2(i, j);
+					        float2 o = nc + 0.1 + 0.8 * float2(DC_HASH(nc + float2(0.0, 3.3)), DC_HASH(nc + float2(5.7, 0.0)));
+					        float d = length(q - o);
+					        if (d < d1) { d1 = d; id = nc; }
+					    }
+					    float turn = DC_HASH(id + float2(1.7, 9.2)) * 6.2831853;
+					    dir = float2(cos(turn), sin(turn));
+					    gate = 0.45 + 0.55 * DC_HASH(id + float2(6.6, 2.2));
+					    sheen = 0.25;
+					}
+					else if (type > 9.5)
+					{
+					    grating = false;
+					    float2 cn = uv * float2(7.0, 9.779);
+					    float2 ci = floor(cn);
+					    float2 cf = frac(cn);
+					    cf = cf * cf * (3.0 - 2.0 * cf);
+					    float dens = lerp(lerp(DC_HASH(ci), DC_HASH(ci + float2(1.0, 0.0)), cf.x), lerp(DC_HASH(ci + float2(0.0, 1.0)), DC_HASH(ci + float2(1.0, 1.0)), cf.x), cf.y);
+					    dens = 0.45 + 0.3 * dens;
+					    float2 pp = float2(uv.x, uv.y * 1.397);
+					    [unroll] for (int k = 0; k < 3; k++)
+					    {
+					        float s = k == 0 ? 113.0 : (k == 1 ? 139.0 : 167.0);
+					        float an = k == 0 ? 0.31 : (k == 1 ? 1.13 : 2.07);
+					        float2 q = float2(cos(an) * pp.x - sin(an) * pp.y, sin(an) * pp.x + cos(an) * pp.y) * s + float2(0.37, 0.61) * k;
+					        float2 c = floor(q) + float2(41.3, 27.1) * k;
+					        float rad = 0.0026 * s * (0.85 + 0.3 * DC_HASH(c + float2(7.7, 3.3)));
+					        float2 o = (float2(DC_HASH(c + float2(1.3, 0.0)), DC_HASH(c + float2(0.0, 2.9))) - 0.5) * (1.0 - 2.0 * rad);
+					        float d = length(frac(q) - 0.5 - o);
+					        float turn = DC_HASH(c + float2(4.1, 2.3)) * 6.2831853;
+					        float tw = pow(saturate(dot(float2(cos(turn), sin(turn)), nh)), 3.0);
+					        float dotMask = saturate((rad - d) / max(fw * s * 1.5, 0.05) + 0.5) * step(1.0 - dens, DC_HASH(c));
+					        float3 tint = DC_SPEC(uv.x * 0.35 + uv.y * 0.75 + dot(tilt, float2(0.6, 0.5)) + DC_HASH(c + float2(8.8, 0.0)) * 0.15);
+					        float kk = fw * s * fw * s;
+					        float mn = dens * 3.14159 * rad * rad * 0.6;
+					        col += tint * DC_COUNT(dotMask * (0.45 + 1.1 * tw), mn, kk) * 1.7;
+					        glint += DC_COUNT(dotMask * tw * tw * tw, mn * 0.1, kk) * 0.45;
+					    }
+					}
+					else if (type > 8.5)
+					{
+					    grating = false;
+					    float ph = length(p.xy - float2(-0.45, 1.0)) * 2.4 - dot(tilt, float2(0.8, 0.6)) * 0.9;
+					    col = DC_SPEC(ph) * (0.6 + 0.4 * cos(6.2831853 * ph * 0.5)) * 1.6;
+					    glint = pow(saturate(1.0 - abs(frac(ph * 0.5) - 0.5) * 8.0), 3.0) * 0.5;
+					}
+					else if (type > 7.5)
+					{
+					    grating = false;
+					    float ph = dot(p.xy, float2(0.8, 0.6)) * 1.4 + dot(tilt, float2(1.1, 0.8)) * 1.6;
+					    float band = pow(0.5 + 0.5 * cos(6.2831853 * ph), 3.0);
+					    float band2 = pow(0.5 + 0.5 * cos(6.2831853 * (ph * 2.7 + 0.3)), 10.0) * 0.6;
+					    col = DC_SPEC(ph * 0.8 + p.y * 0.25) * (band + band2) * 2.0;
+					    glint = pow(band, 6.0) * 0.5;
+					}
+					else if (type > 6.5)
+					{
+					    float2 q = uv * float2(8.0, 11.176);
+					    float2 fa = frac(q) - 0.5;
+					    float2 fb = frac(q + 0.5) - 0.5;
+					    float2 f = length(fb) < 0.5 ? fb : fa;
+					    float d = length(f);
+					    float rings = 0.5 + 0.5 * cos(d * 6.2831853 * 9.0);
+					    dir = f / max(d, 1e-4);
+					    gate = 0.45 + 0.55 * rings;
+					    sheen = 0.35;
+					}
+					else if (type > 4.5)
+					{
+					    float cells = type > 5.5 ? 12.0 : 10.0;
+					    float2 q = uv * float2(cells, cells * 1.397);
+					    float2 c = floor(q);
+					    float2 f = frac(q) - 0.5;
+					    if (type < 5.5)
+					    {
+					        float sec = floor(frac(atan2(f.y, f.x) / 6.2831853 + DC_HASH(c)) * 7.0);
+					        float turn = DC_HASH(c + sec * float2(3.7, 1.9)) * 6.2831853;
+					        dir = float2(cos(turn), sin(turn));
+					        gate = 0.55 + 0.45 * DC_HASH(c + sec * float2(5.3, 0.0) + float2(1.1, 2.2));
+					        sheen = 0.25;
+					    }
+					    else
+					    {
+					        dir = normalize(f + 1e-5);
+					        gate = 0.65 + 0.35 * saturate(max(abs(f.x), abs(f.y)) * 2.5);
+					    }
+					}
+					else if (type > 3.5)
+					{
+					    grating = false;
+					    [unroll] for (int k = 0; k < 3; k++)
+					    {
+					        float s = k == 0 ? 6.0 : (k == 1 ? 20.0 : 64.0);
+					        float prob = k == 0 ? 0.35 : (k == 1 ? 0.55 : 0.7);
+					        float r0 = k == 0 ? 0.18 : (k == 1 ? 0.14 : 0.16);
+					        float r1 = k == 0 ? 0.4 : (k == 1 ? 0.34 : 0.36);
+					        float br = k == 0 ? 2.8 : (k == 1 ? 2.5 : 2.4);
+					        float2 q = uv * float2(s, s * 1.397);
+					        float2 c = floor(q) + float2(31.7, 17.9) * k;
+					        float2 f = frac(q) - 0.5;
+					        float r = lerp(r0, r1, DC_HASH(c + float2(3.1, 7.7)));
+					        float2 o = (float2(DC_HASH(c + float2(11.3, 0.0)), DC_HASH(c + float2(0.0, 5.9))) - 0.5) * (1.0 - 2.0 * r);
+					        float d = length(f - o);
+					        float disc = saturate((r - d) / max(fw * s * 1.5, 0.02) + 0.5 * saturate(fw * s * 1.5 / r - 1.0)) * step(1.0 - prob, DC_HASH(c));
+					        float3 dotCol = DC_SPEC(DC_HASH(c + float2(2.7, 1.3)) + uv.y * 0.6 + dot(tilt, float2(0.6, 0.45))) * (0.7 + 0.3 * cos(d / max(r, 1e-3) * 4.0 + dot(tilt, float2(2.0, 1.5))));
+					        float kk = fw * s * fw * s;
+					        float mn = prob * 3.14159 * (r0 + r1) * (r0 + r1) * 0.25 * 0.35;
+					        col += DC_COUNT(dotCol * disc, mn, kk) * br;
+					        if (k == 2)
+					            glint = DC_COUNT(disc * step(0.7, DC_HASH(c + float2(9.1, 4.4))), mn * 0.3, kk) * 0.5;
+					    }
+					    [unroll] for (int m = 0; m < 2; m++)
+					    {
+					        float2 sd = p.xy - (m == 0 ? float2(0.25, 0.55) : float2(-0.3, -0.2));
+					        float sr = length(sd) + 1e-4;
+					        float swirl = pow(saturate(sin(atan2(sd.y, sd.x) * 2.0 - log(sr) * 7.0 + tilt.x + tilt.y)), 8.0) * saturate(1.0 - sr * 5.0);
+					        col += DC_SPEC(sr * 3.0 + dot(tilt, float2(0.5, 0.5))) * swirl * (m == 0 ? 0.6 : 0.5);
+					    }
+					}
+					else if (type > 2.5)
+					{
+					    float2 cell = floor(uv * float2(60.0, 83.8));
+					    float2 q = frac(cell * float2(123.34, 456.21));
+					    q += dot(q, q + 45.32);
+					    float turn = frac(q.x * q.y) * 6.2831853;
+					    q = frac((cell + 17.13) * float2(123.34, 456.21));
+					    q += dot(q, q + 45.32);
+					    gate = DC_COUNT(step(0.4, frac(q.x * q.y)), 0.6, fw * 60.0 * fw * 60.0);
+					    dir = float2(cos(turn), sin(turn));
+					    sheen = 0.2;
+					}
+					else if (type > 1.5)
+					    dir = normalize(p.xy + 1e-5);
+					if (grating)
+					{
+					    float g = abs(dot(h, dir));
+					    float3 diff = 0.0;
+					    [unroll] for (int n = 1; n <= 8; n++)
+					    {
+					        float w = g * 1600.0 / n;
+					        float x = saturate((w - 400.0) / 300.0);
+					        float3 a = float3(3.54585104, 2.93225262, 2.41593945) * (x - float3(0.69549072, 0.49228336, 0.27699880));
+					        float3 b = float3(3.90307140, 3.21182957, 3.96587128) * (x - float3(0.11748627, 0.86755042, 0.66077860));
+					        diff += (w >= 400.0 && w <= 700.0) ? saturate(1.0 - a * a - float3(0.02312639, 0.15225084, 0.52607955)) + saturate(1.0 - b * b - float3(0.84897130, 0.88445281, 0.73949448)) : 0.0;
+					    }
+					    col = saturate(diff) * gate + sheen * gate * pow(saturate(dot(dir, nh) * 0.5 + 0.5), 16.0);
+					    glint = pow(saturate(1.0 - g * 4.0), 4.0) * gate;
+					}
+					return float4(col, glint) * lit;
+				}
+				
+				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength, float type, float4 pattern, float2 uv, float3 viewTS, float tiltShift )
+				{
+					float m = foilMask.r * saturate( strength * 1.5 );
+					float3 v = normalize( viewTS );
+					float2 tilt = v.xy / max( v.z, 0.25 );
+					float sweep = dot( uv - 0.5, float2( 0.8, 0.6 ) ) + dot( tilt, float2( 0.45, 0.3 ) ) * tiltShift;
+					float glint = pow( saturate( 1.0 - abs( sweep ) * 2.5 ), 4.0 );
+					float lum = dot( pattern.rgb, float3( 0.299, 0.587, 0.114 ) ) + pattern.a;
+					return m * ( type > 0.5 && type < 11.5 ? saturate( lum * 2.5 ) : 0.25 + 0.75 * glint );
+				}
+				
+				float3 CardFoilAlbedo131( float4 albedo, float metal, float2 uv, float3 viewTS, float scale, float tiltShift, float type, float4 pattern )
 				{
 					// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its
-					// reflections, so this gives the lights' highlights and the reflections the same sliding rainbow bands as CardFoil.
+					// reflections, so this gives the lights' highlights and the reflections the same foil pattern (type) as CardFoil.
 					float3 v = normalize(viewTS);
+					float3 holo = saturate(0.35 + pattern.rgb * 0.6 + albedo.rgb * 0.3);
 					float2 tilt = v.xy / max(v.z, 0.25);
 					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
 					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
 					float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)));
 					float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35);
-					return lerp(albedo.rgb, foil, metal);
+					return lerp(albedo.rgb, type > 0.5 && type < 11.5 ? holo : foil, metal);
 				}
 				
-				float3 CardFoil120( float2 uv, float3 viewTS, float frontMask, float4 foilMask, float border, float4 baseColor, float strength, float scale, float tiltShift )
+				float3 CardFoil120( float2 uv, float3 viewTS, float frontMask, float4 foilMask, float border, float4 baseColor, float strength, float scale, float tiltShift, float type, float4 pattern )
 				{
-					// Holographic foil on the card art: rainbow bands that slide across the card as it tilts,
-					// plus a brighter glint band sweeping diagonally. Added on top of emission.
+					// Holographic foil on the card art, added on top of emission. type 0 (rainbow): rainbow bands that slide across the
+					// card as it tilts, plus a brighter glint band sweeping diagonally. 1 to 11: the CardFoilPattern foils (pattern).
 					// Only where frontMask is set (not the back), not under the frame (border = frame alpha), and inside
 					// foilMask (card.foil.png: white/opaque = foil, black/transparent = plain print, default white = the whole art).
 					float area = foilMask.r;   // CardLayerFoil: layers and picture, front and back
 					float3 v = normalize(viewTS);
+					float patternLuma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114));
+					float3 holo = (pattern.rgb * (0.3 + 0.7 * patternLuma) * (abs(type - 3.0) < 0.5 ? 1.4 : 1.0) + pattern.a * 0.25) * strength * area;
 					float2 tilt = v.xy / max(v.z, 0.25);
 					float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)));
 					float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06;
@@ -2198,7 +3080,7 @@ Shader "AmplifyCardShader2D"
 					float glint = pow(saturate(1.0 - abs(sweep) * 2.5), 4.0);
 					float luma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114));
 					float3 foil = rainbow * (0.3 + 0.7 * luma) * (0.35 + 0.65 * glint) + glint * 0.25;
-					return foil * strength * area;
+					return type > 0.5 && type < 11.5 ? holo : foil * strength * area;
 				}
 				
 				float3 CardWorldEmission152( float3 emission, float world, float worldGlow )
@@ -2402,9 +3284,13 @@ Shader "AmplifyCardShader2D"
 					float4 foilMask130 = localCardLayerFoil144;
 					float border130 = tex2DNode70.a;
 					float strength130 = _FoilStrength;
-					float localCardFoilMetal130 = CardFoilMetal130( frontMask130 , foilMask130 , border130 , strength130 );
-					float metal131 = localCardFoilMetal130;
-					float2 uv131 = texCoord117;
+					float2 uv163 = texCoord117;
+					float frontMask163 = tex2DNode41.r;
+					sampler2D layerNormal163 = _LayerNormal;
+					sampler2D backNormal163 = _BackNormal;
+					float localCardFoilType163 = CardFoilType163( uv163 , frontMask163 , layerNormal163 , backNormal163 );
+					float type130 = localCardFoilType163;
+					float2 uv170 = texCoord117;
 					float3 ase_positionWS = IN.ase_texcoord3.xyz;
 					float3 ase_tangentWS = IN.ase_texcoord4.xyz;
 					float3 ase_normalWS = IN.ase_texcoord5.xyz;
@@ -2414,10 +3300,31 @@ Shader "AmplifyCardShader2D"
 					float3 tanToWorld2 = float3( ase_tangentWS.z, ase_bitangentWS.z, ase_normalWS.z );
 					float3 ase_viewVectorTS =  tanToWorld0 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - ase_positionWS : UNITY_MATRIX_V[ 2 ].xyz ).x + tanToWorld1 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - ase_positionWS : UNITY_MATRIX_V[ 2 ].xyz ).y  + tanToWorld2 * ( ( unity_OrthoParams.w == 0 ) ? _WorldSpaceCameraPos - ase_positionWS : UNITY_MATRIX_V[ 2 ].xyz ).z;
 					float3 ase_viewDirTS = normalize( ase_viewVectorTS );
+					float3 viewTS170 = ase_viewDirTS;
+					float type170 = localCardFoilType163;
+					float2 uv127 = texCoord117;
+					sampler2D normalMap127 = _NormalMap;
+					float strength127 = _NormalStrength;
+					float frontMask127 = tex2DNode41.r;
+					float border127 = tex2DNode70.a;
+					sampler2D layerNormal127 = _LayerNormal;
+					sampler2D backNormal127 = _BackNormal;
+					float3 localCardNormal127 = CardNormal127( uv127 , normalMap127 , strength127 , frontMask127 , border127 , layerNormal127 , backNormal127 );
+					float3 normalTS170 = localCardNormal127;
+					float4 localCardFoilPattern170 = CardFoilPattern170( uv170 , viewTS170 , type170 , normalTS170 );
+					float4 pattern130 = localCardFoilPattern170;
+					float2 uv130 = texCoord117;
+					float3 viewTS130 = ase_viewDirTS;
+					float tiltShift130 = _FoilShift;
+					float localCardFoilMetal130 = CardFoilMetal130( frontMask130 , foilMask130 , border130 , strength130 , type130 , pattern130 , uv130 , viewTS130 , tiltShift130 );
+					float metal131 = localCardFoilMetal130;
+					float2 uv131 = texCoord117;
 					float3 viewTS131 = ase_viewDirTS;
 					float scale131 = _FoilScale;
 					float tiltShift131 = _FoilShift;
-					float3 localCardFoilAlbedo131 = CardFoilAlbedo131( albedo131 , metal131 , uv131 , viewTS131 , scale131 , tiltShift131 );
+					float type131 = localCardFoilType163;
+					float4 pattern131 = localCardFoilPattern170;
+					float3 localCardFoilAlbedo131 = CardFoilAlbedo131( albedo131 , metal131 , uv131 , viewTS131 , scale131 , tiltShift131 , type131 , pattern131 );
 					
 					float2 uv120 = texCoord117;
 					float3 viewTS120 = ase_viewDirTS;
@@ -2428,7 +3335,9 @@ Shader "AmplifyCardShader2D"
 					float strength120 = _FoilStrength;
 					float scale120 = _FoilScale;
 					float tiltShift120 = _FoilShift;
-					float3 localCardFoil120 = CardFoil120( uv120 , viewTS120 , frontMask120 , foilMask120 , border120 , baseColor120 , strength120 , scale120 , tiltShift120 );
+					float type120 = localCardFoilType163;
+					float4 pattern120 = localCardFoilPattern170;
+					float3 localCardFoil120 = CardFoil120( uv120 , viewTS120 , frontMask120 , foilMask120 , border120 , baseColor120 , strength120 , scale120 , tiltShift120 , type120 , pattern120 );
 					float3 emission152 = ( ( lerpResult109 * lerpResult112 ) + float4( localCardFoil120 , 0.0 ) ).rgb;
 					float world152 = _DaCardWorld;
 					float worldGlow152 = _WorldGlow;
@@ -3201,16 +4110,16 @@ Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, 
 Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;127;176,1520;Inherit;False;// Bump detail, tangent space (OpenGL / Unity convention: green = up), so the card catches the game's lights. Front: the$// card layers' normals (_LayerNormal, stacked by the client) over card.normal.png where no layer covers it (border = the$// layers' coverage). Back: the back layers' (_BackNormal). Default textures "bump" = flat.$float3 base = tex2D( normalMap, uv ).xyz * 2.0 - 1.0@$float3 layer = tex2D( layerNormal, uv ).xyz * 2.0 - 1.0@$float3 back = tex2D( backNormal, uv ).xyz * 2.0 - 1.0@$float3 n = lerp( back, lerp( base, layer, border ), saturate( frontMask ) )@$n.xy *= strength@$return normalize( n )@;3;Create;7;False;uv;FLOAT2;0,0;In;;Inherit;False;False;normalMap;SAMPLER2D;_Sampler1127;In;;Inherit;False;False;strength;FLOAT;1;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;False;border;FLOAT;0;In;;Inherit;False;False;layerNormal;SAMPLER2D;_Sampler5127;In;;Inherit;False;False;backNormal;SAMPLER2D;_Sampler6127;In;;Inherit;False;CardNormal;True;False;0;;False;7;0;FLOAT2;0,0;False;1;SAMPLER2D;_Sampler1127;False;2;FLOAT;1;False;3;FLOAT;1;False;4;FLOAT;0;False;5;SAMPLER2D;_Sampler5127;False;6;SAMPLER2D;_Sampler6127;False;1;FLOAT3;0
 Node;AmplifyShaderEditor.TexturePropertyNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;128;-480,1520;Inherit;True;Property;_NormalMap;Normal Map;10;0;Create;True;0;0;0;False;0;False;None;None;False;bump;Auto;Texture2D;False;-1;0;2;SAMPLER2D;0;SAMPLERSTATE;1
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;129;-160,1600;Inherit;False;Property;_NormalStrength;Normal Strength;11;0;Create;True;0;0;0;False;0;False;1;1;0;2;0;1;FLOAT;0
-Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;120;176,896;Inherit;False;// Holographic foil on the card art: rainbow bands that slide across the card as it tilts,$// plus a brighter glint band sweeping diagonally. Added on top of emission.$// Only where frontMask is set (not the back), not under the frame (border = frame alpha), and inside$// foilMask (card.foil.png: white/opaque = foil, black/transparent = plain print, default white = the whole art).$float area = foilMask.r@   // CardLayerFoil: layers and picture, front and back$float3 v = normalize(viewTS)@$float2 tilt = v.xy / max(v.z, 0.25)@$float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)))@$float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06@$float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)))@$float sweep = dot(uv - 0.5, float2(0.8, 0.6)) + dot(tilt, float2(0.45, 0.3)) * tiltShift@$float glint = pow(saturate(1.0 - abs(sweep) * 2.5), 4.0)@$float luma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114))@$float3 foil = rainbow * (0.3 + 0.7 * luma) * (0.35 + 0.65 * glint) + glint * 0.25@$return foil * strength * area@;3;Create;9;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;False;foilMask;FLOAT4;1,1,1,1;In;;Inherit;False;False;border;FLOAT;0;In;;Inherit;False;False;baseColor;FLOAT4;0,0,0,0;In;;Inherit;False;False;strength;FLOAT;0.6;In;;Inherit;False;False;scale;FLOAT;1.5;In;;Inherit;False;False;tiltShift;FLOAT;1.5;In;;Inherit;False;CardFoil;True;False;0;;False;9;0;FLOAT2;0,0;False;1;FLOAT3;0,0,0;False;2;FLOAT;1;False;3;FLOAT4;1,1,1,1;False;4;FLOAT;0;False;5;FLOAT4;0,0,0,0;False;6;FLOAT;0.6;False;7;FLOAT;1.5;False;8;FLOAT;1.5;False;1;FLOAT3;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;120;176,896;Inherit;False;// Holographic foil on the card art, added on top of emission. type 0 (rainbow): rainbow bands that slide across the$// card as it tilts, plus a brighter glint band sweeping diagonally. 1 to 11: the CardFoilPattern foils (pattern).$// Only where frontMask is set (not the back), not under the frame (border = frame alpha), and inside$// foilMask (card.foil.png: white/opaque = foil, black/transparent = plain print, default white = the whole art).$float area = foilMask.r@   // CardLayerFoil: layers and picture, front and back$float3 v = normalize(viewTS)@$float patternLuma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114))@$float3 holo = (pattern.rgb * (0.3 + 0.7 * patternLuma) * (abs(type - 3.0) < 0.5 ? 1.4 : 1.0) + pattern.a * 0.25) * strength * area@$float2 tilt = v.xy / max(v.z, 0.25)@$float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)))@$float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06@$float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)))@$float sweep = dot(uv - 0.5, float2(0.8, 0.6)) + dot(tilt, float2(0.45, 0.3)) * tiltShift@$float glint = pow(saturate(1.0 - abs(sweep) * 2.5), 4.0)@$float luma = dot(baseColor.rgb, float3(0.299, 0.587, 0.114))@$float3 foil = rainbow * (0.3 + 0.7 * luma) * (0.35 + 0.65 * glint) + glint * 0.25@$return type > 0.5 && type < 11.5 ? holo : foil * strength * area@;3;Create;11;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;False;foilMask;FLOAT4;1,1,1,1;In;;Inherit;False;False;border;FLOAT;0;In;;Inherit;False;False;baseColor;FLOAT4;0,0,0,0;In;;Inherit;False;False;strength;FLOAT;0.6;In;;Inherit;False;False;scale;FLOAT;1.5;In;;Inherit;False;False;tiltShift;FLOAT;1.5;In;;Inherit;False;False;type;FLOAT;0;In;;Inherit;False;False;pattern;FLOAT4;0,0,0,0;In;;Inherit;False;CardFoil;True;False;0;;False;11;0;FLOAT2;0,0;False;1;FLOAT3;0,0,0;False;2;FLOAT;1;False;3;FLOAT4;1,1,1,1;False;4;FLOAT;0;False;5;FLOAT4;0,0,0,0;False;6;FLOAT;0.6;False;7;FLOAT;1.5;False;8;FLOAT;1.5;False;9;FLOAT;0;False;10;FLOAT4;0,0,0,0;False;1;FLOAT3;0
 Node;AmplifyShaderEditor.ViewDirInputsCoordNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;121;-160,960;Inherit;False;Tangent;False;0;4;FLOAT3;0;FLOAT;1;FLOAT;2;FLOAT;3
 Node;AmplifyShaderEditor.SamplerNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;126;-480,1040;Inherit;True;Property;_FoilMask;Foil Mask;6;0;Create;True;0;0;0;False;0;False;-1;None;None;True;0;False;white;Auto;False;Object;-1;Auto;Texture2D;False;8;0;SAMPLER2D;;False;1;FLOAT2;0,0;False;2;FLOAT;0;False;3;FLOAT2;0,0;False;4;FLOAT2;0,0;False;5;FLOAT;1;False;6;FLOAT;0;False;7;SAMPLERSTATE;;False;6;COLOR;0;FLOAT;1;FLOAT;2;FLOAT;3;FLOAT;4;FLOAT3;5
 Node;AmplifyShaderEditor.SimpleAddOpNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;122;448,640;Inherit;False;2;2;0;COLOR;0,0,0,0;False;1;FLOAT3;0,0,0;False;1;COLOR;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;123;-160,1280;Inherit;False;Property;_FoilStrength;Foil Strength;7;0;Create;True;0;0;0;False;0;False;0.6;0.6;0;2;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;124;-160,1360;Inherit;False;Property;_FoilScale;Foil Scale;8;0;Create;True;0;0;0;False;0;False;1.5;1.5;0;0;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;125;-160,1440;Inherit;False;Property;_FoilShift;Foil Tilt Shift;9;0;Create;True;0;0;0;False;0;False;1.5;1.5;0;0;0;1;FLOAT;0
-Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;130;448,1040;Inherit;False;return foilMask.r * saturate( strength * 1.5 )@;1;Create;4;False;frontMask;FLOAT;1;In;;Inherit;False;False;foilMask;FLOAT4;1,1,1,1;In;;Inherit;False;False;border;FLOAT;0;In;;Inherit;False;False;strength;FLOAT;0.6;In;;Inherit;False;CardFoilMetal;True;False;0;;False;4;0;FLOAT;1;False;1;FLOAT4;1,1,1,1;False;2;FLOAT;0;False;3;FLOAT;0.6;False;1;FLOAT;0
-Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;131;512,224;Inherit;False;// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its$// reflections, so this gives the lights' highlights and the reflections the same sliding rainbow bands as CardFoil.$float3 v = normalize(viewTS)@$float2 tilt = v.xy / max(v.z, 0.25)@$float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)))@$float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06@$float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)))@$float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35)@$return lerp(albedo.rgb, foil, metal)@;3;Create;6;False;albedo;FLOAT4;0,0,0,0;In;;Inherit;False;False;metal;FLOAT;0;In;;Inherit;False;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;scale;FLOAT;1.5;In;;Inherit;False;False;tiltShift;FLOAT;1.5;In;;Inherit;False;CardFoilAlbedo;True;False;0;;False;6;0;FLOAT4;0,0,0,0;False;1;FLOAT;0;False;2;FLOAT2;0,0;False;3;FLOAT3;0,0,0;False;4;FLOAT;1.5;False;5;FLOAT;1.5;False;1;FLOAT3;0
-Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;132;512,768;Inherit;False;float rough = lerp( roughness, surface.g, surface.a )@$return lerp( 1.0 - rough, 0.9, surface.r * saturate( strength * 1.5 ) )@;1;Create;3;False;surface;FLOAT4;0,0,0,0;In;;Inherit;False;False;strength;FLOAT;0.6;In;;Inherit;False;False;roughness;FLOAT;0.3;In;;Inherit;False;CardSmoothness;True;False;0;;False;3;0;FLOAT4;0,0,0,0;False;1;FLOAT;0.6;False;2;FLOAT;0.3;False;1;FLOAT;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;130;448,1040;Inherit;False;float m = foilMask.r * saturate( strength * 1.5 )@$float3 v = normalize( viewTS )@$float2 tilt = v.xy / max( v.z, 0.25 )@$float sweep = dot( uv - 0.5, float2( 0.8, 0.6 ) ) + dot( tilt, float2( 0.45, 0.3 ) ) * tiltShift@$float glint = pow( saturate( 1.0 - abs( sweep ) * 2.5 ), 4.0 )@$float lum = dot( pattern.rgb, float3( 0.299, 0.587, 0.114 ) ) + pattern.a@$return m * ( type > 0.5 && type < 11.5 ? saturate( lum * 2.5 ) : 0.25 + 0.75 * glint )@;1;Create;9;False;frontMask;FLOAT;1;In;;Inherit;False;False;foilMask;FLOAT4;1,1,1,1;In;;Inherit;False;False;border;FLOAT;0;In;;Inherit;False;False;strength;FLOAT;0.6;In;;Inherit;False;False;type;FLOAT;0;In;;Inherit;False;False;pattern;FLOAT4;0,0,0,0;In;;Inherit;False;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;tiltShift;FLOAT;1.5;In;;Inherit;False;CardFoilMetal;True;False;0;;False;9;0;FLOAT;1;False;1;FLOAT4;1,1,1,1;False;2;FLOAT;0;False;3;FLOAT;0.6;False;4;FLOAT;0;False;5;FLOAT4;0,0,0,0;False;6;FLOAT2;0,0;False;7;FLOAT3;0,0,0;False;8;FLOAT;1.5;False;1;FLOAT;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;131;512,224;Inherit;False;// Albedo of the foil area. Where the card is metallic (metal, from CardFoilMetal) the albedo is the colour of its$// reflections, so this gives the lights' highlights and the reflections the same foil pattern (type) as CardFoil.$float3 v = normalize(viewTS)@$float3 holo = saturate(0.35 + pattern.rgb * 0.6 + albedo.rgb * 0.3)@$float2 tilt = v.xy / max(v.z, 0.25)@$float grain = sin(dot(uv, float2(173.1, 61.7))) * sin(dot(uv, float2(-47.3, 211.9)))@$float phase = dot(uv, float2(0.6, 1.0)) * scale + dot(tilt, float2(0.8, 0.5)) * tiltShift + grain * 0.06@$float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (phase + float3(0.0, 0.333, 0.667)))@$float3 foil = saturate(rainbow * 0.85 + albedo.rgb * 0.35)@$return lerp(albedo.rgb, type > 0.5 && type < 11.5 ? holo : foil, metal)@;3;Create;8;False;albedo;FLOAT4;0,0,0,0;In;;Inherit;False;False;metal;FLOAT;0;In;;Inherit;False;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;scale;FLOAT;1.5;In;;Inherit;False;False;tiltShift;FLOAT;1.5;In;;Inherit;False;False;type;FLOAT;0;In;;Inherit;False;False;pattern;FLOAT4;0,0,0,0;In;;Inherit;False;CardFoilAlbedo;True;False;0;;False;8;0;FLOAT4;0,0,0,0;False;1;FLOAT;0;False;2;FLOAT2;0,0;False;3;FLOAT3;0,0,0;False;4;FLOAT;1.5;False;5;FLOAT;1.5;False;6;FLOAT;0;False;7;FLOAT4;0,0,0,0;False;1;FLOAT3;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;132;512,768;Inherit;False;float rough = lerp( roughness, surface.g, surface.a )@$return lerp( 1.0 - rough, 0.9, foilMetal )@;1;Create;3;False;surface;FLOAT4;0,0,0,0;In;;Inherit;False;False;roughness;FLOAT;0.3;In;;Inherit;False;False;foilMetal;FLOAT;0;In;;Inherit;False;CardSmoothness;True;False;0;;False;3;0;FLOAT4;0,0,0,0;False;1;FLOAT;0.3;False;2;FLOAT;0;False;1;FLOAT;0
 Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;154;640,1040;Inherit;False;return max( surface.b, foilMetal )@;1;Create;2;False;surface;FLOAT4;0,0,0,0;In;;Inherit;False;False;foilMetal;FLOAT;0;In;;Inherit;False;CardMetallic;True;False;0;;False;2;0;FLOAT4;0,0,0,0;False;1;FLOAT;0;False;1;FLOAT;0
 Node;AmplifyShaderEditor.SamplerNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;140;-480,1200;Inherit;True;Property;_LayerFoil;Layer Foil;12;0;Create;True;0;0;0;False;0;False;-1;None;None;True;0;False;black;Auto;False;Object;-1;Auto;Texture2D;False;8;0;SAMPLER2D;;False;1;FLOAT2;0,0;False;2;FLOAT;0;False;3;FLOAT2;0,0;False;4;FLOAT2;0,0;False;5;FLOAT;1;False;6;FLOAT;0;False;7;SAMPLERSTATE;;False;6;COLOR;0;FLOAT;1;FLOAT;2;FLOAT;3;FLOAT;4;FLOAT3;5
 Node;AmplifyShaderEditor.SamplerNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;141;-480,1360;Inherit;True;Property;_BackFoil;Back Foil;13;0;Create;True;0;0;0;False;0;False;-1;None;None;True;0;False;black;Auto;False;Object;-1;Auto;Texture2D;False;8;0;SAMPLER2D;;False;1;FLOAT2;0,0;False;2;FLOAT;0;False;3;FLOAT2;0,0;False;4;FLOAT2;0,0;False;5;FLOAT;1;False;6;FLOAT;0;False;7;SAMPLERSTATE;;False;6;COLOR;0;FLOAT;1;FLOAT;2;FLOAT;3;FLOAT;4;FLOAT3;5
@@ -3221,6 +4130,8 @@ Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;150;256,896;Inherit;False;Global;_DaCardWorld;DaCard World;40;0;Create;True;0;0;0;False;0;False;0;0;0;1;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;151;256,976;Inherit;False;Property;_WorldGlow;Glow in the world;16;0;Create;True;0;0;0;False;0;False;0.1;0.1;0;1;0;1;FLOAT;0
 Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;152;560,640;Inherit;False;// A card lying in the world (drawn by the game's main camera: the client sets the global _DaCardWorld then) is lit by the$// raid: its own light (art glow, foil shine) drops to worldGlow, so it is dark in the dark. Inspect views and icons: 1.$return emission * lerp( 1.0, worldGlow, saturate( world ) )@;3;Create;3;False;emission;FLOAT3;0,0,0;In;;Inherit;False;False;world;FLOAT;0;In;;Inherit;False;False;worldGlow;FLOAT;0.1;In;;Inherit;False;CardWorldEmission;True;False;0;;False;3;0;FLOAT3;0,0,0;False;1;FLOAT;0;False;2;FLOAT;0.1;False;1;FLOAT3;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;163;-128,1760;Inherit;False;float2 size = float2( 735.0, 1026.0 )@$float4 uvc = float4( ( clamp( floor( uv * size ), 0.0, size - 1.0 ) + 0.5 ) / size, 0.0, 0.0 )@$float a = frontMask > 0.5 ? tex2Dlod( layerNormal, uvc ).a : tex2Dlod( backNormal, uvc ).a@$return round( a * 255.0 )@;1;Create;4;False;uv;FLOAT2;0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;False;layerNormal;SAMPLER2D;_Sampler2163;In;;Inherit;False;False;backNormal;SAMPLER2D;_Sampler3163;In;;Inherit;False;CardFoilType;True;False;0;;False;4;0;FLOAT2;0,0;False;1;FLOAT;1;False;2;SAMPLER2D;_Sampler2163;False;3;SAMPLER2D;_Sampler3163;False;1;FLOAT;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;170;-128,1920;Inherit;False;#define DC_HASH(c) frac((frac((c).x * 123.34) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)) * (frac((c).y * 456.21) + dot(frac((c) * float2(123.34, 456.21)), frac((c) * float2(123.34, 456.21)) + 45.32)))$#define DC_BUMP(x, c, o, y) saturate(1.0 - ((c) * ((x) - (o))) * ((c) * ((x) - (o))) - (y))$#define DC_SPEC(t) (DC_BUMP(frac(t), float3(3.54585104, 2.93225262, 2.41593945), float3(0.69549072, 0.49228336, 0.27699880), float3(0.02312639, 0.15225084, 0.52607955)) + DC_BUMP(frac(t), float3(3.90307140, 3.21182957, 3.96587128), float3(0.11748627, 0.86755042, 0.66077860), float3(0.84897130, 0.88445281, 0.73949448)))$#define DC_COUNT(s, m, k) ((m) + ((s) - (m)) * rsqrt(max((k), 1.0)))$float3 nb = normalize(normalTS)@$float3 v = normalize(viewTS)@$float3 p = float3(uv.x - 0.5, (uv.y - 0.5) * 1.397, 0.0)@$float3 up = normalize(float3(0.0, 1.0, 0.0) - v * v.y)@$float3 eye = v * 2.0@$float3 V = normalize(eye - p)@$float3 L = normalize(eye + (up * 0.7 + cross(up, v) * 0.35) * 2.0 - p)@$float2 h = (L - nb * dot(L, nb)).xy + (V - nb * dot(V, nb)).xy@$float2 nh = normalize(h + 1e-5)@$float vn = dot(v, nb)@$float2 tilt = (v - nb * vn).xy / max(vn, 0.25)@$float lit = 0.55 + 0.75 * pow(saturate(dot(nb, normalize(L + V))), 12.0)@$float fw = max(fwidth(uv.x), 1e-6)@$float2 dir = float2(0.866, 0.5)@$float gate = 1.0@$float sheen = 0.0@$float3 col = 0.0@$float glint = 0.0@$bool grating = type > 0.5 && type < 11.5@$if (type > 10.5)${$    float2 q = uv * float2(9.0, 12.573)@$    float2 b = floor(q)@$    float d1 = 8.0@$    float2 id = b@$    [unroll] for (int j = -1@ j <= 1@ j++)$    [unroll] for (int i = -1@ i <= 1@ i++)$    {$        float2 nc = b + float2(i, j)@$        float2 o = nc + 0.1 + 0.8 * float2(DC_HASH(nc + float2(0.0, 3.3)), DC_HASH(nc + float2(5.7, 0.0)))@$        float d = length(q - o)@$        if (d < d1) { d1 = d@ id = nc@ }$    }$    float turn = DC_HASH(id + float2(1.7, 9.2)) * 6.2831853@$    dir = float2(cos(turn), sin(turn))@$    gate = 0.45 + 0.55 * DC_HASH(id + float2(6.6, 2.2))@$    sheen = 0.25@$}$else if (type > 9.5)${$    grating = false@$    float2 cn = uv * float2(7.0, 9.779)@$    float2 ci = floor(cn)@$    float2 cf = frac(cn)@$    cf = cf * cf * (3.0 - 2.0 * cf)@$    float dens = lerp(lerp(DC_HASH(ci), DC_HASH(ci + float2(1.0, 0.0)), cf.x), lerp(DC_HASH(ci + float2(0.0, 1.0)), DC_HASH(ci + float2(1.0, 1.0)), cf.x), cf.y)@$    dens = 0.45 + 0.3 * dens@$    float2 pp = float2(uv.x, uv.y * 1.397)@$    [unroll] for (int k = 0@ k < 3@ k++)$    {$        float s = k == 0 ? 113.0 : (k == 1 ? 139.0 : 167.0)@$        float an = k == 0 ? 0.31 : (k == 1 ? 1.13 : 2.07)@$        float2 q = float2(cos(an) * pp.x - sin(an) * pp.y, sin(an) * pp.x + cos(an) * pp.y) * s + float2(0.37, 0.61) * k@$        float2 c = floor(q) + float2(41.3, 27.1) * k@$        float rad = 0.0026 * s * (0.85 + 0.3 * DC_HASH(c + float2(7.7, 3.3)))@$        float2 o = (float2(DC_HASH(c + float2(1.3, 0.0)), DC_HASH(c + float2(0.0, 2.9))) - 0.5) * (1.0 - 2.0 * rad)@$        float d = length(frac(q) - 0.5 - o)@$        float turn = DC_HASH(c + float2(4.1, 2.3)) * 6.2831853@$        float tw = pow(saturate(dot(float2(cos(turn), sin(turn)), nh)), 3.0)@$        float dotMask = saturate((rad - d) / max(fw * s * 1.5, 0.05) + 0.5) * step(1.0 - dens, DC_HASH(c))@$        float3 tint = DC_SPEC(uv.x * 0.35 + uv.y * 0.75 + dot(tilt, float2(0.6, 0.5)) + DC_HASH(c + float2(8.8, 0.0)) * 0.15)@$        float kk = fw * s * fw * s@$        float mn = dens * 3.14159 * rad * rad * 0.6@$        col += tint * DC_COUNT(dotMask * (0.45 + 1.1 * tw), mn, kk) * 1.7@$        glint += DC_COUNT(dotMask * tw * tw * tw, mn * 0.1, kk) * 0.45@$    }$}$else if (type > 8.5)${$    grating = false@$    float ph = length(p.xy - float2(-0.45, 1.0)) * 2.4 - dot(tilt, float2(0.8, 0.6)) * 0.9@$    col = DC_SPEC(ph) * (0.6 + 0.4 * cos(6.2831853 * ph * 0.5)) * 1.6@$    glint = pow(saturate(1.0 - abs(frac(ph * 0.5) - 0.5) * 8.0), 3.0) * 0.5@$}$else if (type > 7.5)${$    grating = false@$    float ph = dot(p.xy, float2(0.8, 0.6)) * 1.4 + dot(tilt, float2(1.1, 0.8)) * 1.6@$    float band = pow(0.5 + 0.5 * cos(6.2831853 * ph), 3.0)@$    float band2 = pow(0.5 + 0.5 * cos(6.2831853 * (ph * 2.7 + 0.3)), 10.0) * 0.6@$    col = DC_SPEC(ph * 0.8 + p.y * 0.25) * (band + band2) * 2.0@$    glint = pow(band, 6.0) * 0.5@$}$else if (type > 6.5)${$    float2 q = uv * float2(8.0, 11.176)@$    float2 fa = frac(q) - 0.5@$    float2 fb = frac(q + 0.5) - 0.5@$    float2 f = length(fb) < 0.5 ? fb : fa@$    float d = length(f)@$    float rings = 0.5 + 0.5 * cos(d * 6.2831853 * 9.0)@$    dir = f / max(d, 1e-4)@$    gate = 0.45 + 0.55 * rings@$    sheen = 0.35@$}$else if (type > 4.5)${$    float cells = type > 5.5 ? 12.0 : 10.0@$    float2 q = uv * float2(cells, cells * 1.397)@$    float2 c = floor(q)@$    float2 f = frac(q) - 0.5@$    if (type < 5.5)$    {$        float sec = floor(frac(atan2(f.y, f.x) / 6.2831853 + DC_HASH(c)) * 7.0)@$        float turn = DC_HASH(c + sec * float2(3.7, 1.9)) * 6.2831853@$        dir = float2(cos(turn), sin(turn))@$        gate = 0.55 + 0.45 * DC_HASH(c + sec * float2(5.3, 0.0) + float2(1.1, 2.2))@$        sheen = 0.25@$    }$    else$    {$        dir = normalize(f + 1e-5)@$        gate = 0.65 + 0.35 * saturate(max(abs(f.x), abs(f.y)) * 2.5)@$    }$}$else if (type > 3.5)${$    grating = false@$    [unroll] for (int k = 0@ k < 3@ k++)$    {$        float s = k == 0 ? 6.0 : (k == 1 ? 20.0 : 64.0)@$        float prob = k == 0 ? 0.35 : (k == 1 ? 0.55 : 0.7)@$        float r0 = k == 0 ? 0.18 : (k == 1 ? 0.14 : 0.16)@$        float r1 = k == 0 ? 0.4 : (k == 1 ? 0.34 : 0.36)@$        float br = k == 0 ? 2.8 : (k == 1 ? 2.5 : 2.4)@$        float2 q = uv * float2(s, s * 1.397)@$        float2 c = floor(q) + float2(31.7, 17.9) * k@$        float2 f = frac(q) - 0.5@$        float r = lerp(r0, r1, DC_HASH(c + float2(3.1, 7.7)))@$        float2 o = (float2(DC_HASH(c + float2(11.3, 0.0)), DC_HASH(c + float2(0.0, 5.9))) - 0.5) * (1.0 - 2.0 * r)@$        float d = length(f - o)@$        float disc = saturate((r - d) / max(fw * s * 1.5, 0.02) + 0.5 * saturate(fw * s * 1.5 / r - 1.0)) * step(1.0 - prob, DC_HASH(c))@$        float3 dotCol = DC_SPEC(DC_HASH(c + float2(2.7, 1.3)) + uv.y * 0.6 + dot(tilt, float2(0.6, 0.45))) * (0.7 + 0.3 * cos(d / max(r, 1e-3) * 4.0 + dot(tilt, float2(2.0, 1.5))))@$        float kk = fw * s * fw * s@$        float mn = prob * 3.14159 * (r0 + r1) * (r0 + r1) * 0.25 * 0.35@$        col += DC_COUNT(dotCol * disc, mn, kk) * br@$        if (k == 2)$            glint = DC_COUNT(disc * step(0.7, DC_HASH(c + float2(9.1, 4.4))), mn * 0.3, kk) * 0.5@$    }$    [unroll] for (int m = 0@ m < 2@ m++)$    {$        float2 sd = p.xy - (m == 0 ? float2(0.25, 0.55) : float2(-0.3, -0.2))@$        float sr = length(sd) + 1e-4@$        float swirl = pow(saturate(sin(atan2(sd.y, sd.x) * 2.0 - log(sr) * 7.0 + tilt.x + tilt.y)), 8.0) * saturate(1.0 - sr * 5.0)@$        col += DC_SPEC(sr * 3.0 + dot(tilt, float2(0.5, 0.5))) * swirl * (m == 0 ? 0.6 : 0.5)@$    }$}$else if (type > 2.5)${$    float2 cell = floor(uv * float2(60.0, 83.8))@$    float2 q = frac(cell * float2(123.34, 456.21))@$    q += dot(q, q + 45.32)@$    float turn = frac(q.x * q.y) * 6.2831853@$    q = frac((cell + 17.13) * float2(123.34, 456.21))@$    q += dot(q, q + 45.32)@$    gate = DC_COUNT(step(0.4, frac(q.x * q.y)), 0.6, fw * 60.0 * fw * 60.0)@$    dir = float2(cos(turn), sin(turn))@$    sheen = 0.2@$}$else if (type > 1.5)$    dir = normalize(p.xy + 1e-5)@$if (grating)${$    float g = abs(dot(h, dir))@$    float3 diff = 0.0@$    [unroll] for (int n = 1@ n <= 8@ n++)$    {$        float w = g * 1600.0 / n@$        float x = saturate((w - 400.0) / 300.0)@$        float3 a = float3(3.54585104, 2.93225262, 2.41593945) * (x - float3(0.69549072, 0.49228336, 0.27699880))@$        float3 b = float3(3.90307140, 3.21182957, 3.96587128) * (x - float3(0.11748627, 0.86755042, 0.66077860))@$        diff += (w >= 400.0 && w <= 700.0) ? saturate(1.0 - a * a - float3(0.02312639, 0.15225084, 0.52607955)) + saturate(1.0 - b * b - float3(0.84897130, 0.88445281, 0.73949448)) : 0.0@$    }$    col = saturate(diff) * gate + sheen * gate * pow(saturate(dot(dir, nh) * 0.5 + 0.5), 16.0)@$    glint = pow(saturate(1.0 - g * 4.0), 4.0) * gate@$}$return float4(col, glint) * lit@;4;Create;4;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;type;FLOAT;0;In;;Inherit;False;False;normalTS;FLOAT3;0,0,1;In;;Inherit;False;CardFoilPattern;True;False;0;;False;4;0;FLOAT2;0,0;False;1;FLOAT3;0,0,0;False;2;FLOAT;0;False;3;FLOAT3;0,0,1;False;1;FLOAT4;0
 Node;AmplifyShaderEditor.TemplateMultiPassMasterNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;0;0,0;Float;False;False;-1;3;AmplifyShaderEditor.MaterialInspector;0;3;New Amplify Shader;ed95fe726fd7b4644bb42f4d1ddd2bcd;True;ExtraPrePass;0;0;ExtraPrePass;6;False;True;0;1;False;;0;False;;0;1;False;;0;False;;True;0;False;;0;False;;False;False;False;False;False;False;False;False;False;True;0;False;;False;True;0;False;;False;True;True;True;True;True;0;False;;False;False;False;False;False;False;False;True;False;0;False;;255;False;;255;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;False;True;1;False;;True;3;False;;False;False;True;3;RenderType=Opaque=RenderType;Queue=Geometry=Queue=0;DisableBatching=False=DisableBatching;True;3;True;12;all;0;False;True;1;1;False;;0;False;;0;1;False;;0;False;;False;False;False;False;False;False;False;False;False;False;False;False;True;0;False;;False;True;True;True;True;True;0;False;;False;False;False;False;False;False;False;True;False;0;False;;255;False;;255;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;False;True;1;False;;True;3;False;;True;True;0;False;;0;False;;False;True;1;LightMode=ForwardBase;False;False;0;;0;0;Standard;0;False;0
 Node;AmplifyShaderEditor.TemplateMultiPassMasterNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;2;0,0;Float;False;False;-1;3;AmplifyShaderEditor.MaterialInspector;0;3;New Amplify Shader;ed95fe726fd7b4644bb42f4d1ddd2bcd;True;ForwardAdd;0;2;ForwardAdd;0;False;True;0;1;False;;0;False;;0;1;False;;0;False;;True;0;False;;0;False;;False;False;False;False;False;False;False;False;False;True;0;False;;False;True;0;False;;False;True;True;True;True;True;0;False;;False;False;False;False;False;False;False;True;False;0;False;;255;False;;255;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;False;True;1;False;;True;3;False;;False;False;True;3;RenderType=Opaque=RenderType;Queue=Geometry=Queue=0;DisableBatching=False=DisableBatching;True;3;True;12;all;0;False;True;4;1;False;;1;False;;0;1;False;;0;False;;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;True;2;False;;False;False;False;True;1;LightMode=ForwardAdd;False;False;0;;0;0;Standard;0;False;0
 Node;AmplifyShaderEditor.TemplateMultiPassMasterNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;3;0,0;Float;False;False;-1;3;AmplifyShaderEditor.MaterialInspector;0;3;New Amplify Shader;ed95fe726fd7b4644bb42f4d1ddd2bcd;True;Deferred;0;3;Deferred;0;False;True;0;1;False;;0;False;;0;1;False;;0;False;;True;0;False;;0;False;;False;False;False;False;False;False;False;False;False;True;0;False;;False;True;0;False;;False;True;True;True;True;True;0;False;;False;False;False;False;False;False;False;True;False;0;False;;255;False;;255;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;0;False;;False;True;1;False;;True;3;False;;False;False;True;3;RenderType=Opaque=RenderType;Queue=Geometry=Queue=0;DisableBatching=False=DisableBatching;True;3;True;12;all;0;False;False;False;False;False;False;False;False;False;False;False;False;True;0;False;;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;True;1;LightMode=Deferred;False;False;0;;0;0;Standard;0;False;0
@@ -3263,6 +4174,8 @@ WireConnection;120;5;109;0
 WireConnection;120;6;123;0
 WireConnection;120;7;124;0
 WireConnection;120;8;125;0
+WireConnection;120;9;163;0
+WireConnection;120;10;170;0
 WireConnection;126;1;117;0
 WireConnection;122;0;113;0
 WireConnection;122;1;120;0
@@ -3270,12 +4183,24 @@ WireConnection;130;0;41;1
 WireConnection;130;1;144;0
 WireConnection;130;2;70;4
 WireConnection;130;3;123;0
+WireConnection;130;4;163;0
+WireConnection;130;5;170;0
+WireConnection;130;6;117;0
+WireConnection;130;7;121;0
+WireConnection;130;8;125;0
 WireConnection;131;0;115;0
 WireConnection;131;1;130;0
 WireConnection;131;2;117;0
 WireConnection;131;3;121;0
 WireConnection;131;4;124;0
 WireConnection;131;5;125;0
+WireConnection;131;6;163;0
+WireConnection;131;7;170;0
+WireConnection;132;0;144;0
+WireConnection;132;1;119;0
+WireConnection;132;2;130;0
+WireConnection;154;0;144;0
+WireConnection;154;1;130;0
 WireConnection;140;1;69;0
 WireConnection;141;1;43;0
 WireConnection;144;0;126;0
@@ -3289,15 +4214,18 @@ WireConnection;145;2;41;1
 WireConnection;152;0;122;0
 WireConnection;152;1;150;0
 WireConnection;152;2;151;0
-WireConnection;132;0;144;0
-WireConnection;132;1;123;0
-WireConnection;132;2;119;0
+WireConnection;163;0;117;0
+WireConnection;163;1;41;1
+WireConnection;163;2;142;0
+WireConnection;163;3;143;0
+WireConnection;170;0;117;0
+WireConnection;170;1;121;0
+WireConnection;170;2;163;0
+WireConnection;170;3;127;0
 WireConnection;1;0;131;0
 WireConnection;1;1;127;0
-WireConnection;154;0;144;0
-WireConnection;154;1;130;0
 WireConnection;1;4;154;0
 WireConnection;1;5;132;0
 WireConnection;1;2;152;0
 ASEEND*/
-//CHKSM=947982B00574B4798D3AD41AC6416D417BAAAA9B
+//CHKSM=16C4EBBC85786D30C32BDDBA52AC791DC377F7B6
