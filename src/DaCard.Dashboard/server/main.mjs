@@ -17,7 +17,7 @@ import { exportCollection, importZip, inspectZip } from './exchange.mjs';
 import { hex } from './ids.mjs';
 import { THUMB_VERSION } from './schema.mjs';
 
-export const VERSION = '2.0.0';
+export const VERSION = '2.0.1';
 
 const args = process.argv.slice(2);
 const option = (name) => {

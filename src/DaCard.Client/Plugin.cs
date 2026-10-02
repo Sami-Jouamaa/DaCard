@@ -5,7 +5,7 @@ using SPT.Reflection.Patching;
 
 namespace DaCard.Client
 {
-    [BepInPlugin("com.guro.dacard", "DaCard", "2.0.0")]
+    [BepInPlugin("com.guro.dacard", "DaCard", "2.0.1")]
     public class Plugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
@@ -31,7 +31,7 @@ namespace DaCard.Client
                 new GridItemNamePatch(),
                 new InspectCaptionPatch());
             WorldCamera.Enable();
-            Log.LogInfo($"DaCard 2.0.0 loaded, {CardRegistry.Count} card(s) from the server");
+            Log.LogInfo($"DaCard 2.0.1 loaded, {CardRegistry.Count} card(s) from the server");
         }
 
         private static void Enable(params ModulePatch[] patches)
