@@ -1,3 +1,4 @@
+using DaCard.Server.Storage;
 using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
@@ -13,14 +14,15 @@ using Path = System.IO.Path;
 
 namespace DaCard.Server;
 
-[Injectable(TypePriority = OnLoadOrder.SaveCallbacks + 1)]
+[Injectable(TypePriority = OnLoadOrder.SaveCallbacks + 2)]
 public class RetiredItemCleanup(
     ISptLogger<RetiredItemCleanup> logger,
     ItemLedger ledger,
     SaveServer saveServer,
     TemplateTable templates,
     TradersTable traders,
-    MailSendService mailSendService) : IOnLoad
+    MailSendService mailSendService,
+    CardIndex index) : IOnLoad
 {
     private const string Roubles = "5449016a4bdc2d6f028b456f";
     private const int RoublesStack = 500000;
@@ -45,6 +47,7 @@ public class RetiredItemCleanup(
     }
 
     private Dictionary<MongoId, HashSet<string>> _slots = new();
+    private Dictionary<MongoId, Dictionary<string, string>> _pockets = new();
 
     public async Task OnLoadAsync(CancellationToken cancellationToken)
     {
@@ -54,6 +57,8 @@ public class RetiredItemCleanup(
         _slots = ledger.Binders.Concat(ledger.Cards)
             .Where(templates.Items.ContainsKey)
             .ToDictionary(t => t, t => (templates.Items[t].Properties?.Slots ?? []).Select(s => s.Name ?? "").ToHashSet());
+        _pockets = ledger.Binders.ToDictionary(t => t, t => (ledger.Get(t)?.Slots ?? []).Where(s => s.Card != null)
+            .GroupBy(s => s.Name).ToDictionary(g => g.Key, g => g.First().Card!));
 
         foreach (var (sessionId, profile) in saveServer.GetProfiles().ToList())
         {
@@ -108,7 +113,7 @@ public class RetiredItemCleanup(
                 yield return production.Products;
     }
 
-    private static IEnumerable<List<Item>> PresetLists(SptProfile profile)
+    internal static IEnumerable<List<Item>> PresetLists(SptProfile profile)
     {
         foreach (var build in profile.UserBuildData?.EquipmentBuilds ?? [])
             yield return build.Items;
@@ -136,13 +141,16 @@ public class RetiredItemCleanup(
             yield return scav;
     }
 
+    private bool Removable(Item item) =>
+        ledger.IsRemovable(item.Template) || (ledger.IsCardItem(item.Template) && CardCopies.Read(item) is { } stamp && !index.Stored.Contains(stamp.Card));
+
     private bool NeedsStripping(SptProfile profile) =>
-        PresetLists(profile).Any(items => items.Any(i => ledger.IsRemovable(i.Template)))
+        PresetLists(profile).Any(items => items.Any(Removable))
         || Characters(profile).Any(c => (c.Encyclopedia?.Keys.Any(ledger.IsRemovable) ?? false) || (c.WishList?.Keys.Any(ledger.IsRemovable) ?? false));
 
     private HashSet<MongoId> Strip(List<Item> items)
     {
-        var gone = items.Where(i => ledger.IsRemovable(i.Template)).Select(i => i.Id).ToHashSet();
+        var gone = items.Where(Removable).Select(i => i.Id).ToHashSet();
         if (gone.Count == 0)
             return gone;
         var children = items.Where(i => i.ParentId != null).ToLookup(i => i.ParentId!);
@@ -165,7 +173,7 @@ public class RetiredItemCleanup(
 
     private bool NeedsCleaning(List<Item> items)
     {
-        if (items.Any(i => ledger.IsRemovable(i.Template)))
+        if (items.Any(Removable))
             return true;
         var byId = items.GroupBy(i => i.Id.ToString()).ToDictionary(g => g.Key, g => g.First());
         return items.Any(i => i.ParentId != null && byId.TryGetValue(i.ParentId, out var parent)
@@ -174,7 +182,13 @@ public class RetiredItemCleanup(
     }
 
     private bool OutOfSlot(Item item, Item parent) =>
-        _slots.TryGetValue(parent.Template, out var slots) ? item.SlotId == null || !slots.Contains(item.SlotId) : ledger.IsSticker(item.Template);
+        _slots.TryGetValue(parent.Template, out var slots)
+            ? item.SlotId == null || !slots.Contains(item.SlotId) || WrongPocket(item, parent)
+            : ledger.IsSticker(item.Template);
+
+    private bool WrongPocket(Item item, Item parent) =>
+        _pockets.TryGetValue(parent.Template, out var pockets) && item.SlotId != null && pockets.TryGetValue(item.SlotId, out var card)
+        && CardCopies.Read(item) is { } stamp && !stamp.Card.Equals(card, StringComparison.OrdinalIgnoreCase);
 
     private Report Clean(SptProfile profile)
     {
@@ -261,7 +275,7 @@ public class RetiredItemCleanup(
         {
             if (!fate.TryAdd(item.Id, Fate.Keep))
                 return;
-            fate[item.Id] = ledger.IsRemovable(item.Template) ? Fate.Remove
+            fate[item.Id] = Removable(item) ? Fate.Remove
                 : ledger.IsSticker(item.Template) && (parent == null || parentFate == Fate.Remove || OutOfSlot(item, parent)) ? Fate.Remove
                 : parentFate == Fate.Remove ? Fate.MoveRoot
                 : parentFate is Fate.MoveRoot or Fate.MoveChild ? Fate.MoveChild

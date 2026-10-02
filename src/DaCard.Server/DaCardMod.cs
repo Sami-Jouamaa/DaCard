@@ -13,6 +13,7 @@ using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 using SPTarkov.Server.Core.Models.Spt.Config;
 using SPTarkov.Server.Core.Models.Spt.Mod;
 using SPTarkov.Server.Core.Models.Spt.Tables;
+using SPTarkov.Server.Core.Services.Items;
 using SPTarkov.Server.Core.Services.Modding.Custom;
 using Path = System.IO.Path;
 
@@ -34,8 +35,10 @@ public class DaCardMod(
     BoosterPacks boosterPacks,
     ItemLedger ledger,
     DaCardHandbook handbook,
-    CardStickers stickers,
-    RagfairConfig ragfairConfig) : IOnLoad
+    CardTrading trading,
+    RagfairConfig ragfairConfig,
+    ItemConfig itemConfig,
+    ItemFilterService itemFilterService) : IOnLoad
 {
     public static string DefaultBundle(string type) => $"dacard/item_card_{type}.bundle";
 
@@ -84,130 +87,153 @@ public class DaCardMod(
         var configuredTypes = config.CardTypes.Count > 0 ? config.CardTypes : DefaultCardTypes;
         var cardTypes = AvailableTypes(modPath, configuredTypes);
         index.Types = new Dictionary<string, CardTypeSettings>(cardTypes, StringComparer.OrdinalIgnoreCase);
-        var stickerBundle = cardTypes.Select(t => t.Value.Bundle ?? DefaultBundle(t.Key.ToLowerInvariant())).First();
+        index.LegacyTemplates = store.LegacyTemplates();
 
         var collections = store.Collections();
         var collectionById = collections.ToDictionary(c => c.Id, StringComparer.OrdinalIgnoreCase);
         var layers = store.AllLayers();
         var layersOf = layers.GroupBy(l => (l.OwnerKind, l.OwnerId)).ToDictionary(g => g.Key, g => g.ToList());
-        var stickerArt = store.Images(layers.Where(l => l.Chance < 100).Select(l => l.Id))
-            .Where(i => i.Channel == CardManifests.Albedo).ToDictionary(i => i.SetId, CardManifests.ImageUrl);
 
-        foreach (var collection in collections)
-            foreach (var layer in layersOf.GetValueOrDefault(("collection", collection.Id)) ?? [])
-                RegisterSticker(collection.Id, new StickerOwner($"collection:{collection.Id}", collection.Name), layer, stickerBundle, stickerArt);
-
-        _hidden = store.HiddenLayers();
+        var hidden = store.HiddenLayers();
         var epoch = Hash(JsonSerializer.Serialize(config, DaCardDatabase.Json) + "|" + ModMetadata.CurrentVersion + "|" + string.Join(",", cardTypes.Keys));
         var shownAs = new Dictionary<string, int>();
+        var misplaced = new Dictionary<string, int>();
         var created = new List<CardRow>();
-        var cards = store.Cards();
-        foreach (var card in cards)
+        foreach (var collection in collections)
         {
-            if (!collectionById.ContainsKey(card.CollectionId))
+            index.Rarities[collection.Id] = CardRarities.Of(collection, config);
+            index.FoilTypes[collection.Id] = CardRarities.FoilTypesOf(collection);
+        }
+        foreach (var card in store.Cards())
+        {
+            if (!collectionById.TryGetValue(card.CollectionId, out var collection))
                 continue;
-            var rarity = config.Rarities.GetValueOrDefault(card.Rarity) ?? new RaritySettings();
+            index.Stored.Add(card.Id);
+            var rarities = index.Rarities[collection.Id];
+            var rarity = CardRarities.Find(rarities, card.Rarity);
+            if (rarity == null)
+            {
+                rarity = rarities[0];
+                misplaced[$"{collection.Name}: {card.Rarity}"] = misplaced.GetValueOrDefault($"{collection.Name}: {card.Rarity}") + 1;
+            }
             var (typeName, type) = ResolveType(card, cardTypes, configuredTypes, shownAs);
             var bundle = type.Bundle ?? DefaultBundle(typeName);
             var usesDepth = type.Slots == null || type.Slots.Contains("height", StringComparer.OrdinalIgnoreCase);
+            var declared = card.Type.Trim().ToLowerInvariant();
 
-            var own = layersOf.GetValueOrDefault(("card", card.Id)) ?? [];
-            foreach (var layer in own)
-                RegisterSticker(card.Id, new StickerOwner($"card:{card.Id}", card.Name), layer, stickerBundle, stickerArt);
-            var stack = StickerStack(card, own, layersOf.GetValueOrDefault(("collection", card.CollectionId)) ?? []);
-            foreach (var (key, chance, _, _) in stack)
-                ledger.RecordLayer(card.Id, key, chance);
-
-            if (!CreateItem(card, CardPrice(rarity), rarity, bundle, foil: false, stickers.SlotsFor(card.Id, card.Id, stack)))
+            var template = TemplateFor(collection, rarity.Name, typeName, rarity.Settings, bundle);
+            if (template == null)
                 continue;
-            var hasFoil = CreateItem(card, FoilPrice(config, rarity), rarity, bundle, foil: true, stickers.SlotsFor(card.FoilId, card.Id, stack));
+
+            var foilChance = Math.Clamp(collection.FoilChance ?? config.Foil.Percent, 0, 100);
+            var stack = RollLayers(card, layersOf.GetValueOrDefault(("card", card.Id)) ?? [],
+                layersOf.GetValueOrDefault(("collection", card.CollectionId)) ?? [], hidden, foilChance);
+            if (usesDepth || declared != typeName)
+                stack.Insert(0, new RollLayer(CardManifests.PictureLayerId, 100, 0, 0, true, foilChance, null));
+            foreach (var layer in stack.Where(l => l.Group == null))
+                ledger.RecordLayer(card.Id, layer.Id, layer.Chance);
+            index.Layers[card.Id] = stack.ToArray();
+
             created.Add(card);
-            index.Cards[card.Id] = new CreatedCard(card.Id, card.FoilId, card.CollectionId, card.Rarity, card.Type.Trim().ToLowerInvariant(), typeName, usesDepth, hasFoil);
-            index.Versions[card.Id] = Hash($"{card.UpdatedAt}|{collectionById[card.CollectionId].UpdatedAt}|{typeName}|{usesDepth}|{epoch}");
-            if (hasFoil)
-                index.FoilToBase[card.FoilId] = card.Id;
+            index.Cards[card.Id] = new CreatedCard(card.Id, card.CollectionId, rarity.Name, rarity.Rank, declared, typeName, usesDepth, template.Id);
+            index.Versions[card.Id] = Hash($"{card.UpdatedAt}|{collection.UpdatedAt}|{typeName}|{usesDepth}|{template.Id}|{epoch}");
         }
+        index.Seal();
 
         foreach (var (what, count) in shownAs)
             logger.Info($"[DaCard] {count} {what}: that card type's bundle is missing, so they are shown flat.");
+        foreach (var (what, count) in misplaced)
+            logger.Warning($"[DaCard] {count} card(s) of {what}: the collection has no such rarity, so they count as its first rarity. Pick their rarity in the dashboard.");
 
         if (collections.Count > 0 && !File.Exists(Path.Combine(modPath, "bundles", CollectionBinders.BundlePath)))
             logger.Error($"[DaCard] bundles/{CollectionBinders.BundlePath} is missing, binders will have no model. Build the bundles in Unity.");
         var binderEntries = binders.CreateBinders(collections, created, store.BinderStickers(), config.Binders);
 
-        var packs = boosterPacks.Create(store.Packs(), config, FoilShare(config));
+        var packs = boosterPacks.Create(store.Packs(), config);
         if (packs.Count > 0 && !File.Exists(Path.Combine(modPath, "bundles", BoosterPacks.BundlePath)))
             logger.Error($"[DaCard] bundles/{BoosterPacks.BundlePath} is missing, booster packs will have no model. Build the bundles in Unity.");
 
-        ledger.RetireMissing(modPath, config.RetiredItems, store.Exists);
+        ledger.RetireMissing(modPath, config.RetiredItems, store.Exists, index.LegacyTemplates.ContainsKey);
 
         index.Client = new ClientIndex
         {
             Slots = slots,
             BackProperty = string.IsNullOrWhiteSpace(config.BackProperty) ? "_CARD_BACK" : config.BackProperty,
             OverlayProperty = string.IsNullOrWhiteSpace(config.OverlayProperty) ? "_CARD_FRONT_BORDER" : config.OverlayProperty,
-            Cards = index.Cards.Keys.ToList(),
             Versions = new Dictionary<string, string>(index.Versions),
-            Foils = new Dictionary<string, string>(index.FoilToBase),
+            Templates = index.Templates.Values.ToDictionary(t => t.Id, t => new ClientTemplate { Collection = t.CollectionId, Rarity = t.Rarity, Price = t.Price }),
             Binders = binderEntries,
             Packs = packs,
-            Stickers = index.StickerOf.Values.Distinct().ToDictionary(t => t, t => _stickerArt.GetValueOrDefault(t)),
             Fonts = layers.Any(l => !string.IsNullOrWhiteSpace(l.Text?.Font)) || collections.Any(c => c.CardText?.Name?.Font != null || c.CardText?.Description?.Font != null)
         };
 
-        stickers.Enable();
-        cardLoot.Configure(config, index.Cards.Values.ToList(), FoilShare(config), boosterPacks.Loot);
+        Blacklist(index.Templates.Keys.Concat(ledger.Placeholders).Select(t => new MongoId(t)).ToList());
+        trading.Enable();
+        cardLoot.Configure(config, boosterPacks.Loot);
         if (geek.Add(modPath))
         {
             AddTraderOffers(binderEntries.ToDictionary(b => b.Tpl, _ => config.Binders.Price), "binder");
             AddTraderOffers(boosterPacks.Offers, "booster pack");
-            RaritySettings RarityOf(CreatedCard c) => config.Rarities.GetValueOrDefault(c.Rarity) ?? new RaritySettings();
             if (config.Geek.SellCards)
-                AddTraderOffers(index.Cards.Values.ToDictionary(c => c.Id, c => CardPrice(RarityOf(c))), "card");
-            if (config.Geek.SellFoilCards)
-                AddTraderOffers(index.Cards.Values.Where(c => c.HasFoil).ToDictionary(c => c.FoilId, c => FoilPrice(config, RarityOf(c))), "foil card");
-            SetBuyers(index.Cards.Keys.Concat(index.FoilToBase.Keys).Concat(binderEntries.Select(b => b.Tpl))
-                .Concat(packs.Select(p => p.Tpl)).Concat(stickers.Stickers).Concat(ledger.Placeholders).ToList());
+                AddTraderOffers(index.Templates.Values.Where(t => index.CardsOfTemplate.ContainsKey(t.Id)).ToDictionary(t => t.Id, t => t.Price), "random card");
+            SetBuyers(index.Templates.Keys.Concat(binderEntries.Select(b => b.Tpl)).Concat(packs.Select(p => p.Tpl)).Concat(ledger.Placeholders).ToList());
         }
 
-        var perRarity = string.Join(", ", CardCatalog.RarityOrder.Select(r => $"{r} {index.Cards.Values.Count(c => c.Rarity == r)}"));
+        var perRarity = string.Join(", ", index.Cards.Values.GroupBy(c => c.Rarity, StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Min(c => c.RarityRank))
+            .Select(g => $"{g.Key} {g.Count()}"));
         var perType = string.Join(", ", index.Cards.Values.GroupBy(c => c.TypeName).Select(g => $"{g.Count()} {g.Key.ToUpperInvariant()}"));
-        logger.Success($"[DaCard] {ModMetadata.CurrentVersion} loaded {index.Cards.Count} card(s) + their foil versions ({FoilShare(config):0.#%} of cards found): " +
+        logger.Success($"[DaCard] {ModMetadata.CurrentVersion} loaded {index.Cards.Count} card(s) as {index.Templates.Count} item(s): " +
                        $"{perRarity} ({perType}); {binderEntries.Count} collection binder(s); {packs.Count} booster pack(s); {collections.Count} collection(s)");
         return Task.CompletedTask;
     }
 
     private static string Hash(string text) => Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(text)))[..12].ToLowerInvariant();
 
-    private readonly Dictionary<string, string?> _stickerArt = new(StringComparer.OrdinalIgnoreCase);
-    private Dictionary<string, (bool CollectionLayers, List<string> Hidden)> _hidden = new();
+    public static string TemplateId(CollectionRow collection, string rarity, string typeName) =>
+        CardCatalog.IdFor($"cardtpl:{collection.IdKey}:{rarity}:{typeName}");
 
-    private void RegisterSticker(string ownerId, StickerOwner owner, LayerRow layer, string bundle, Dictionary<string, string> art)
+    private CardTemplate? TemplateFor(CollectionRow collection, string rarityName, string typeName, RaritySettings rarity, string bundle)
     {
-        var tpl = stickers.Register(ownerId, owner, layer, bundle);
-        if (tpl == null)
-            return;
-        index.StickerOf[CardIndex.StickerKey(ownerId, layer.Key)] = tpl;
-        _stickerArt[tpl] = art.GetValueOrDefault(layer.Id);
+        var tpl = TemplateId(collection, rarityName, typeName);
+        if (index.Templates.TryGetValue(tpl, out var existing))
+            return existing;
+        var price = CardPrice(rarity);
+        if (!CreateTemplate(tpl, collection, rarityName, typeName, rarity, bundle, price))
+            return null;
+        var template = new CardTemplate(tpl, collection.Id, rarityName, typeName, price);
+        index.Templates[tpl] = template;
+        return template;
     }
 
-    private List<(string Key, double Chance, string? Sticker, string? Name)> StickerStack(CardRow card, List<LayerRow> own, List<LayerRow> collection)
+    private static List<RollLayer> RollLayers(CardRow card, List<LayerRow> own, List<LayerRow> collection,
+        Dictionary<string, (bool CollectionLayers, List<string> Hidden)> hiddenLayers, double foilChance)
     {
-        var found = _hidden.TryGetValue(card.Id, out var h);
+        var found = hiddenLayers.TryGetValue(card.Id, out var h);
         var hidden = (found ? h.Hidden : []).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var hideAll = found && !h.CollectionLayers;
-        (string, double, string?, string?) Own(LayerRow l) =>
-            (l.Key, Math.Clamp(l.Chance, 0, 100), index.StickerOf.GetValueOrDefault(CardIndex.StickerKey(card.Id, l.Key)), l.Name);
-        (string, double, string?, string?) Coll(LayerRow l) =>
-            (l.Key, hideAll || hidden.Contains(l.Id) ? 0 : Math.Clamp(l.Chance, 0, 100), index.StickerOf.GetValueOrDefault(CardIndex.StickerKey(card.CollectionId, l.Key)), l.Name);
-        var stack = new List<(string Key, double Chance, string? Sticker, string? Name)>();
+        RollLayer Make(LayerRow l, double chance) => new(l.Id, chance, Math.Max(0, l.Price), l.PricePercent, l.CanBeFoil,
+            Math.Clamp(l.FoilChance ?? foilChance, 0, 100), CardRarities.FoilTypes.Contains(l.FoilType) ? l.FoilType : null);
+        IEnumerable<RollLayer> Expand(LayerRow l, double chance, List<LayerRow> rows)
+        {
+            if (!l.IsVariantLayer)
+            {
+                yield return Make(l, chance);
+                yield break;
+            }
+            yield return new RollLayer(l.Id, chance, 0, 0, false, 0, null, null, true);
+            foreach (var variant in rows.Where(v => v.ParentId == l.Id).OrderBy(v => v.Position))
+                yield return Make(variant, Math.Max(0, variant.Chance)) with { Group = l.Id };
+        }
+        IEnumerable<RollLayer> Own(LayerRow l) => Expand(l, Math.Clamp(l.Chance, 0, 100), own);
+        IEnumerable<RollLayer> Coll(LayerRow l) => Expand(l, hideAll || hidden.Contains(l.Id) ? 0 : Math.Clamp(l.Chance, 0, 100), collection);
+        var stack = new List<RollLayer>();
         foreach (var face in new[] { "front", "back" })
         {
-            var mine = own.Where(l => l.Face == face).OrderBy(l => l.Position).ToList();
-            var theirs = collection.Where(l => l.Face == face).OrderBy(l => l.Position).ToList();
-            var part = mine.Where(l => !l.Over).Select(Own).Concat(theirs.Select(Coll)).Concat(mine.Where(l => l.Over).Select(Own)).ToList();
+            var mine = own.Where(l => l.Face == face && l.ParentId == null).OrderBy(l => l.Position).ToList();
+            var theirs = collection.Where(l => l.Face == face && l.ParentId == null).OrderBy(l => l.Position).ToList();
+            var part = mine.Where(l => !l.Over).SelectMany(Own).Concat(theirs.SelectMany(Coll)).Concat(mine.Where(l => l.Over).SelectMany(Own)).ToList();
             if (face == "back" && part.Count == 0)
-                part = collection.Where(l => l.Face == "default-back").Select(Coll).ToList();
+                part = collection.Where(l => l.Face == "default-back" && l.ParentId == null).SelectMany(Coll).ToList();
             stack.AddRange(part);
         }
         return stack;
@@ -246,52 +272,35 @@ public class DaCardMod(
         return (fallback, types[fallback]);
     }
 
-    private static double CardPrice(RaritySettings rarity) => rarity.Price > 0 ? rarity.Price : 1000;
+    public static double CardPrice(RaritySettings rarity) => rarity.Price > 0 ? rarity.Price : 1000;
 
-    private static double FoilPrice(DaCardConfig config, RaritySettings rarity) =>
-        Math.Max(1, Math.Round(CardPrice(rarity) * config.Foil.PriceMultiplier));
-
-    private static double FoilShare(DaCardConfig config) => Math.Clamp(config.Foil.Percent, 0, 100) / 100;
-
-    private bool CreateItem(CardRow card, double price, RaritySettings rarity, string bundle, bool foil, List<Slot> slots)
+    private bool CreateTemplate(string tpl, CollectionRow collection, string rarityName, string typeName, RaritySettings rarity, string bundle, double price)
     {
-        var tint = !card.Rarity.Equals("Common", StringComparison.OrdinalIgnoreCase)
+        var tint = !rarityName.Equals("Common", StringComparison.OrdinalIgnoreCase)
                    && Regex.IsMatch(rarity.Color, "^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
             ? "#" + rarity.Color.TrimStart('#')
             : null;
-        string Colored(string? name) => tint != null && name != null ? $"<color={tint}>{name}</color>" : name!;
-        string Name(string? name) => Colored(foil && name != null ? name + " (Foil)" : name);
-        string ShortName(string? name) => Colored(foil && name != null ? name + " (F)" : name);
+        string Colored(string name) => tint != null ? $"<color={tint}>{name}</color>" : name;
 
-        var locales = new Dictionary<string, LocaleDetails>
+        LocaleDetails Locale(string name, string shortName) => new()
         {
-            ["en"] = new()
-            {
-                Name = Name(card.Name),
-                ShortName = ShortName(card.ShortName ?? card.Name),
-                Description = card.Description ?? $"{card.Rarity} {(foil ? "foil " : "")}collectible card."
-            }
+            Name = Colored($"{name} card ({rarityName})"),
+            ShortName = Colored(shortName),
+            Description = $"A {rarityName} card from the {name} collection."
         };
-        foreach (var (lang, text) in card.Locales ?? new())
-        {
-            locales[lang] = new LocaleDetails
-            {
-                Name = Name(text.Name ?? card.Name),
-                ShortName = ShortName(text.ShortName ?? text.Name ?? card.ShortName ?? card.Name),
-                Description = text.Description ?? card.Description
-            };
-        }
+        var locales = new Dictionary<string, LocaleDetails> { ["en"] = Locale(collection.Name, collection.ShortName ?? collection.Name) };
+        foreach (var (lang, text) in collection.Locales ?? new())
+            locales[lang] = Locale(text.Name ?? collection.Name, text.ShortName ?? text.Name ?? collection.ShortName ?? collection.Name);
 
-        var tpl = foil ? card.FoilId : card.Id;
         var result = customItemService.CreateItemFromClone(new NewItemFromCloneDetails
         {
             ItemTplToClone = CollectionBinders.CloneTpl,
             ParentId = CollectionBinders.ParentCompoundItem,
             NewId = new MongoId(tpl),
-            NewItemName = "dacard_" + card.IdKey.ToLowerInvariant().Replace('/', '_') + (foil ? "_foil" : ""),
+            NewItemName = $"dacard_cards_{Regex.Replace(collection.IdKey.ToLowerInvariant(), "[^a-z0-9_]", "_")}_{rarityName.ToLowerInvariant()}_{typeName}",
             FleaPriceRoubles = price,
             HandbookPriceRoubles = price,
-            HandbookParentId = foil ? DaCardHandbook.Foils : DaCardHandbook.Cards,
+            HandbookParentId = DaCardHandbook.Cards,
             AddToHandbook = true,
             AddToFleaPriceDb = true,
             Locales = locales,
@@ -310,34 +319,37 @@ public class DaCardMod(
                 MergesWithChildren = false,
                 HideEntrails = false,
                 Grids = [],
-                Slots = slots
+                Slots = []
             }
         }, Assembly.GetExecutingAssembly());
 
         if (!result.Success)
         {
-            logger.Error($"[DaCard] Could not create card '{card.Name}'{(foil ? " (foil)" : "")}: {string.Join("; ", result.Errors ?? [])}");
+            logger.Error($"[DaCard] Could not create the {rarityName} {typeName.ToUpperInvariant()} cards of '{collection.Name}': {string.Join("; ", result.Errors ?? [])}");
             return false;
         }
 
         ragfairConfig.Dynamic.Blacklist.Custom.Add(new MongoId(tpl));
         ledger.Record(tpl, new LedgerItem
         {
-            Kind = foil ? ItemLedger.Foil : ItemLedger.Card,
-            Key = card.LegacyKey ?? card.IdKey,
-            Name = foil ? $"{card.Name} (Foil)" : card.Name,
+            Kind = ItemLedger.CardTemplate,
+            Key = $"{collection.IdKey}:{rarityName}:{typeName}",
+            Name = $"{collection.Name} card ({rarityName})",
             Price = price,
             Background = rarity.Background,
             Bundle = bundle,
-            Slots = slots.Select(s => new LedgerSlot
-            {
-                Name = s.Name!,
-                Id = s.Id.ToString()!,
-                Label = stickers.SlotsOf(tpl).FirstOrDefault(x => x.Name == s.Name)?.Label,
-                Filter = s.Properties?.Filters?.FirstOrDefault()?.Filter?.Select(f => f.ToString()).ToList() ?? []
-            }).ToList()
+            Owner = collection.Id
         });
         return true;
+    }
+
+    private void Blacklist(List<MongoId> tpls)
+    {
+        if (tpls.Count == 0)
+            return;
+        itemFilterService.AddItemToBlacklistCache(tpls);
+        itemConfig.Blacklist.UnionWith(tpls);
+        itemConfig.RewardItemBlacklist.UnionWith(tpls);
     }
 
     private void AddTraderOffers(Dictionary<string, double> prices, string what)

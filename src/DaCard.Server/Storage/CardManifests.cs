@@ -8,6 +8,7 @@ public class CardManifests(CardStore store, CardIndex index)
     public const string ImageRoute = "/dacard/img/";
     public const string FontRoute = "/dacard/font/";
     public const string Albedo = "albedo";
+    public const string PictureLayerId = "picture";
 
     public static string ImageUrl(ImageRow image) => $"{ImageRoute}v{image.UpdatedAt}/{image.SetId}_{image.Channel}.png".ToLowerInvariant();
 
@@ -20,25 +21,18 @@ public class CardManifests(CardStore store, CardIndex index)
         return $"{FontRoute}{version}{ownerId}/{file}";
     }
 
-    public CardManifestEntry? Get(string tpl, bool remember = true)
+    public CardManifestEntry? Get(string cardId, bool remember = true)
     {
-        var cached = index.Cached(tpl);
+        var cached = index.Cached(cardId);
         if (cached != null)
             return cached;
-        var created = index.Find(tpl);
+        var created = index.Find(cardId);
         if (created == null)
             return null;
         var entry = Build(created);
-        if (entry == null)
-            return null;
-        var foil = entry with { Tpl = created.FoilId, Foil = true, BaseTpl = created.Id };
-        if (remember)
-        {
+        if (entry != null && remember)
             index.Remember(created.Id, entry);
-            if (created.HasFoil)
-                index.Remember(created.FoilId, foil);
-        }
-        return tpl.Equals(created.Id, StringComparison.OrdinalIgnoreCase) ? entry : created.HasFoil ? foil : null;
+        return entry;
     }
 
     private CardManifestEntry? Build(CreatedCard created)
@@ -47,8 +41,9 @@ public class CardManifests(CardStore store, CardIndex index)
         if (details == null)
             return null;
         var card = details.Card;
-        var config = index.Config;
-        var rarity = config.Rarities.GetValueOrDefault(card.Rarity) ?? new RaritySettings();
+        var resolved = CardRarities.Find(index.RaritiesOf(card.CollectionId), created.Rarity);
+        var rarity = resolved?.Settings ?? new RaritySettings();
+        var glowDefaults = resolved is { Custom: true } ? null : GlowSettings.Defaults.GetValueOrDefault(created.Rarity);
         var collection = store.Collection(card.CollectionId);
         var layers = store.LayersOf(card.Id, card.CollectionId);
         var images = store.Images(layers.Select(l => l.Id).Append(card.Id))
@@ -64,27 +59,38 @@ public class CardManifests(CardStore store, CardIndex index)
             var entry = Aligned(Entry(layer, frame), details.TextAlign);
             return !details.CollectionLayers || hidden.Contains(layer.Id) ? entry with { Chance = 0 } : entry;
         }
+        IEnumerable<LayerManifestEntry> Expand(LayerRow layer, Func<LayerRow, LayerManifestEntry> entry) =>
+            layer.IsVariantLayer
+                ? layers.Where(v => v.ParentId == layer.Id).OrderBy(v => v.Position).Select(v => entry(v) with { Group = layer.Id })
+                : [entry(layer)];
         List<LayerManifestEntry> Stack(string face)
         {
-            var own = layers.Where(l => !l.IsCollection && l.Face == face).OrderBy(l => l.Position).ToList();
-            var coll = layers.Where(l => l.IsCollection && l.Face == face).OrderBy(l => l.Position).ToList();
-            return own.Where(l => !l.Over).Select(l => Entry(l, false))
-                .Concat(coll.Select(l => CollectionEntry(l, face == "front")))
-                .Concat(own.Where(l => l.Over).Select(l => Entry(l, false)))
+            var own = layers.Where(l => !l.IsCollection && l.Face == face && l.ParentId == null).OrderBy(l => l.Position).ToList();
+            var coll = layers.Where(l => l.IsCollection && l.Face == face && l.ParentId == null).OrderBy(l => l.Position).ToList();
+            return own.Where(l => !l.Over).SelectMany(l => Expand(l, v => Entry(v, false)))
+                .Concat(coll.SelectMany(l => Expand(l, v => CollectionEntry(v, face == "front"))))
+                .Concat(own.Where(l => l.Over).SelectMany(l => Expand(l, v => Entry(v, false))))
                 .ToList();
         }
 
         var front = Stack("front");
         var back = Stack("back");
         if (back.Count == 0)
-            back.AddRange(layers.Where(l => l.IsCollection && l.Face == "default-back").OrderBy(l => l.Position).Select(l => Entry(l, false)));
+            back.AddRange(layers.Where(l => l.IsCollection && l.Face == "default-back" && l.ParentId == null).OrderBy(l => l.Position)
+                .SelectMany(l => Expand(l, v => Entry(v, false))));
         if (!created.UsesDepth && created.DeclaredType != created.TypeName && cardImages.ContainsKey(Albedo))
             front.Insert(0, PictureLayer(cardImages, details.Animation));
 
         return new CardManifestEntry
         {
             Tpl = card.Id,
-            Rarity = card.Rarity,
+            Template = created.Template,
+            Price = index.Templates.GetValueOrDefault(created.Template)?.Price ?? 0,
+            Name = card.Name,
+            ShortName = card.ShortName,
+            Description = card.Description,
+            Locales = card.Locales,
+            Rarity = created.Rarity,
             Type = created.TypeName,
             Floats = details.Floats is { Count: > 0 } own
                 ? type.Floats.Concat(own).GroupBy(p => p.Key).ToDictionary(g => g.Key, g => g.Last().Value)
@@ -93,13 +99,11 @@ public class CardManifests(CardStore store, CardIndex index)
                 ? index.Slots.Where(s => cardImages.ContainsKey(ChannelOf(s.Suffix)) && (allowed == null || allowed.Contains(ChannelOf(s.Suffix))))
                     .ToDictionary(s => s.Property, s => ImageUrl(cardImages[ChannelOf(s.Suffix)]))
                 : new Dictionary<string, string>(),
-            HoloStrength = details.Holo?.Strength ?? rarity.Holo.Strength ?? 0,
-            HoloPattern = PatternIndex(details.Holo?.Pattern ?? rarity.Holo.Pattern),
-            HoloAngle = details.Holo?.Angle ?? rarity.Holo.Angle ?? 30,
             RarityColor = rarity.Color,
             Glow = (details.Glow ?? new GlowSettings())
-                .Over((rarity.Glow ?? new GlowSettings()).Over(GlowSettings.Defaults.GetValueOrDefault(card.Rarity)))
+                .Over((rarity.Glow ?? new GlowSettings()).Over(glowDefaults))
                 .Resolve(rarity.Color),
+            FoilLayers = (index.Layers.GetValueOrDefault(card.Id) ?? []).Where(l => l.CanFoil && l.FoilChance > 0).Select(l => l.Id).ToList(),
             Collection = collection?.Name,
             Front = front,
             Back = back,
@@ -116,13 +120,15 @@ public class CardManifests(CardStore store, CardIndex index)
         var entry = new LayerManifestEntry
         {
             Key = layer.Key,
+            Layer = layer.Id,
             Chance = Math.Clamp(layer.Chance, 0, 100),
             CanBeFoil = layer.CanBeFoil,
+            Price = Math.Max(0, layer.Price),
+            PricePercent = layer.PricePercent,
             Frame = frame,
             Transform = layer.Transform,
             Roughness = layer.Roughness,
             Metallic = layer.Metallic,
-            Sticker = index.StickerOf.GetValueOrDefault(CardIndex.StickerKey(layer.IsCollection ? collectionId : cardId, layer.Key)),
             Textures = images.Values.ToDictionary(i => i.Channel, ImageUrl),
             Id = layer.TextId,
             Name = string.IsNullOrWhiteSpace(layer.Name) ? null : layer.Name.Trim(),
@@ -151,6 +157,7 @@ public class CardManifests(CardStore store, CardIndex index)
         var entry = new LayerManifestEntry
         {
             Key = "card:card",
+            Layer = PictureLayerId,
             Chance = 100,
             CanBeFoil = true,
             Textures = maps.ToDictionary(m => m, m => ImageUrl(images[m]))
@@ -202,11 +209,4 @@ public class CardManifests(CardStore store, CardIndex index)
             : style with { Font = FontUrl(collection.Id, style.Font) };
         return text with { Name = WithFont(text.Name), Description = WithFont(text.Description) };
     }
-
-    public static int PatternIndex(string? pattern) => pattern?.ToLowerInvariant() switch
-    {
-        "radial" => 1,
-        "sparkle" => 2,
-        _ => 0
-    };
 }

@@ -1,15 +1,18 @@
 {
   "rarities": {
-    "Common":    { "lootPercent": 2.0,  "price": 5000,   "background": "grey",   "color": "#B8BCC4", "holo": { "strength": 0,   "pattern": "linear" },
+    "Common":    { "weight": 68, "price": 5000,   "background": "grey",   "color": "#B8BCC4",
                    "glow": { "strength": 1.1, "color2": "#E8ECF2", "rays": 1, "sparkles": 0.8 } },
-    "Uncommon":  { "lootPercent": 1.0,  "price": 15000,  "background": "green",  "color": "#4FD65A", "holo": { "strength": 0.35, "pattern": "linear", "angle": 30 },
+    "Uncommon":  { "weight": 22, "price": 15000,  "background": "green",  "color": "#4FD65A",
                    "glow": { "strength": 1.1, "color2": "#B8FFB0", "rays": 1, "sparkles": 0.8 } },
-    "Rare":      { "lootPercent": 0.5,  "price": 40000,  "background": "blue",   "color": "#3F8CFF", "holo": { "strength": 0.8, "pattern": "linear", "angle": 30 },
+    "Rare":      { "weight": 7,  "price": 40000,  "background": "blue",   "color": "#3F8CFF",
                    "glow": { "strength": 1.1, "color2": "#7FD4FF", "rays": 1, "sparkles": 0.8 } },
-    "Epic":      { "lootPercent": 0.2,  "price": 100000, "background": "violet", "color": "#B04FFF", "holo": { "strength": 1.2, "pattern": "radial" },
+    "Epic":      { "weight": 2,  "price": 100000, "background": "violet", "color": "#B04FFF",
                    "glow": { "strength": 1.1, "color2": "#3F6BFF", "rays": 1, "sparkles": 0.8 } },
-    "Legendary": { "lootPercent": 0.05, "price": 250000, "background": "yellow", "color": "#FFB32E", "holo": { "strength": 1.5, "pattern": "sparkle" },
+    "Legendary": { "weight": 1,  "price": 250000, "background": "yellow", "color": "#FFB32E",
                    "glow": { "strength": 1.1, "color": "#FFA01C", "color2": "#FF6A00", "rays": 1, "sparkles": 0.8, "smoke": 1 } }
+  },
+  "loot": {
+    "cardPercent": 3.7
   },
   "containers": [
     "578f8778245977358849a9b5",
@@ -40,15 +43,10 @@
     "background": "orange"
   },
   "geek": {
-    "sellCards": false,
-    "sellFoilCards": false
+    "sellCards": false
   },
   "foil": {
-    "percent": 10,
-    "priceMultiplier": 2.0
-  },
-  "packs": {
-    "rarityWeights": { "Common": 68, "Uncommon": 22, "Rare": 7, "Epic": 2, "Legendary": 1 }
+    "percent": 10
   },
   "retiredItems": "remove"
 }

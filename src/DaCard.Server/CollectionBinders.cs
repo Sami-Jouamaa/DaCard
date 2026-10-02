@@ -12,7 +12,8 @@ using SPTarkov.Server.Core.Services.Modding.Custom;
 namespace DaCard.Server;
 
 [Injectable(InjectionType.Singleton)]
-public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemService customItemService, LocaleTable locales, ItemLedger ledger, CardStore store)
+public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemService customItemService, LocaleTable locales, ItemLedger ledger, CardStore store,
+    CardIndex index)
 {
     public const string BundlePath = "dacard/item_binder.bundle";
 
@@ -31,7 +32,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemS
         foreach (var collection in collections)
         {
             var members = (byCollection.GetValueOrDefault(collection.Id) ?? [])
-                .OrderBy(c => Array.IndexOf(CardCatalog.RarityOrder, c.Rarity))
+                .OrderBy(c => index.Cards.GetValueOrDefault(c.Id)?.RarityRank ?? int.MaxValue)
                 .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (members.Count == 0)
@@ -51,7 +52,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemS
                     Parent = new MongoId(collection.Id),
                     Properties = new SlotProperties
                     {
-                        Filters = [new SlotFilter { Shift = 0, Filter = [new MongoId(card.Id), new MongoId(card.FoilId)] }]
+                        Filters = [new SlotFilter { Shift = 0, Filter = [new MongoId(index.Cards[card.Id].Template)] }]
                     },
                     Required = false,
                     MergeSlotWithChildren = false,
@@ -74,7 +75,8 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemS
                     Name = SlotName(card),
                     Id = SlotId(collection, card),
                     Label = card.ShortName ?? card.Name,
-                    Filter = [card.Id, card.FoilId]
+                    Card = card.Id,
+                    Filter = [index.Cards[card.Id].Template]
                 }).ToList()
             });
 
@@ -82,6 +84,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemS
             {
                 Tpl = collection.Id,
                 Collection = collection.Name,
+                Pockets = members.ToDictionary(SlotName, card => card.Id),
                 Stickers = stickers.Where(s => s.CollectionId == collection.Id).OrderBy(s => s.Position).Select(s => new BinderStickerEntry
                 {
                     Image = store.Image(s.SetId, CardManifests.Albedo) is { } image ? CardManifests.ImageUrl(image) : null,
@@ -96,7 +99,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemS
 
     private static string SlotId(CollectionRow collection, CardRow card) => CardCatalog.IdFor($"binder-slot:{collection.IdKey}:{card.IdKey}");
 
-    private static string SlotName(CardRow card) => "cardslot_" + Regex.Replace(card.IdKey.ToLowerInvariant(), "[^a-z0-9_]", "_");
+    public static string SlotName(CardRow card) => "cardslot_" + Regex.Replace(card.IdKey.ToLowerInvariant(), "[^a-z0-9_]", "_");
 
     private bool CreateItem(CollectionRow collection, int cardCount, List<Slot> slots, BinderSettings settings)
     {

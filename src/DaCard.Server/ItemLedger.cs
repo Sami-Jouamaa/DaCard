@@ -23,7 +23,7 @@ public enum RetiredMode
 public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, CustomItemService customItemService, LocaleTable locales, RagfairConfig ragfairConfig,
     TemplateTable templates, TradersTable traders)
 {
-    public const string Card = "card", Foil = "foil", Binder = "binder", Pack = "pack", Sticker = "sticker";
+    public const string Card = "card", Foil = "foil", Binder = "binder", Pack = "pack", Sticker = "sticker", CardTemplate = "cards", Collection = "collection";
 
     public static readonly string Folder = Path.Combine("user", "dacard");
     private static readonly string FilePath = Path.Combine(Folder, "ledger.json");
@@ -32,7 +32,7 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
     private LedgerFile _file = new();
     private readonly HashSet<string> _seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<MongoId> _removable = new();
-    private readonly HashSet<MongoId> _goneStickers = new();
+    private readonly HashSet<MongoId> _legacy = new();
     private Dictionary<string, double> _previousLayers = new();
 
     public bool Ready { get; private set; }
@@ -44,7 +44,7 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
         Ready = false;
         _seen.Clear();
         _removable.Clear();
-        _goneStickers.Clear();
+        _legacy.Clear();
         _previousLayers = new Dictionary<string, double>();
         Placeholders.Clear();
         _file = new LedgerFile();
@@ -94,9 +94,17 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
 
     public bool IsSticker(MongoId tpl) => Get(tpl)?.Kind == Sticker;
 
-    public bool IsRemovable(MongoId tpl) => _goneStickers.Contains(tpl) || _removable.Contains(tpl);
+    public bool IsCardItem(MongoId tpl) => Get(tpl)?.Kind == CardTemplate;
 
-    public void RetireMissing(string modPath, string? mode, Func<string, string, bool> exists)
+    public bool IsLegacy(MongoId tpl) => _legacy.Contains(tpl);
+
+    public bool HasLegacy => _legacy.Count > 0;
+
+    public bool IsRemovable(MongoId tpl) => _removable.Contains(tpl);
+
+    public string? LegacyLayer(MongoId sticker) => Get(sticker) is { Kind: Sticker } item && item.Key.LastIndexOf(':') is var at and >= 0 ? item.Key[(at + 1)..] : null;
+
+    public void RetireMissing(string modPath, string? mode, Func<string, string, bool> exists, Func<string, bool> migratable)
     {
         Mode = ParseMode(mode);
         if (!Ready)
@@ -118,17 +126,15 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
                 if (slot.Label != null)
                     slotLabels.TryAdd(slot.Name, slot.Label);
 
-            if (item.Kind == Sticker)
+            if (item.Kind == Sticker || (item.Kind is Card or Foil && migratable(tpl)))
             {
-                if (item.Owner == null || _seen.Contains(item.Owner) || !OwnerExists(item, exists))
-                    _goneStickers.Add(new MongoId(tpl));
-                else
-                    broken.Add(item);
+                _legacy.Add(new MongoId(tpl));
                 continue;
             }
-            if (exists(item.Kind, tpl))
+            if (item.Kind == CardTemplate ? item.Owner == null || exists(Collection, item.Owner) : exists(item.Kind, tpl))
             {
-                broken.Add(item);
+                if (item.Kind != CardTemplate)
+                    broken.Add(item);
                 continue;
             }
             gone.Add(item);
@@ -217,13 +223,10 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
         return names.Count <= 10 ? string.Join(", ", names) : string.Join(", ", names.Take(10)) + $" and {names.Count - 10} more";
     }
 
-    private static bool OwnerExists(LedgerItem item, Func<string, string, bool> exists) =>
-        exists(Card, item.Owner!) || exists(Binder, item.Owner!);
-
     private bool CreatePlaceholder(string tpl, LedgerItem item, string modPath)
     {
         var binder = item.Kind == Binder;
-        var card = item.Kind is Card or Foil;
+        var card = item.Kind is Card or Foil or CardTemplate;
         var bundle = item.Bundle != null && File.Exists(Path.Combine(modPath, "bundles", item.Bundle)) ? item.Bundle : null;
         var what = item.Kind switch
         {
@@ -291,7 +294,7 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
                     MergesWithChildren = false,
                     HideEntrails = false,
                     Grids = [],
-                    Slots = (item.Slots ?? []).Select(s => CardStickers.TemplateSlot(tpl, s.Name, s.Id, s.Filter.FirstOrDefault() ?? "")).ToList()
+                    Slots = (item.Slots ?? []).Select(s => StickerSlot(tpl, s.Name, s.Id, s.Filter.FirstOrDefault() ?? "")).ToList()
                 }
                 : new TemplateItemProperties
                 {
@@ -312,6 +315,20 @@ public class ItemLedger(ISptLogger<ItemLedger> logger, JsonUtil jsonUtil, Custom
                          "Profiles holding it won't load, and DaCard won't touch it.");
         return result.Success;
     }
+
+    private static Slot StickerSlot(string cardTpl, string name, string id, string sticker) => new()
+    {
+        Name = name,
+        Id = new MongoId(id),
+        Parent = new MongoId(cardTpl),
+        Properties = new SlotProperties
+        {
+            Filters = [new SlotFilter { Shift = 0, Locked = true, Filter = [new MongoId(sticker)] }]
+        },
+        Required = false,
+        MergeSlotWithChildren = false,
+        Prototype = CollectionBinders.SlotPrototype
+    };
 
     private void AddSlotLabels(Dictionary<string, string> labels)
     {

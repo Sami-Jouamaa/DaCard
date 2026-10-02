@@ -21,7 +21,7 @@ public class BoosterPacks(
     CustomItemService customItemService,
     InventoryHelper inventoryHelper,
     ItemLedger ledger,
-    CardStickers stickers,
+    CardCopies copies,
     CardStore store,
     CardIndex index)
 {
@@ -45,29 +45,32 @@ public class BoosterPacks(
     private static BoosterPacks? _instance;
     private static bool _patched;
 
-    private readonly Dictionary<MongoId, PackRow> _packs = new();
-    private Dictionary<string, double> _weights = new(PackSettings.DefaultWeights, StringComparer.OrdinalIgnoreCase);
-    private double _foilShare;
+    private const int DuplicateTries = 8;
+
+    private readonly Dictionary<MongoId, (PackRow Pack, RarityRoller Pool)> _packs = new();
 
     public List<(string Tpl, double Percent)> Loot { get; } = new();
     public Dictionary<string, double> Offers { get; } = new();
 
-    public List<PackManifestEntry> Create(IReadOnlyList<PackRow> packs, DaCardConfig config, double foilShare)
+    public List<PackManifestEntry> Create(IReadOnlyList<PackRow> packs, DaCardConfig config)
     {
         _packs.Clear();
         Loot.Clear();
         Offers.Clear();
-        _weights = new Dictionary<string, double>(config.Packs.RarityWeights ?? PackSettings.DefaultWeights, StringComparer.OrdinalIgnoreCase);
-        _foilShare = foilShare;
 
         var entries = new List<PackManifestEntry>();
         foreach (var pack in packs)
         {
-            var pool = store.PoolRarities(pack);
-            var members = pool.Values.Sum();
-            if (members == 0)
+            if (pack.CollectionId == null)
             {
-                logger.Warning($"[DaCard] Booster pack '{pack.Name}' has no cards (none match its card choice); no pack.");
+                logger.Warning($"[DaCard] Booster pack '{pack.Name}' belongs to no collection; no pack. Pick its collection in the dashboard.");
+                continue;
+            }
+            var (pool, byRarity) = PoolOf(pack);
+            var members = pool.Count;
+            if (pool.IsEmpty)
+            {
+                logger.Warning($"[DaCard] Booster pack '{pack.Name}' has no cards that can roll (none match its card choice, or their rarities have no chance); no pack.");
                 continue;
             }
 
@@ -75,7 +78,7 @@ public class BoosterPacks(
             var price = pack.Price > 0 ? pack.Price : DefaultPrice;
             if (!CreateSealed(pack, price, count))
                 continue;
-            _packs[new MongoId(pack.Id)] = pack;
+            _packs[new MongoId(pack.Id)] = (pack, pool);
 
             if (pack.LootPercent > 0)
                 Loot.Add((pack.Id, Math.Clamp(pack.LootPercent, 0, 100)));
@@ -84,7 +87,7 @@ public class BoosterPacks(
 
             entries.Add(new PackManifestEntry { Tpl = pack.Id, CardCount = count, Textures = Textures(pack) });
             logger.Info($"[DaCard] Booster pack '{pack.Name}': {count} of {members} card(s) " +
-                        $"({string.Join(", ", CardCatalog.RarityOrder.Where(pool.ContainsKey).Select(r => $"{r} {pool[r]}"))}), {price:0} ₽" +
+                        $"({byRarity}), {price:0} ₽" +
                         $"{(pack.Purchasable ? ", sold by Geek" : "")}{(pack.LootPercent > 0 ? $", in {pack.LootPercent:0.##}% of card containers" : "")}");
         }
 
@@ -175,47 +178,43 @@ public class BoosterPacks(
         return true;
     }
 
-    private List<string> Roll(PackRow pack)
+    private (RarityRoller Pool, string Summary) PoolOf(PackRow pack)
     {
-        var rarities = store.PoolRarities(pack).Where(p => p.Value > 0).Select(p => p.Key).ToList();
-        var picks = new List<string>();
-        var used = new List<string>();
-        var count = Math.Clamp(pack.CardCount, 1, MaxCards);
-        for (var i = 0; i < count && rarities.Count > 0; i++)
-        {
-            var card = store.RandomPoolCard(pack, PickRarity(rarities), used);
-            if (card == null || index.Find(card.Id) is not { } created)
-                continue;
-            used.Add(card.Id);
-            picks.Add(created.HasFoil && Random.Shared.NextDouble() < _foilShare ? created.FoilId : created.Id);
-        }
-        return picks;
+        var cards = store.PackMembers(pack).Where(c => index.Cards.ContainsKey(c.Id)).Select(c => index.Cards[c.Id]).ToList();
+        var rarities = index.RaritiesOf(pack.CollectionId!);
+        var summary = string.Join(", ", cards.GroupBy(c => c.Rarity, StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Min(c => c.RarityRank))
+            .Select(g => $"{g.Key} {g.Count()}"));
+        return (RarityRoller.Build(cards.Select(c => (c.Id, c.CollectionId, c.Rarity)), _ => rarities), summary);
     }
 
-    private string PickRarity(List<string> rarities)
+    private List<string> Roll(PackRow pack, RarityRoller pool)
     {
-        var weights = rarities.Select(r => Math.Max(0, _weights.GetValueOrDefault(r))).ToList();
-        var total = weights.Sum();
-        if (total <= 0)
-            return rarities[Random.Shared.Next(rarities.Count)];
-        var roll = Random.Shared.NextDouble() * total;
-        for (var i = 0; i < rarities.Count; i++)
+        var picks = new List<string>();
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var count = Math.Clamp(pack.CardCount, 1, MaxCards);
+        for (var i = 0; i < count; i++)
         {
-            roll -= weights[i];
-            if (roll < 0)
-                return rarities[i];
+            var cards = pool.PickPool(Random.Shared);
+            if (cards == null)
+                break;
+            var card = cards[Random.Shared.Next(cards.Length)];
+            for (var tries = 1; tries < DuplicateTries && used.Contains(card) && used.Count < cards.Length; tries++)
+                card = cards[Random.Shared.Next(cards.Length)];
+            used.Add(card);
+            picks.Add(card);
         }
-        return rarities[^1];
+        return picks;
     }
 
     private bool TryOpen(PmcData pmcData, OpenRandomLootContainerRequestData request, MongoId sessionId, ItemEventRouterResponse output)
     {
         var item = pmcData.Inventory?.Items?.FirstOrDefault(i => i.Id == request.Item);
-        if (item == null || !_packs.TryGetValue(item.Template, out var pack))
+        if (item == null || !_packs.TryGetValue(item.Template, out var entry))
             return false;
 
+        var (pack, pool) = entry;
         var foundInRaid = item.Upd?.SpawnedInSession ?? false;
-        var cards = Roll(pack);
+        var cards = Roll(pack, pool);
         if (cards.Count == 0)
         {
             logger.Warning($"[DaCard] A '{pack.Name}' booster pack stays closed: none of its cards could be picked");
@@ -223,11 +222,7 @@ public class BoosterPacks(
         }
         inventoryHelper.AddItemsToStash(sessionId, new AddItemsDirectRequest
         {
-            ItemsWithModsToAdd = cards.Select(tpl =>
-            {
-                var card = new Item { Id = new MongoId(), Template = new MongoId(tpl), Upd = new Upd { SpawnedInSession = foundInRaid } };
-                return new List<Item> { card }.Concat(stickers.RolledOn(card)).ToList();
-            }).ToList(),
+            ItemsWithModsToAdd = cards.Select(card => new List<Item> { copies.NewCopy(card, foundInRaid) }).ToList(),
             FoundInRaid = foundInRaid,
             Callback = null,
             UseSortingTable = false

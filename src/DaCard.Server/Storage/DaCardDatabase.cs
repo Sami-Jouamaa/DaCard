@@ -10,7 +10,7 @@ namespace DaCard.Server.Storage;
 [Injectable(InjectionType.Singleton)]
 public class DaCardDatabase
 {
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 6;
     public const string FileName = "dacard.db";
 
     private static bool _nativeReady;
@@ -151,6 +151,12 @@ public class DaCardDatabase
     {
         var i = reader.GetOrdinal(column);
         return reader.IsDBNull(i) ? null : Math.Clamp(reader.GetDouble(i), 0, 1);
+    }
+
+    public static double? NumberOrNull(SqliteDataReader reader, string column)
+    {
+        var i = reader.GetOrdinal(column);
+        return reader.IsDBNull(i) ? null : reader.GetDouble(i);
     }
 
     public static bool Flag(SqliteDataReader reader, string column)

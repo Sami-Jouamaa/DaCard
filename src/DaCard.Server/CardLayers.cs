@@ -30,10 +30,16 @@ public record LayerTransform
 
 public record LayerManifestEntry
 {
-    // Rolled against the copy's item id: the same copy always shows the same layers
     [JsonPropertyName("key")] public required string Key { get; set; }
+
+    [JsonPropertyName("layer")] public string? Layer { get; set; }
+
+    [JsonPropertyName("group")] public string? Group { get; set; }
     [JsonPropertyName("chance")] public double Chance { get; set; } = 100;
     [JsonPropertyName("canBeFoil")] public bool CanBeFoil { get; set; }
+
+    [JsonPropertyName("price")] public double Price { get; set; }
+    [JsonPropertyName("pricePercent")] public double PricePercent { get; set; }
 
     // A collection's layer (frame, background): glows like the card frame, not like the art
     [JsonPropertyName("frame")] public bool Frame { get; set; }
@@ -44,8 +50,6 @@ public record LayerManifestEntry
 
     [JsonPropertyName("roughness")] public double? Roughness { get; set; }
     [JsonPropertyName("metallic")] public double? Metallic { get; set; }
-
-    [JsonPropertyName("sticker")] public string? Sticker { get; set; }
 
     // Animated maps
     [JsonPropertyName("animation")] public Dictionary<string, CardAnimationTrack>? Animation { get; set; }

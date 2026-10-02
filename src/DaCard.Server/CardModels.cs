@@ -31,15 +31,6 @@ public record CardText
     [JsonPropertyName("description")] public string? Description { get; set; }
 }
 
-public record HoloSettings
-{
-    [JsonPropertyName("strength")] public double? Strength { get; set; }
-
-    [JsonPropertyName("pattern")] public string? Pattern { get; set; }
-
-    [JsonPropertyName("angle")] public double? Angle { get; set; }
-}
-
 public record GlowSettings
 {
     [JsonPropertyName("strength")] public double? Strength { get; set; }
@@ -173,12 +164,14 @@ public record BinderManifestEntry
     [JsonPropertyName("tpl")] public required string Tpl { get; set; }
     [JsonPropertyName("collection")] public required string Collection { get; set; }
     [JsonPropertyName("stickers")] public List<BinderStickerEntry> Stickers { get; set; } = new();
-    [JsonPropertyName("cards")] public List<string> Cards { get; set; } = new();
+    [JsonPropertyName("pockets")] public Dictionary<string, string> Pockets { get; set; } = new();
 }
 
 public record DaCardConfig
 {
     [JsonPropertyName("rarities")] public Dictionary<string, RaritySettings> Rarities { get; set; } = new();
+
+    [JsonPropertyName("loot")] public LootSettings Loot { get; set; } = new();
 
     [JsonPropertyName("containers")] public List<string> Containers { get; set; } = new();
 
@@ -195,8 +188,6 @@ public record DaCardConfig
     [JsonPropertyName("geek")] public GeekSettings Geek { get; set; } = new();
 
     [JsonPropertyName("foil")] public FoilSettings Foil { get; set; } = new();
-
-    [JsonPropertyName("packs")] public PackSettings Packs { get; set; } = new();
 
     [JsonPropertyName("retiredItems")] public string? RetiredItems { get; set; }
 }
@@ -226,17 +217,13 @@ public record LedgerSlot
     [JsonPropertyName("name")] public string Name { get; set; } = "";
     [JsonPropertyName("id")] public string Id { get; set; } = "";
     [JsonPropertyName("label")] public string? Label { get; set; }
+    [JsonPropertyName("card")] public string? Card { get; set; }
     [JsonPropertyName("filter")] public List<string> Filter { get; set; } = new();
 }
 
-public record PackSettings
+public record LootSettings
 {
-    [JsonPropertyName("rarityWeights")] public Dictionary<string, double> RarityWeights { get; set; } = new(DefaultWeights, StringComparer.OrdinalIgnoreCase);
-
-    public static readonly Dictionary<string, double> DefaultWeights = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Common"] = 68, ["Uncommon"] = 22, ["Rare"] = 7, ["Epic"] = 2, ["Legendary"] = 1
-    };
+    [JsonPropertyName("cardPercent")] public double CardPercent { get; set; } = 3.7;
 }
 
 public record PackManifestEntry
@@ -249,9 +236,6 @@ public record PackManifestEntry
 public record FoilSettings
 {
     [JsonPropertyName("percent")] public double Percent { get; set; } = 10;
-
-    // Foil version's price: the rarity's price times this
-    [JsonPropertyName("priceMultiplier")] public double PriceMultiplier { get; set; } = 2;
 }
 
 public record TextureSlot
@@ -281,13 +265,11 @@ public record CardTypeSettings
 public record GeekSettings
 {
     [JsonPropertyName("sellCards")] public bool SellCards { get; set; }
-
-    [JsonPropertyName("sellFoilCards")] public bool SellFoilCards { get; set; }
 }
 
 public record RaritySettings
 {
-    [JsonPropertyName("lootPercent")] public double LootPercent { get; set; }
+    [JsonPropertyName("weight")] public double Weight { get; set; }
 
     [JsonPropertyName("price")] public double Price { get; set; }
 
@@ -295,9 +277,15 @@ public record RaritySettings
 
     [JsonPropertyName("color")] public string Color { get; set; } = "#FFFFFF";
 
-    [JsonPropertyName("holo")] public HoloSettings Holo { get; set; } = new();
-
     [JsonPropertyName("glow")] public GlowSettings? Glow { get; set; }
+}
+
+public record RarityDefinition
+{
+    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    [JsonPropertyName("color")] public string Color { get; set; } = "#FFFFFF";
+    [JsonPropertyName("price")] public double Price { get; set; }
+    [JsonPropertyName("weight")] public double Weight { get; set; }
 }
 
 public record CardManifestEntry
@@ -310,19 +298,21 @@ public record CardManifestEntry
     [JsonPropertyName("floats")] public Dictionary<string, double> Floats { get; set; } = new();
 
     [JsonPropertyName("textures")] public Dictionary<string, string> Textures { get; set; } = new();
-    [JsonPropertyName("holoStrength")] public double HoloStrength { get; set; }
 
-    [JsonPropertyName("holoPattern")] public int HoloPattern { get; set; }
+    [JsonPropertyName("template")] public string? Template { get; set; }
 
-    [JsonPropertyName("holoAngle")] public double HoloAngle { get; set; }
+    [JsonPropertyName("price")] public double Price { get; set; }
 
-    [JsonPropertyName("foil")] public bool Foil { get; set; }
-
-    [JsonPropertyName("baseTpl")] public string? BaseTpl { get; set; }
+    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    [JsonPropertyName("shortName")] public string? ShortName { get; set; }
+    [JsonPropertyName("description")] public string? Description { get; set; }
+    [JsonPropertyName("locales")] public Dictionary<string, CardText>? Locales { get; set; }
 
     [JsonPropertyName("rarityColor")] public string? RarityColor { get; set; }
 
     [JsonPropertyName("glow")] public GlowManifestEntry? Glow { get; set; }
+
+    [JsonPropertyName("foilLayers")] public List<string> FoilLayers { get; set; } = new();
 
     [JsonPropertyName("collection")] public string? Collection { get; set; }
 
