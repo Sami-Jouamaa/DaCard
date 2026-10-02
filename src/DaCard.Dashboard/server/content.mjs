@@ -8,7 +8,7 @@ export const RARITIES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'];
 export const LEGACY_MAPS = ['art', 'normal', 'roughness', 'metallic', 'mask'];
 export const PACK_MAPS = ['albedo', 'normal', 'metallic', 'roughness', 'ao'];
 export const PACK_LAYER_SUFFIX = { normal: '.normal', roughness: '.roughness', metallic: '.metallic', mask: '.mask' };
-export const DEFAULT_SLOTS = ['', 'height', 'holo', 'foil', 'normal'];
+export const DEFAULT_SLOTS = ['', 'height', 'holo', 'foil', 'normal', 'roughness', 'metallic'];
 export const FILE_NAME = /^[A-Za-z0-9_.-]+$/;
 export const LAYER_ID = /^[0-9a-f]{12}$/;
 

@@ -289,13 +289,16 @@ namespace DaCard.Client
             var noPicture = picture == null || !card.Textures.ContainsKey(picture.Property);
             foreach (var slot in _slots)
             {
-                var texture = card.Textures.TryGetValue(slot.Property, out var url)
+                var own = card.Textures.TryGetValue(slot.Property, out var url);
+                var texture = own
                     ? GetTexture(url, slot.Linear)
                     : noPicture && slot.Suffix == "" ? ClearTexture
                     : noPicture && slot.Suffix == "foil" ? Texture2D.blackTexture
                     : DefaultTexture(slot.Default);
                 if (texture != null)
                     material.SetTexture(slot.Property, texture);
+                if (!string.IsNullOrEmpty(slot.Flag))
+                    material.SetFloat(slot.Flag, own && texture != null ? 1f : 0f);
             }
 
             if (stack != null)

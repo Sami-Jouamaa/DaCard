@@ -6,7 +6,9 @@ import { createImageStore } from './images.mjs';
 import { createPlan, planAddons, findAddonDirs, oldLayoutParts, builtinSkinList, slotsFromConfig } from './legacy/plan.mjs';
 import { applyPlan, planSize } from './legacy/apply.mjs';
 
-export const SETTING_KEYS = ['rarities', 'containers', 'textures', 'cardTypes', 'backProperty', 'overlayProperty', 'binders', 'geek', 'foil', 'packs', 'retiredItems'];
+const PICTURE_SURFACE = ['roughness', 'metallic'];
+
+export const SETTING_KEYS =['rarities', 'containers', 'textures', 'cardTypes', 'backProperty', 'overlayProperty', 'binders', 'geek', 'foil', 'packs', 'retiredItems'];
 
 function readJsonFile(file) {
     try {
@@ -119,6 +121,18 @@ export async function runUpgrade({ modDir, by = 'dashboard', onProgress, onLog }
                 recordMigration(db, { migration: 'retired-keep', title: 'Deleted items: "Keep" is now "Remove and refund"', by });
             });
             log('Deleted items: "Keep" is now "Remove and refund"');
+        }
+        const textures = getSetting(db, 'textures', undefined);
+        if (Array.isArray(textures)) {
+            const has = new Set(textures.map((t) => String(t?.suffix ?? '').toLowerCase()));
+            const added = (defaultConfig(paths).textures || []).filter((t) => PICTURE_SURFACE.includes(t.suffix) && !has.has(t.suffix));
+            if (added.length) {
+                transaction(db, () => {
+                    setSetting(db, 'textures', [...textures, ...added]);
+                    recordMigration(db, { migration: 'picture-surface', title: '3D layer: roughness and metallic maps', by });
+                });
+                log('3D layer: roughness and metallic maps');
+            }
         }
         const builtins = await seedBuiltinSkins(db, store, paths);
         summary.skins = builtins.changed;

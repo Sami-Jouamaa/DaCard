@@ -25,7 +25,9 @@
     { "suffix": "height", "property": "_HeightMap", "linear": true,  "default": "white" },
     { "suffix": "holo",   "property": "_HoloMask",  "linear": true,  "default": "white" },
     { "suffix": "foil",   "property": "_FoilMask",  "linear": true,  "default": "white" },
-    { "suffix": "normal", "property": "_NormalMap", "linear": true,  "default": "bump" }
+    { "suffix": "normal", "property": "_NormalMap", "linear": true,  "default": "bump" },
+    { "suffix": "roughness", "property": "_PictureRoughnessMap", "linear": true, "default": "white", "flag": "_HasPictureRoughness" },
+    { "suffix": "metallic",  "property": "_PictureMetallicMap",  "linear": true, "default": "black", "flag": "_HasPictureMetallic" }
   ],
   "cardTypes": {
     "3d": {},

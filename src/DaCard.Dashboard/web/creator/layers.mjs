@@ -80,7 +80,8 @@
         };
     }
 
-    const savedState = (layer) => ({ ...layer.maps, font: layer.text ? layer.text.font : null });
+    const savedState = (layer) => ({ ...layer.maps, font: layer.text ? layer.text.font : null, normalGL: isOpenGL(layer.maps.normal) });
+    const isOpenGL = (media) => !!(media && media.openGL);
     const STABLE_FILE = new RegExp(`^${LAYER_NAME}$`, 'i');
     const newLayerFile = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -280,6 +281,17 @@
         return canvas;
     }
 
+    function flipGreen(canvas) {
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const px = image.data;
+        for (let i = 0; i < px.length; i += 4) if (px[i + 3]) px[i + 1] = 255 - px[i + 1];
+        ctx.putImageData(image, 0, 0);
+        return canvas;
+    }
+
+    const asOpenGL = (media, canvas) => (isOpenGL(media) ? canvas : flipGreen(canvas));
+
     const asSaved = (map, canvas) => (IS_MASK[map] ? toMask(canvas) : IS_GREY[map] ? toGrey(canvas) : canvas);
 
     const artSize = (layer) => ({ w: layer.maps.art.width, h: layer.maps.art.height });
@@ -296,6 +308,7 @@
         if (!media || !layer.maps.art) return null;
         const size = artSize(layer), img = media.frameAt(t);
         if (IS_MASK[map] || IS_GREY[map]) return drawPlaced(asSaved(map, drawNatural(img, size)), layer.transform, size);
+        if (map === 'normal') return drawPlaced(asOpenGL(media, drawNatural(img, size)), layer.transform, size);
         return drawPlaced(img, layer.transform, size);
     }
 
@@ -489,13 +502,13 @@
                     if (!media) continue;
                     const animated = media.animated && media.count > 1;
                     if (animated) fps[map] = media.fps;
-                    if (media === saved[map]) {
+                    if (media === saved[map] && (map !== 'normal' || isOpenGL(media) === saved.normalGL)) {
                         keep.add(mapFile(file, map).toLowerCase());
                         if (animated) keep.add(framesFolder(file, map).toLowerCase());
                         continue;
                     }
                     if (kept) clear.add(framesFolder(file, map));
-                    const render = (img) => pngBlob(asSaved(map, drawNatural(img, size)));
+                    const render = (img) => pngBlob(map === 'normal' ? asOpenGL(media, drawNatural(img, size)) : asSaved(map, drawNatural(img, size)));
                     out.push([mapFile(file, map), () => media.withFrame(0, render)]);
                     if (animated) {
                         for (let f = 0; f < media.count; f++)
@@ -543,11 +556,15 @@
             if (list.length > 1) {
                 const media = await CardMedia.open('sequence', list);
                 media.fps = fps || 12;
+                media.openGL = true;
                 return media;
             }
         }
         const handle = await getHandle(dir, mapFile(file, map), 'file');
-        return handle ? CardMedia.open('image', [await read(handle)]) : null;
+        if (!handle) return null;
+        const media = await CardMedia.open('image', [await read(handle)]);
+        media.openGL = true;
+        return media;
     }
 
     async function load(dir, side, entries, defaults = {}, opts = {}) {
@@ -1143,6 +1160,20 @@
                 </div>
                 <div class="guide-actions media-actions"><button type="button" class="facade-btn fx-sm fx-grey media-clear">Remove</button></div>
                 <input type="file" class="media-file" hidden>`;
+            if (map === 'normal') {
+                const gl = document.createElement('label');
+                gl.className = 'facade-check-row media-gl';
+                gl.title = 'On: OpenGL (green up). Off: DirectX.';
+                gl.innerHTML = '<input type="checkbox" class="facade-switch"><span>OpenGL</span>';
+                box.querySelector('.drop').after(gl);
+                gl.querySelector('input').addEventListener('change', (e) => {
+                    const media = layer.maps[map];
+                    if (!media) return;
+                    media.openGL = e.target.checked;
+                    refresh();
+                    changed('media', layer);
+                });
+            }
             let valueField = null;
             if (map in MATERIAL_DEFAULT) {
                 valueField = scrubField('Value', {
@@ -1179,6 +1210,11 @@
                 anim.hidden = !media || !media.animated;
                 box.querySelector('.media-actions').hidden = !media || media.animated;
                 if (valueField) valueField.update();
+                const gl = box.querySelector('.media-gl');
+                if (gl) {
+                    gl.hidden = !media;
+                    gl.querySelector('input').checked = isOpenGL(media);
+                }
                 if (anim.hidden) return;
                 box.querySelector('.media-fps').value = media.fps;
                 const split = box.querySelector('.media-split');
@@ -1301,7 +1337,7 @@
         CARD_W, CARD_H, MAPS, IDENTITY, DEFAULT_ROUGHNESS,
         newLayer, textLayer, setFont, isText, hasContent, unreadable, createEditor, load, loadMap, files, removeFiles, splitAll, smoothResize,
         ordered, parts, composite, animated, mediaOf, outline, layerBox, fillScale, hitTest,
-        drawPlaced, drawNatural, toMask, newCanvas, cropRect, drawCropped,
+        drawPlaced, drawNatural, toMask, toGrey, asOpenGL, newCanvas, cropRect, drawCropped, scrubField,
     };
 
     function drawCropped(img, crop, canvas = newCanvas()) {

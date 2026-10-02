@@ -25,6 +25,7 @@
         urls: [],
         use3d: false,
         depthRange: null,
+        pictureSurface: null,
         art: null,                        // CardMedia (image, image sequence or video / GIF)
         depth: null,
         foil: null,                         // CardMedia
@@ -339,71 +340,218 @@
 
     const has3d = () => state.use3d;
 
-    const DEPTH_FLOATS = { near: '_nearDepth', far: '_farDepth' };
+    const DEPTH_FLOATS = { near: '_nearDepth', far: '_farDepth', back: '_backPlane', strength: '_depthStrength' };
     const DEPTH_GAP = 0.02;
+    const DEPTH_MAX = 2;
+    const STRENGTH_MAX = 2;
     const round3 = (v) => Math.round(v * 1000) / 1000;
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
     function depthDefaults() {
         const types = (state.config && state.config.cardTypes) || {};
         const key = Object.keys(types).find((k) => sameName(k, '3d'));
         const floats = (key && types[key] && types[key].floats) || {};
-        const material = window.CardView ? CardView.MATERIAL : { nearDepth: 0, farDepth: 1 };
+        const material = window.CardView ? CardView.MATERIAL : { nearDepth: 0, farDepth: 1, backPlane: 0, depthStrength: 1 };
+        const pick = (k, fallback) => (Number.isFinite(floats[DEPTH_FLOATS[k]]) ? floats[DEPTH_FLOATS[k]] : fallback);
         return {
-            near: Number.isFinite(floats[DEPTH_FLOATS.near]) ? floats[DEPTH_FLOATS.near] : material.nearDepth,
-            far: Number.isFinite(floats[DEPTH_FLOATS.far]) ? floats[DEPTH_FLOATS.far] : material.farDepth,
+            near: pick('near', material.nearDepth),
+            far: pick('far', material.farDepth),
+            back: pick('back', material.backPlane),
+            strength: pick('strength', material.depthStrength),
         };
     }
 
-    const depthRange = () => state.depthRange || depthDefaults();
+    function depthRange() {
+        const d = depthDefaults(), r = state.depthRange || {};
+        return Object.fromEntries(Object.keys(d).map((k) => [k, Number.isFinite(r[k]) ? r[k] : d[k]]));
+    }
 
     function depthFromFloats(floats) {
-        const f = floats || {}, near = f[DEPTH_FLOATS.near], far = f[DEPTH_FLOATS.far];
-        if (!Number.isFinite(near) && !Number.isFinite(far)) return null;
-        const d = depthDefaults();
-        return { near: Number.isFinite(near) ? near : d.near, far: Number.isFinite(far) ? far : d.far };
+        const f = floats || {};
+        const r = Object.fromEntries(Object.entries(DEPTH_FLOATS).filter(([, name]) => Number.isFinite(f[name])).map(([k, name]) => [k, f[name]]));
+        return Object.keys(r).length ? { ...depthDefaults(), ...r } : null;
     }
 
     function depthFloats(existing, is3d) {
         const floats = { ...(existing || {}) };
-        delete floats[DEPTH_FLOATS.near];
-        delete floats[DEPTH_FLOATS.far];
+        for (const name of Object.values(DEPTH_FLOATS)) delete floats[name];
         if (is3d && state.depthRange) {
-            floats[DEPTH_FLOATS.near] = round3(state.depthRange.near);
-            floats[DEPTH_FLOATS.far] = round3(state.depthRange.far);
+            const r = depthRange();
+            for (const [k, name] of Object.entries(DEPTH_FLOATS)) floats[name] = round3(r[k]);
         }
         return Object.keys(floats).length ? floats : null;
     }
 
     function showDepthRange() {
-        const { near, far } = depthRange();
-        const box = $('#depth-range');
-        box.style.setProperty('--near', near);
-        box.style.setProperty('--far', far);
-        $('#depth-near').value = near;
-        $('#depth-far').value = far;
-        $('#depth-near').style.zIndex = near > 0.5 ? 2 : 1;
-        $('#depth-far').style.zIndex = near > 0.5 ? 1 : 2;
-        $('#depth-note').textContent = `White ${near.toFixed(2)} · black ${far.toFixed(2)} of the box's depth` + (state.depthRange ? '' : ' (default)');
-        $('#depth-reset').hidden = !state.depthRange;
+        const { near, far, back, strength } = depthRange();
+        const box = $('#depth-box');
+        const mid = (near + far) / 2, half = (far - near) / 2 * Math.min(strength, 1);
+        for (const [name, v] of [['start', near], ['end', far], ['lo', mid - half], ['hi', mid + half]])
+            box.style.setProperty(`--${name}`, v / DEPTH_MAX);
+        box.style.setProperty('--hatch', strength > 1 ? 1 : 0.55 + 0.45 * strength);
+        const percent = Math.round(strength * 100);
+        $('#depth-strength').textContent = `${percent}%`;
+        $('#depth-strength').setAttribute('aria-valuenow', percent);
+        $('#depth-start').setAttribute('aria-valuenow', near.toFixed(2));
+        $('#depth-end').setAttribute('aria-valuenow', far.toFixed(2));
+        $('#depth-back').value = back;
+        $('#depth-back-value').textContent = back.toFixed(2);
+        $('#depth-note').textContent = `Start ${near.toFixed(2)} · end ${far.toFixed(2)}` + (state.depthRange ? '' : ' (default)');
+        $('#depth-reset').style.visibility = state.depthRange ? '' : 'hidden';
+    }
+
+    const SURFACE_FLOATS = { roughness: '_PictureRoughness', metallic: '_PictureMetallic' };
+    const surfaceFields = {};
+
+    function surfaceDefault(key) {
+        const material = window.CardView ? CardView.MATERIAL : { pictureRoughness: 1, pictureMetallic: 0 };
+        return key === 'roughness' ? material.pictureRoughness : material.pictureMetallic;
+    }
+
+    function surfaceValue(key) {
+        const v = state.pictureSurface && state.pictureSurface[key];
+        return Number.isFinite(v) ? v : surfaceDefault(key);
+    }
+
+    function surfaceFromFloats(floats) {
+        const f = floats || {};
+        const r = Object.fromEntries(Object.entries(SURFACE_FLOATS).filter(([, name]) => Number.isFinite(f[name])).map(([k, name]) => [k, f[name]]));
+        return Object.keys(r).length ? r : null;
+    }
+
+    function surfaceFloats(existing, is3d) {
+        const floats = { ...(existing || {}) };
+        for (const name of Object.values(SURFACE_FLOATS)) delete floats[name];
+        if (is3d && state.pictureSurface)
+            for (const [k, name] of Object.entries(SURFACE_FLOATS))
+                if (Number.isFinite(state.pictureSurface[k])) floats[name] = round3(state.pictureSurface[k]);
+        return Object.keys(floats).length ? floats : null;
+    }
+
+    function showSurfaceFields() {
+        for (const field of Object.values(surfaceFields)) field.update();
+    }
+
+    function wireSurfaceFields() {
+        for (const key of Object.keys(SURFACE_FLOATS)) {
+            const set = (v) => {
+                const next = { ...(state.pictureSurface || {}) };
+                if (v === null) delete next[key]; else next[key] = v;
+                state.pictureSurface = Object.keys(next).length ? next : null;
+                applyDepthMaterial();
+            };
+            const field = CardLayerKit.scrubField('Value', {
+                decimals: 2, min: 0, max: 1, perPixel: 0.005,
+                title: 'Without a map (double-click the grip for the default)',
+                value: () => surfaceValue(key),
+                set: (v) => set(v),
+                clear: () => set(null),
+                isDefault: () => !(state.pictureSurface && Number.isFinite(state.pictureSurface[key])),
+                disabled: () => !!state[key],
+            });
+            surfaceFields[key] = field;
+            $(`#${key}-value`).appendChild(field.el);
+        }
     }
 
     function applyDepthMaterial() {
-        const { near, far } = depthRange();
-        if (cardView) cardView.setMaterial({ nearDepth: near, farDepth: far });
+        const { near, far, back, strength } = depthRange();
+        if (cardView) cardView.setMaterial({
+            nearDepth: near, farDepth: far, backPlane: back, depthStrength: strength,
+            pictureRoughness: surfaceValue('roughness'), pictureMetallic: surfaceValue('metallic'),
+        });
     }
 
-    function wireDepthRange() {
-        const nearInput = $('#depth-near'), farInput = $('#depth-far');
-        const moved = (which) => {
-            let near = +nearInput.value, far = +farInput.value;
-            if (which === 'near') near = Math.max(0, Math.min(near, far - DEPTH_GAP));
-            else far = Math.min(1, Math.max(far, near + DEPTH_GAP));
-            state.depthRange = { near, far };
-            showDepthRange();
-            applyDepthMaterial();
+    function setDepth(change) {
+        state.depthRange = { ...depthRange(), ...change };
+        showDepthRange();
+        applyDepthMaterial();
+    }
+
+    function moveDepth(part, value, from = depthRange()) {
+        const { near, far } = from;
+        if (part === 'start') setDepth({ near: clamp(value, 0, far - DEPTH_GAP) });
+        else if (part === 'end') setDepth({ far: clamp(value, near + DEPTH_GAP, DEPTH_MAX) });
+        else {
+            const width = far - near, start = clamp(value, 0, DEPTH_MAX - width);
+            setDepth({ near: start, far: start + width });
+        }
+    }
+
+    function dragWith(el, e, move) {
+        el.setPointerCapture(e.pointerId);
+        const up = () => {
+            el.removeEventListener('pointermove', move);
+            el.removeEventListener('pointerup', up);
+            el.removeEventListener('pointercancel', up);
+            delete el.dataset.drag;
         };
-        nearInput.addEventListener('input', () => moved('near'));
-        farInput.addEventListener('input', () => moved('far'));
+        el.addEventListener('pointermove', move);
+        el.addEventListener('pointerup', up);
+        el.addEventListener('pointercancel', up);
+    }
+
+    const arrowStep = (e) => {
+        const dir = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.key];
+        if (!dir) return 0;
+        e.preventDefault();
+        return dir * (e.shiftKey ? 0.1 : 0.01);
+    };
+
+    function wireDepthRange() {
+        const box = $('#depth-box'), strengthEl = $('#depth-strength');
+        const depthAt = (y) => {
+            const r = box.getBoundingClientRect();
+            return clamp((r.bottom - y) / r.height, 0, 1) * DEPTH_MAX;
+        };
+        box.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            const at = depthAt(e.clientY), from = depthRange();
+            const touching = (from.far - from.near) / DEPTH_MAX * box.getBoundingClientRect().height < 10;
+            let part = e.target.id === 'depth-start' ? 'start' : e.target.id === 'depth-end' ? 'end' : e.target.id === 'depth-band' ? 'band'
+                : Math.abs(at - from.near) <= Math.abs(at - from.far) ? 'start' : 'end';
+            if (touching && part !== 'band') part = null;
+            const offset = part === 'band' ? at - from.near : 0;
+            const move = (ev) => {
+                if (!part) {
+                    if (Math.abs(ev.clientY - e.clientY) < 2) return;
+                    part = ev.clientY < e.clientY ? 'end' : 'start';
+                    box.dataset.drag = part;
+                }
+                moveDepth(part, depthAt(ev.clientY) - offset, part === 'band' ? from : depthRange());
+            };
+            if (part && part !== 'band') move(e);
+            if (part) box.dataset.drag = part;
+            dragWith(box, e, move);
+        });
+        for (const [id, part] of [['#depth-start', 'start'], ['#depth-end', 'end'], ['#depth-band', 'band']]) {
+            $(id).addEventListener('keydown', (e) => {
+                const step = arrowStep(e);
+                if (!step) return;
+                const r = depthRange();
+                moveDepth(part, (part === 'end' ? r.far : r.near) + step);
+            });
+        }
+
+        const setStrength = (v) => setDepth({ strength: Math.round(clamp(v, 0, STRENGTH_MAX) * 100) / 100 });
+        strengthEl.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            const x0 = e.clientX, y0 = e.clientY, s0 = depthRange().strength;
+            strengthEl.dataset.drag = 'strength';
+            dragWith(strengthEl, e, (ev) => setStrength(s0 + ((ev.clientX - x0) - (ev.clientY - y0)) * 0.005));
+        });
+        strengthEl.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            setStrength(1);
+        });
+        strengthEl.addEventListener('keydown', (e) => {
+            const step = arrowStep(e);
+            if (step) setStrength(depthRange().strength + step);
+        });
+
+        $('#depth-back').addEventListener('input', (e) => setDepth({ back: +e.target.value }));
         $('#depth-reset').addEventListener('click', () => {
             state.depthRange = null;
             showDepthRange();
@@ -425,7 +573,12 @@
         $('#picture-3d-body').hidden = !is3d;
         $('#foil-clear').hidden = !state.foil;
         $('#normal-clear').hidden = !state.normal;
+        $('#roughness-clear').hidden = !state.roughness;
+        $('#normal-gl').closest('label').hidden = !state.normal;
+        $('#normal-gl').checked = !!(state.normal && state.normal.openGL);
+        $('#metallic-clear').hidden = !state.metallic;
         showDepthRange();
+        showSurfaceFields();
         const depthView = is3d && !!state.art && !!state.depth;
         if (!depthView) state.show = 'art';
         for (const b of $$('#crop-toggle button')) b.classList.toggle('fx-on', b.dataset.show === state.show);
@@ -531,7 +684,7 @@
         return [{
             art: cardCanvas(frameOf(state.art)),
             foil: state.foil ? maskOf(frameOf(state.foil)) : null,
-            normal: state.normal ? cardCanvas(frameOf(state.normal)) : null,
+            normal: state.normal ? normalCanvas(frameOf(state.normal)) : null,
             canBeFoil: true, frame: false,
         }];
     }
@@ -838,15 +991,19 @@
         ctx.restore();
     }
 
-    const MEDIA_SLOTS = ['art', 'depth', 'foil', 'normal'];
-    const MEDIA_MAP = { art: 'art', depth: 'height', foil: 'foil', normal: 'normal' };
+    const MEDIA_SLOTS = ['art', 'depth', 'foil', 'normal', 'roughness', 'metallic'];
+    const MEDIA_MAP = { art: 'art', depth: 'height', foil: 'foil', normal: 'normal', roughness: 'roughness', metallic: 'metallic' };
     const MEDIA_EMPTY = {
         art: 'PNG, JPG, WebP · MP4, WebM, GIF',
         depth: 'white = near, black = far',
         foil: 'No mask: all foil',
         normal: 'No normal map',
+        roughness: 'No roughness map',
+        metallic: 'No metallic map',
     };
-    const MEDIA_WHAT = { art: 'picture', depth: 'depth map', foil: 'foil mask', normal: 'normal map' };
+    const MEDIA_WHAT = { art: 'picture', depth: 'depth map', foil: 'foil mask', normal: 'normal map', roughness: 'roughness map', metallic: 'metallic map' };
+    const greyCanvas = (img) => CardLayerKit.toGrey(cardCanvas(img));
+    const normalCanvas = (img) => CardLayerKit.asOpenGL(state.normal, cardCanvas(img));
     const KIND_LABEL = { image: 'Image', sequence: 'Image sequence', video: 'Video', gif: 'GIF' };
     const PICK = {
         image: { accept: 'image/png,image/jpeg,image/webp,image/bmp,image/avif', multiple: false },
@@ -1058,7 +1215,9 @@
                     art: cardCanvas(frameOf(state.art)),
                     depth: state.depth ? cardCanvas(frameOf(state.depth)) : null,
                     foil: state.foil ? maskOf(frameOf(state.foil)) : null,
-                    normal: state.normal ? cardCanvas(frameOf(state.normal)) : null,
+                    normal: state.normal ? normalCanvas(frameOf(state.normal)) : null,
+                    roughness: state.roughness ? greyCanvas(frameOf(state.roughness)) : null,
+                    metallic: state.metallic ? greyCanvas(frameOf(state.metallic)) : null,
                 } : null,
                 front: stackParts('front'), back: backParts,
                 holo: $('#f-holo').checked, rarity: $('#f-rarity').value,
@@ -1078,6 +1237,8 @@
             art: picture ? picture.art : null,
             depth: is3d && picture ? picture.depth : null,
             normal: picture ? picture.normal : null,
+            pictureRoughness: is3d && picture ? picture.roughness : null,
+            pictureMetallic: is3d && picture ? picture.metallic : null,
             foilMask: picture ? picture.foil || white : null,
             overlay: f.color, layerFoil: f.foil, layerNormal: f.normal, layerSurface: f.surface,
             back: back.length ? b.color : await defaultBackImage(),
@@ -1124,8 +1285,12 @@
         }
 
         // [path, () => Promise<Blob>]: frames are rendered one at a time while saving
-        const render = { art: canvasBlob, depth: canvasBlob, foil: (img) => pngBlob(maskOf(img)), normal: canvasBlob };
-        const names = { art: ['card.png', 'frames'], depth: ['card.height.png', 'frames.height'], foil: ['card.foil.png', 'frames.foil'], normal: ['card.normal.png', 'frames.normal'] };
+        const grey = (img) => pngBlob(greyCanvas(img));
+        const render = { art: canvasBlob, depth: canvasBlob, foil: (img) => pngBlob(maskOf(img)), normal: (img) => pngBlob(normalCanvas(img)), roughness: grey, metallic: grey };
+        const names = {
+            art: ['card.png', 'frames'], depth: ['card.height.png', 'frames.height'], foil: ['card.foil.png', 'frames.foil'], normal: ['card.normal.png', 'frames.normal'],
+            roughness: ['card.roughness.png', 'frames.roughness'], metallic: ['card.metallic.png', 'frames.metallic'],
+        };
         const files = [];
         const fps = {};
         const managed = {};
@@ -1151,7 +1316,7 @@
             if (!is3d) managed.animation = null;
         }
         const existing = editing && !editing.data._broken ? editing.data : {};
-        managed.floats = depthFloats(existing.floats, is3d);
+        managed.floats = surfaceFloats(depthFloats(existing.floats, is3d), is3d);
         const json = JSON.parse(cardJson(f, is3d ? '3d' : '2d', existing, managed));
         await ensureCollPreview();
         const thumb = {
@@ -1252,8 +1417,8 @@
         state.draft = {
             fields: Object.fromEntries(['#f-name', '#f-short', '#f-desc', '#f-rarity', '#f-collection'].map((id) => [id, $(id).value])),
             collHidden: state.collHidden,
-            use3d: state.use3d, depthRange: state.depthRange, crop: state.crop, show: state.show,
-            art: state.art, depth: state.depth, foil: state.foil, normal: state.normal,
+            use3d: state.use3d, depthRange: state.depthRange, pictureSurface: state.pictureSurface, crop: state.crop, show: state.show,
+            art: state.art, depth: state.depth, foil: state.foil, normal: state.normal, roughness: state.roughness, metallic: state.metallic,
             front: state.layers.front, back: state.layers.back,
             pictureDirty: state.pictureDirty, layersDirty: state.layersDirty, textAlign: state.textAlign,
         };
@@ -1297,6 +1462,7 @@
         state.collHidden = d.collectionLayers === false ? 'all' : new Set((d.hideCollectionLayers || []).filter((f) => typeof f === 'string'));
         state.use3d = cardType(card) === '3d';
         state.depthRange = depthFromFloats(d.floats);
+        state.pictureSurface = surfaceFromFloats(d.floats);
         for (const slot of MEDIA_SLOTS) renderMedia(slot);
         refreshPrices();
         try {
@@ -1351,7 +1517,7 @@
                 if ($(id).tagName === 'SELECT') syncSelect($(id));
             }
             state.collHidden = d.collHidden;
-            Object.assign(state, { crop: d.crop, show: d.show, art: d.art, depth: d.depth, foil: d.foil, normal: d.normal, depthRange: d.depthRange });
+            Object.assign(state, { crop: d.crop, show: d.show, art: d.art, depth: d.depth, foil: d.foil, normal: d.normal, roughness: d.roughness, metallic: d.metallic, depthRange: d.depthRange, pictureSurface: d.pictureSurface });
             state.layers.set(d.front, d.back);
             state.pictureDirty = d.pictureDirty;
             state.layersDirty = d.layersDirty;
@@ -2554,6 +2720,7 @@
         }).catch(() => {});
 
         MEDIA_SLOTS.forEach(wireMedia);
+        wireSurfaceFields();
         window.setRange = setRange;
         $('#f-3d').addEventListener('change', (e) => set3d(e.target.checked, true));
         state.layers = CardLayerKit.createEditor($('#card-layers'), {
@@ -2574,6 +2741,14 @@
         });
         wireCollectionLayers();
         $('#normal-clear').addEventListener('click', () => clearMedia('normal'));
+        $('#roughness-clear').addEventListener('click', () => clearMedia('roughness'));
+        $('#normal-gl').addEventListener('change', (e) => {
+            if (!state.normal) return;
+            state.normal.openGL = e.target.checked;
+            state.pictureDirty = true;
+            updateFormVisibility();
+        });
+        $('#metallic-clear').addEventListener('click', () => clearMedia('metallic'));
         $('#f-holo').addEventListener('change', () => drawCrop());
         $('#f-rare').addEventListener('change', () => drawCrop());
         $('#foil-clear').addEventListener('click', () => clearMedia('foil'));

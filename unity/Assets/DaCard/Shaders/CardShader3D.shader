@@ -11,6 +11,14 @@ Shader "AmplifyCardShader3D"
 		_HeightMap( "Height Map", 2D ) = "white" {}
 		_heightMax( "heightMax", Float ) = 1
 		_heightMin( "heightMin", Float ) = 0
+		_backPlane( "Background", Float ) = 0
+		_depthStrength( "Depth Strength", Float ) = 1
+		_PictureRoughnessMap( "Picture Roughness Map", 2D ) = "white" {}
+		_PictureMetallicMap( "Picture Metallic Map", 2D ) = "black" {}
+		_PictureRoughness( "Picture Roughness", Range( 0, 1 ) ) = 1
+		_PictureMetallic( "Picture Metallic", Range( 0, 1 ) ) = 0
+		_HasPictureRoughness( "Has Picture Roughness", Float ) = 0
+		_HasPictureMetallic( "Has Picture Metallic", Float ) = 0
 		_edgeFade( "edgeFade", Float ) = 0.06
 		_farDepth( "farDepth", Float ) = 0.25
 		_skyScale( "skyScale", Float ) = 6
@@ -303,6 +311,14 @@ Shader "AmplifyCardShader3D"
 				uniform float _farDepth;
 				uniform float _heightMin;
 				uniform float _heightMax;
+				uniform float _backPlane;
+				uniform float _depthStrength;
+				uniform sampler2D _PictureRoughnessMap;
+				uniform sampler2D _PictureMetallicMap;
+				uniform float _PictureRoughness;
+				uniform float _PictureMetallic;
+				uniform float _HasPictureRoughness;
+				uniform float _HasPictureMetallic;
 				uniform sampler2D _MainTex;
 				uniform float _edgeFade;
 				uniform float _depthDarken;
@@ -328,7 +344,7 @@ Shader "AmplifyCardShader3D"
 				uniform float _Roughness;
 
 
-				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, out float3 hit )
+				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, float background, float strength, out float3 hit )
 				{
 					// Art box behind the card's window (parallax occlusion inside a recessed frame).
 					// Depth-map white sits at nearDepth (just behind the glass), black at farDepth; heightMin/heightMax stretch its contrast.
@@ -339,7 +355,7 @@ Shader "AmplifyCardShader3D"
 					float2 shift = -v.xy / max(v.z, 0.15);
 					shift.y *= aspect;
 					float2 dx = ddx(uv), dy = ddy(uv);
-					int   n     = clamp((int)steps, 1, 64);
+					int   n     = clamp((int)steps, 1, 128);
 					float stepD = (farDepth - nearDepth) / n;
 					float  d = nearDepth;
 					float2 p = uv;
@@ -347,19 +363,31 @@ Shader "AmplifyCardShader3D"
 					{
 					    // ---------- One height map ----------
 					    float range = max(heightMax - heightMin, 1e-4);
+					    float knee = min(background, 0.1);
+					    #define BOX_SCENE(q, out_) { float bh = saturate(0.5 + (saturate((tex2Dgrad(heightMap, q, dx, dy).r - heightMin) / range) - 0.5) * strength); float bm = max(knee - abs(bh - background), 0.0); out_ = lerp(farDepth, nearDepth, max(bh, background) + bm * bm / max(4.0 * knee, 1e-5)); }
 					    p = uv + shift * d;
-					    float  scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range));
+					    float  scene;
+					    BOX_SCENE(p, scene);
 					    float  prevD = d, prevDiff = scene - d;
-					    [loop] for (int i = 0; i < 64; i++)
+					    [loop] for (int i = 0; i < 128; i++)
 					    {
 					        if (i >= n || d >= scene) break;
 					        prevD = d; prevDiff = scene - d;
 					        d += stepD;
 					        p = uv + shift * d;
-					        scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range));
+					        BOX_SCENE(p, scene);
 					    }
-					    float t = prevDiff / max(prevDiff - (scene - d), 1e-5);
-					    d = lerp(prevD, d, saturate(t));
+					    float  lo = prevD, hi = d, loDiff = prevDiff, hiDiff = scene - d;
+					    [unroll] for (int r = 0; r < 5; r++)
+					    {
+					        float mid = 0.5 * (lo + hi);
+					        p = uv + shift * mid;
+					        BOX_SCENE(p, scene);
+					        if (scene > mid) { lo = mid; loDiff = scene - mid; }
+					        else { hi = mid; hiDiff = scene - mid; }
+					    }
+					    float t = loDiff / max(loDiff - hiDiff, 1e-5);
+					    d = lerp(lo, hi, saturate(t));
 					    p = uv + shift * d;
 					    art = tex2Dgrad(albedo, p, dx, dy);
 					}
@@ -461,12 +489,17 @@ Shader "AmplifyCardShader3D"
 					return lerp( backFoil.g, layerFoil.g, saturate( frontMask ) );
 				}
 				
-				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask )
+				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask, float3 hit, float2 uv, sampler2D roughnessMap, sampler2D metallicMap, float roughness, float metallic, float hasRoughness, float hasMetallic )
 				{
 					float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers );
 					float k = saturate( frontMask );
 					float4 surface = lerp( backFoil, layerFoil, k );
-					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
+					float2 dx = ddx( uv ), dy = ddy( uv );
+					float art = saturate( hit.z );
+					float rough = lerp( roughness, tex2Dgrad( roughnessMap, hit.xy, dx, dy ).r, hasRoughness * art );
+					float metal = lerp( metallic, tex2Dgrad( metallicMap, hit.xy, dx, dy ).r, hasMetallic * art );
+					float cover = lerp( 1.0, layers, k );
+					return float4( lerp( backFoil.r, front, k ), lerp( rough, surface.b, cover ), surface.a + metal * ( 1.0 - cover ), 1.0 );
 				}
 				
 				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
@@ -765,8 +798,10 @@ Shader "AmplifyCardShader3D"
 					float skyScale87 = _skyScale;
 					float skyBrightness87 = _skyBrightness;
 					float4 rarityColor87 = _RarityColor;
+					float background87 = _backPlane;
+					float strength87 = _depthStrength;
 					float3 hit87 = float3( 0,0,0 );
-					float4 localParallaxWindow87 = ParallaxWindow87( uv87 , viewTS87 , heightMap87 , steps87 , windowRect87 , nearDepth87 , farDepth87 , heightMin87 , heightMax87 , albedo87 , edgeFade87 , depthDarken87 , skyScale87 , skyBrightness87 , rarityColor87 , hit87 );
+					float4 localParallaxWindow87 = ParallaxWindow87( uv87 , viewTS87 , heightMap87 , steps87 , windowRect87 , nearDepth87 , farDepth87 , heightMin87 , heightMax87 , albedo87 , edgeFade87 , depthDarken87 , skyScale87 , skyBrightness87 , rarityColor87 , background87 , strength87 , hit87 );
 					float2 texCoord69 = IN.ase_texcoord6.zw * float2( 1,1 ) + float2( 0,0 );
 					float4 tex2DNode70 = tex2D( _CARD_FRONT_BORDER, texCoord69 );
 					float4 lerpResult77 = lerp( localParallaxWindow87 , tex2DNode70 , tex2DNode70.a);
@@ -786,7 +821,15 @@ Shader "AmplifyCardShader3D"
 					float layers144 = tex2DNode70.a;
 					float4 backFoil144 = tex2DNode141;
 					float frontMask144 = tex2DNode41.r;
-					float4 localCardLayerFoil144 = CardLayerFoil144( baseFoil144 , layerFoil144 , layers144 , backFoil144 , frontMask144 );
+					float3 hit144 = hit87;
+					float2 uv144 = texCoord95;
+					sampler2D roughnessMap144 = _PictureRoughnessMap;
+					sampler2D metallicMap144 = _PictureMetallicMap;
+					float roughness144 = _PictureRoughness;
+					float metallic144 = _PictureMetallic;
+					float hasRoughness144 = _HasPictureRoughness;
+					float hasMetallic144 = _HasPictureMetallic;
+					float4 localCardLayerFoil144 = CardLayerFoil144( baseFoil144 , layerFoil144 , layers144 , backFoil144 , frontMask144 , hit144 , uv144 , roughnessMap144 , metallicMap144 , roughness144 , metallic144 , hasRoughness144 , hasMetallic144 );
 					float4 foilMask130 = localCardLayerFoil144;
 					float border130 = tex2DNode70.a;
 					float strength130 = _FoilStrength;
@@ -1127,6 +1170,14 @@ Shader "AmplifyCardShader3D"
 				uniform float _farDepth;
 				uniform float _heightMin;
 				uniform float _heightMax;
+				uniform float _backPlane;
+				uniform float _depthStrength;
+				uniform sampler2D _PictureRoughnessMap;
+				uniform sampler2D _PictureMetallicMap;
+				uniform float _PictureRoughness;
+				uniform float _PictureMetallic;
+				uniform float _HasPictureRoughness;
+				uniform float _HasPictureMetallic;
 				uniform sampler2D _MainTex;
 				uniform float _edgeFade;
 				uniform float _depthDarken;
@@ -1152,7 +1203,7 @@ Shader "AmplifyCardShader3D"
 				uniform float _Roughness;
 
 
-				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, out float3 hit )
+				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, float background, float strength, out float3 hit )
 				{
 					// Art box behind the card's window (parallax occlusion inside a recessed frame).
 					// Depth-map white sits at nearDepth (just behind the glass), black at farDepth; heightMin/heightMax stretch its contrast.
@@ -1163,7 +1214,7 @@ Shader "AmplifyCardShader3D"
 					float2 shift = -v.xy / max(v.z, 0.15);
 					shift.y *= aspect;
 					float2 dx = ddx(uv), dy = ddy(uv);
-					int   n     = clamp((int)steps, 1, 64);
+					int   n     = clamp((int)steps, 1, 128);
 					float stepD = (farDepth - nearDepth) / n;
 					float  d = nearDepth;
 					float2 p = uv;
@@ -1171,19 +1222,31 @@ Shader "AmplifyCardShader3D"
 					{
 					    // ---------- One height map ----------
 					    float range = max(heightMax - heightMin, 1e-4);
+					    float knee = min(background, 0.1);
+					    #define BOX_SCENE(q, out_) { float bh = saturate(0.5 + (saturate((tex2Dgrad(heightMap, q, dx, dy).r - heightMin) / range) - 0.5) * strength); float bm = max(knee - abs(bh - background), 0.0); out_ = lerp(farDepth, nearDepth, max(bh, background) + bm * bm / max(4.0 * knee, 1e-5)); }
 					    p = uv + shift * d;
-					    float  scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range));
+					    float  scene;
+					    BOX_SCENE(p, scene);
 					    float  prevD = d, prevDiff = scene - d;
-					    [loop] for (int i = 0; i < 64; i++)
+					    [loop] for (int i = 0; i < 128; i++)
 					    {
 					        if (i >= n || d >= scene) break;
 					        prevD = d; prevDiff = scene - d;
 					        d += stepD;
 					        p = uv + shift * d;
-					        scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range));
+					        BOX_SCENE(p, scene);
 					    }
-					    float t = prevDiff / max(prevDiff - (scene - d), 1e-5);
-					    d = lerp(prevD, d, saturate(t));
+					    float  lo = prevD, hi = d, loDiff = prevDiff, hiDiff = scene - d;
+					    [unroll] for (int r = 0; r < 5; r++)
+					    {
+					        float mid = 0.5 * (lo + hi);
+					        p = uv + shift * mid;
+					        BOX_SCENE(p, scene);
+					        if (scene > mid) { lo = mid; loDiff = scene - mid; }
+					        else { hi = mid; hiDiff = scene - mid; }
+					    }
+					    float t = loDiff / max(loDiff - hiDiff, 1e-5);
+					    d = lerp(lo, hi, saturate(t));
 					    p = uv + shift * d;
 					    art = tex2Dgrad(albedo, p, dx, dy);
 					}
@@ -1285,12 +1348,17 @@ Shader "AmplifyCardShader3D"
 					return lerp( backFoil.g, layerFoil.g, saturate( frontMask ) );
 				}
 				
-				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask )
+				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask, float3 hit, float2 uv, sampler2D roughnessMap, sampler2D metallicMap, float roughness, float metallic, float hasRoughness, float hasMetallic )
 				{
 					float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers );
 					float k = saturate( frontMask );
 					float4 surface = lerp( backFoil, layerFoil, k );
-					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
+					float2 dx = ddx( uv ), dy = ddy( uv );
+					float art = saturate( hit.z );
+					float rough = lerp( roughness, tex2Dgrad( roughnessMap, hit.xy, dx, dy ).r, hasRoughness * art );
+					float metal = lerp( metallic, tex2Dgrad( metallicMap, hit.xy, dx, dy ).r, hasMetallic * art );
+					float cover = lerp( 1.0, layers, k );
+					return float4( lerp( backFoil.r, front, k ), lerp( rough, surface.b, cover ), surface.a + metal * ( 1.0 - cover ), 1.0 );
 				}
 				
 				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
@@ -1572,8 +1640,10 @@ Shader "AmplifyCardShader3D"
 					float skyScale87 = _skyScale;
 					float skyBrightness87 = _skyBrightness;
 					float4 rarityColor87 = _RarityColor;
+					float background87 = _backPlane;
+					float strength87 = _depthStrength;
 					float3 hit87 = float3( 0,0,0 );
-					float4 localParallaxWindow87 = ParallaxWindow87( uv87 , viewTS87 , heightMap87 , steps87 , windowRect87 , nearDepth87 , farDepth87 , heightMin87 , heightMax87 , albedo87 , edgeFade87 , depthDarken87 , skyScale87 , skyBrightness87 , rarityColor87 , hit87 );
+					float4 localParallaxWindow87 = ParallaxWindow87( uv87 , viewTS87 , heightMap87 , steps87 , windowRect87 , nearDepth87 , farDepth87 , heightMin87 , heightMax87 , albedo87 , edgeFade87 , depthDarken87 , skyScale87 , skyBrightness87 , rarityColor87 , background87 , strength87 , hit87 );
 					float2 texCoord69 = IN.ase_texcoord5.zw * float2( 1,1 ) + float2( 0,0 );
 					float4 tex2DNode70 = tex2D( _CARD_FRONT_BORDER, texCoord69 );
 					float4 lerpResult77 = lerp( localParallaxWindow87 , tex2DNode70 , tex2DNode70.a);
@@ -1593,7 +1663,15 @@ Shader "AmplifyCardShader3D"
 					float layers144 = tex2DNode70.a;
 					float4 backFoil144 = tex2DNode141;
 					float frontMask144 = tex2DNode41.r;
-					float4 localCardLayerFoil144 = CardLayerFoil144( baseFoil144 , layerFoil144 , layers144 , backFoil144 , frontMask144 );
+					float3 hit144 = hit87;
+					float2 uv144 = texCoord95;
+					sampler2D roughnessMap144 = _PictureRoughnessMap;
+					sampler2D metallicMap144 = _PictureMetallicMap;
+					float roughness144 = _PictureRoughness;
+					float metallic144 = _PictureMetallic;
+					float hasRoughness144 = _HasPictureRoughness;
+					float hasMetallic144 = _HasPictureMetallic;
+					float4 localCardLayerFoil144 = CardLayerFoil144( baseFoil144 , layerFoil144 , layers144 , backFoil144 , frontMask144 , hit144 , uv144 , roughnessMap144 , metallicMap144 , roughness144 , metallic144 , hasRoughness144 , hasMetallic144 );
 					float4 foilMask130 = localCardLayerFoil144;
 					float border130 = tex2DNode70.a;
 					float strength130 = _FoilStrength;
@@ -1873,6 +1951,14 @@ Shader "AmplifyCardShader3D"
 				uniform float _farDepth;
 				uniform float _heightMin;
 				uniform float _heightMax;
+				uniform float _backPlane;
+				uniform float _depthStrength;
+				uniform sampler2D _PictureRoughnessMap;
+				uniform sampler2D _PictureMetallicMap;
+				uniform float _PictureRoughness;
+				uniform float _PictureMetallic;
+				uniform float _HasPictureRoughness;
+				uniform float _HasPictureMetallic;
 				uniform sampler2D _MainTex;
 				uniform float _edgeFade;
 				uniform float _depthDarken;
@@ -1898,7 +1984,7 @@ Shader "AmplifyCardShader3D"
 				uniform float _Roughness;
 
 
-				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, out float3 hit )
+				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, float background, float strength, out float3 hit )
 				{
 					// Art box behind the card's window (parallax occlusion inside a recessed frame).
 					// Depth-map white sits at nearDepth (just behind the glass), black at farDepth; heightMin/heightMax stretch its contrast.
@@ -1909,7 +1995,7 @@ Shader "AmplifyCardShader3D"
 					float2 shift = -v.xy / max(v.z, 0.15);
 					shift.y *= aspect;
 					float2 dx = ddx(uv), dy = ddy(uv);
-					int   n     = clamp((int)steps, 1, 64);
+					int   n     = clamp((int)steps, 1, 128);
 					float stepD = (farDepth - nearDepth) / n;
 					float  d = nearDepth;
 					float2 p = uv;
@@ -1917,19 +2003,31 @@ Shader "AmplifyCardShader3D"
 					{
 					    // ---------- One height map ----------
 					    float range = max(heightMax - heightMin, 1e-4);
+					    float knee = min(background, 0.1);
+					    #define BOX_SCENE(q, out_) { float bh = saturate(0.5 + (saturate((tex2Dgrad(heightMap, q, dx, dy).r - heightMin) / range) - 0.5) * strength); float bm = max(knee - abs(bh - background), 0.0); out_ = lerp(farDepth, nearDepth, max(bh, background) + bm * bm / max(4.0 * knee, 1e-5)); }
 					    p = uv + shift * d;
-					    float  scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range));
+					    float  scene;
+					    BOX_SCENE(p, scene);
 					    float  prevD = d, prevDiff = scene - d;
-					    [loop] for (int i = 0; i < 64; i++)
+					    [loop] for (int i = 0; i < 128; i++)
 					    {
 					        if (i >= n || d >= scene) break;
 					        prevD = d; prevDiff = scene - d;
 					        d += stepD;
 					        p = uv + shift * d;
-					        scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range));
+					        BOX_SCENE(p, scene);
 					    }
-					    float t = prevDiff / max(prevDiff - (scene - d), 1e-5);
-					    d = lerp(prevD, d, saturate(t));
+					    float  lo = prevD, hi = d, loDiff = prevDiff, hiDiff = scene - d;
+					    [unroll] for (int r = 0; r < 5; r++)
+					    {
+					        float mid = 0.5 * (lo + hi);
+					        p = uv + shift * mid;
+					        BOX_SCENE(p, scene);
+					        if (scene > mid) { lo = mid; loDiff = scene - mid; }
+					        else { hi = mid; hiDiff = scene - mid; }
+					    }
+					    float t = loDiff / max(loDiff - hiDiff, 1e-5);
+					    d = lerp(lo, hi, saturate(t));
 					    p = uv + shift * d;
 					    art = tex2Dgrad(albedo, p, dx, dy);
 					}
@@ -2031,12 +2129,17 @@ Shader "AmplifyCardShader3D"
 					return lerp( backFoil.g, layerFoil.g, saturate( frontMask ) );
 				}
 				
-				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask )
+				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask, float3 hit, float2 uv, sampler2D roughnessMap, sampler2D metallicMap, float roughness, float metallic, float hasRoughness, float hasMetallic )
 				{
 					float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers );
 					float k = saturate( frontMask );
 					float4 surface = lerp( backFoil, layerFoil, k );
-					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
+					float2 dx = ddx( uv ), dy = ddy( uv );
+					float art = saturate( hit.z );
+					float rough = lerp( roughness, tex2Dgrad( roughnessMap, hit.xy, dx, dy ).r, hasRoughness * art );
+					float metal = lerp( metallic, tex2Dgrad( metallicMap, hit.xy, dx, dy ).r, hasMetallic * art );
+					float cover = lerp( 1.0, layers, k );
+					return float4( lerp( backFoil.r, front, k ), lerp( rough, surface.b, cover ), surface.a + metal * ( 1.0 - cover ), 1.0 );
 				}
 				
 				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
@@ -2325,8 +2428,10 @@ Shader "AmplifyCardShader3D"
 					float skyScale87 = _skyScale;
 					float skyBrightness87 = _skyBrightness;
 					float4 rarityColor87 = _RarityColor;
+					float background87 = _backPlane;
+					float strength87 = _depthStrength;
 					float3 hit87 = float3( 0,0,0 );
-					float4 localParallaxWindow87 = ParallaxWindow87( uv87 , viewTS87 , heightMap87 , steps87 , windowRect87 , nearDepth87 , farDepth87 , heightMin87 , heightMax87 , albedo87 , edgeFade87 , depthDarken87 , skyScale87 , skyBrightness87 , rarityColor87 , hit87 );
+					float4 localParallaxWindow87 = ParallaxWindow87( uv87 , viewTS87 , heightMap87 , steps87 , windowRect87 , nearDepth87 , farDepth87 , heightMin87 , heightMax87 , albedo87 , edgeFade87 , depthDarken87 , skyScale87 , skyBrightness87 , rarityColor87 , background87 , strength87 , hit87 );
 					float2 texCoord69 = IN.ase_texcoord4.zw * float2( 1,1 ) + float2( 0,0 );
 					float4 tex2DNode70 = tex2D( _CARD_FRONT_BORDER, texCoord69 );
 					float4 lerpResult77 = lerp( localParallaxWindow87 , tex2DNode70 , tex2DNode70.a);
@@ -2346,7 +2451,15 @@ Shader "AmplifyCardShader3D"
 					float layers144 = tex2DNode70.a;
 					float4 backFoil144 = tex2DNode141;
 					float frontMask144 = tex2DNode41.r;
-					float4 localCardLayerFoil144 = CardLayerFoil144( baseFoil144 , layerFoil144 , layers144 , backFoil144 , frontMask144 );
+					float3 hit144 = hit87;
+					float2 uv144 = texCoord95;
+					sampler2D roughnessMap144 = _PictureRoughnessMap;
+					sampler2D metallicMap144 = _PictureMetallicMap;
+					float roughness144 = _PictureRoughness;
+					float metallic144 = _PictureMetallic;
+					float hasRoughness144 = _HasPictureRoughness;
+					float hasMetallic144 = _HasPictureMetallic;
+					float4 localCardLayerFoil144 = CardLayerFoil144( baseFoil144 , layerFoil144 , layers144 , backFoil144 , frontMask144 , hit144 , uv144 , roughnessMap144 , metallicMap144 , roughness144 , metallic144 , hasRoughness144 , hasMetallic144 );
 					float4 foilMask130 = localCardLayerFoil144;
 					float border130 = tex2DNode70.a;
 					float strength130 = _FoilStrength;
@@ -2619,6 +2732,14 @@ Shader "AmplifyCardShader3D"
 				uniform float _farDepth;
 				uniform float _heightMin;
 				uniform float _heightMax;
+				uniform float _backPlane;
+				uniform float _depthStrength;
+				uniform sampler2D _PictureRoughnessMap;
+				uniform sampler2D _PictureMetallicMap;
+				uniform float _PictureRoughness;
+				uniform float _PictureMetallic;
+				uniform float _HasPictureRoughness;
+				uniform float _HasPictureMetallic;
 				uniform sampler2D _MainTex;
 				uniform float _edgeFade;
 				uniform float _depthDarken;
@@ -2639,7 +2760,7 @@ Shader "AmplifyCardShader3D"
 				uniform float _WorldGlow;
 
 
-				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, out float3 hit )
+				float4 ParallaxWindow87( float2 uv, float3 viewTS, sampler2D heightMap, float steps, float4 windowRect, float nearDepth, float farDepth, float heightMin, float heightMax, sampler2D albedo, float edgeFade, float depthDarken, float skyScale, float skyBrightness, float4 rarityColor, float background, float strength, out float3 hit )
 				{
 					// Art box behind the card's window (parallax occlusion inside a recessed frame).
 					// Depth-map white sits at nearDepth (just behind the glass), black at farDepth; heightMin/heightMax stretch its contrast.
@@ -2650,7 +2771,7 @@ Shader "AmplifyCardShader3D"
 					float2 shift = -v.xy / max(v.z, 0.15);
 					shift.y *= aspect;
 					float2 dx = ddx(uv), dy = ddy(uv);
-					int   n     = clamp((int)steps, 1, 64);
+					int   n     = clamp((int)steps, 1, 128);
 					float stepD = (farDepth - nearDepth) / n;
 					float  d = nearDepth;
 					float2 p = uv;
@@ -2658,19 +2779,31 @@ Shader "AmplifyCardShader3D"
 					{
 					    // ---------- One height map ----------
 					    float range = max(heightMax - heightMin, 1e-4);
+					    float knee = min(background, 0.1);
+					    #define BOX_SCENE(q, out_) { float bh = saturate(0.5 + (saturate((tex2Dgrad(heightMap, q, dx, dy).r - heightMin) / range) - 0.5) * strength); float bm = max(knee - abs(bh - background), 0.0); out_ = lerp(farDepth, nearDepth, max(bh, background) + bm * bm / max(4.0 * knee, 1e-5)); }
 					    p = uv + shift * d;
-					    float  scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range));
+					    float  scene;
+					    BOX_SCENE(p, scene);
 					    float  prevD = d, prevDiff = scene - d;
-					    [loop] for (int i = 0; i < 64; i++)
+					    [loop] for (int i = 0; i < 128; i++)
 					    {
 					        if (i >= n || d >= scene) break;
 					        prevD = d; prevDiff = scene - d;
 					        d += stepD;
 					        p = uv + shift * d;
-					        scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range));
+					        BOX_SCENE(p, scene);
 					    }
-					    float t = prevDiff / max(prevDiff - (scene - d), 1e-5);
-					    d = lerp(prevD, d, saturate(t));
+					    float  lo = prevD, hi = d, loDiff = prevDiff, hiDiff = scene - d;
+					    [unroll] for (int r = 0; r < 5; r++)
+					    {
+					        float mid = 0.5 * (lo + hi);
+					        p = uv + shift * mid;
+					        BOX_SCENE(p, scene);
+					        if (scene > mid) { lo = mid; loDiff = scene - mid; }
+					        else { hi = mid; hiDiff = scene - mid; }
+					    }
+					    float t = loDiff / max(loDiff - hiDiff, 1e-5);
+					    d = lerp(lo, hi, saturate(t));
 					    p = uv + shift * d;
 					    art = tex2Dgrad(albedo, p, dx, dy);
 					}
@@ -2772,12 +2905,17 @@ Shader "AmplifyCardShader3D"
 					return lerp( backFoil.g, layerFoil.g, saturate( frontMask ) );
 				}
 				
-				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask )
+				float4 CardLayerFoil144( float4 baseFoil, float4 layerFoil, float layers, float4 backFoil, float frontMask, float3 hit, float2 uv, sampler2D roughnessMap, sampler2D metallicMap, float roughness, float metallic, float hasRoughness, float hasMetallic )
 				{
 					float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers );
 					float k = saturate( frontMask );
 					float4 surface = lerp( backFoil, layerFoil, k );
-					return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) );
+					float2 dx = ddx( uv ), dy = ddy( uv );
+					float art = saturate( hit.z );
+					float rough = lerp( roughness, tex2Dgrad( roughnessMap, hit.xy, dx, dy ).r, hasRoughness * art );
+					float metal = lerp( metallic, tex2Dgrad( metallicMap, hit.xy, dx, dy ).r, hasMetallic * art );
+					float cover = lerp( 1.0, layers, k );
+					return float4( lerp( backFoil.r, front, k ), lerp( rough, surface.b, cover ), surface.a + metal * ( 1.0 - cover ), 1.0 );
 				}
 				
 				float CardFoilMetal130( float frontMask, float4 foilMask, float border, float strength )
@@ -3018,8 +3156,10 @@ Shader "AmplifyCardShader3D"
 					float skyScale87 = _skyScale;
 					float skyBrightness87 = _skyBrightness;
 					float4 rarityColor87 = _RarityColor;
+					float background87 = _backPlane;
+					float strength87 = _depthStrength;
 					float3 hit87 = float3( 0,0,0 );
-					float4 localParallaxWindow87 = ParallaxWindow87( uv87 , viewTS87 , heightMap87 , steps87 , windowRect87 , nearDepth87 , farDepth87 , heightMin87 , heightMax87 , albedo87 , edgeFade87 , depthDarken87 , skyScale87 , skyBrightness87 , rarityColor87 , hit87 );
+					float4 localParallaxWindow87 = ParallaxWindow87( uv87 , viewTS87 , heightMap87 , steps87 , windowRect87 , nearDepth87 , farDepth87 , heightMin87 , heightMax87 , albedo87 , edgeFade87 , depthDarken87 , skyScale87 , skyBrightness87 , rarityColor87 , background87 , strength87 , hit87 );
 					float2 texCoord69 = IN.ase_texcoord2.zw * float2( 1,1 ) + float2( 0,0 );
 					float4 tex2DNode70 = tex2D( _CARD_FRONT_BORDER, texCoord69 );
 					float4 lerpResult77 = lerp( localParallaxWindow87 , tex2DNode70 , tex2DNode70.a);
@@ -3039,7 +3179,15 @@ Shader "AmplifyCardShader3D"
 					float layers144 = tex2DNode70.a;
 					float4 backFoil144 = tex2DNode141;
 					float frontMask144 = tex2DNode41.r;
-					float4 localCardLayerFoil144 = CardLayerFoil144( baseFoil144 , layerFoil144 , layers144 , backFoil144 , frontMask144 );
+					float3 hit144 = hit87;
+					float2 uv144 = texCoord95;
+					sampler2D roughnessMap144 = _PictureRoughnessMap;
+					sampler2D metallicMap144 = _PictureMetallicMap;
+					float roughness144 = _PictureRoughness;
+					float metallic144 = _PictureMetallic;
+					float hasRoughness144 = _HasPictureRoughness;
+					float hasMetallic144 = _HasPictureMetallic;
+					float4 localCardLayerFoil144 = CardLayerFoil144( baseFoil144 , layerFoil144 , layers144 , backFoil144 , frontMask144 , hit144 , uv144 , roughnessMap144 , metallicMap144 , roughness144 , metallic144 , hasRoughness144 , hasMetallic144 );
 					float4 foilMask130 = localCardLayerFoil144;
 					float border130 = tex2DNode70.a;
 					float strength130 = _FoilStrength;
@@ -3828,11 +3976,19 @@ Node;AmplifyShaderEditor.ColorNode, AmplifyShaderEditor, Version=0.0.0.0, Cultur
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;96;-1552,304;Inherit;False;Property;_edgeFade;edgeFade;7;0;Create;True;0;0;0;False;0;False;0.06;0.02;0;0;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;97;-1552,384;Inherit;False;Property;_depthDarken;depthDarken;10;0;Create;True;0;0;0;False;0;False;0.5;0.3;0;0;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;93;-1552,144;Inherit;False;Property;_heightMin;heightMin;6;0;Create;True;0;0;0;False;0;False;0;0;0;0;0;1;FLOAT;0
+Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;155;-1552,184;Inherit;False;Property;_backPlane;Background;29;0;Create;True;0;0;0;False;0;False;0;0;0;0;0;1;FLOAT;0
+Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;156;-1552,264;Inherit;False;Property;_depthStrength;Depth Strength;30;0;Create;True;0;0;0;False;0;False;1;1;0;0;0;1;FLOAT;0
+Node;AmplifyShaderEditor.TexturePropertyNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;157;-480,1120;Inherit;True;Property;_PictureRoughnessMap;Picture Roughness Map;31;0;Create;True;0;0;0;False;0;False;None;None;False;white;Auto;Texture2D;False;-1;0;2;SAMPLER2D;0;SAMPLERSTATE;1
+Node;AmplifyShaderEditor.TexturePropertyNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;158;-480,1216;Inherit;True;Property;_PictureMetallicMap;Picture Metallic Map;32;0;Create;True;0;0;0;False;0;False;None;None;False;black;Auto;Texture2D;False;-1;0;2;SAMPLER2D;0;SAMPLERSTATE;1
+Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;159;-480,1312;Inherit;False;Property;_PictureRoughness;Picture Roughness;33;0;Create;True;0;0;0;False;0;False;1;1;0;1;0;1;FLOAT;0
+Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;160;-480,1392;Inherit;False;Property;_PictureMetallic;Picture Metallic;34;0;Create;True;0;0;0;False;0;False;0;0;0;1;0;1;FLOAT;0
+Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;161;-480,1472;Inherit;False;Property;_HasPictureRoughness;Has Picture Roughness;35;0;Create;True;0;0;0;False;0;False;0;0;0;0;0;1;FLOAT;0
+Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;162;-480,1552;Inherit;False;Property;_HasPictureMetallic;Has Picture Metallic;36;0;Create;True;0;0;0;False;0;False;0;0;0;0;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;92;-1568,64;Inherit;False;Property;_farDepth;farDepth;8;0;Create;True;0;0;0;False;0;False;0.25;0.5;0;0;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;91;-1552,-16;Inherit;False;Property;_nearDepth;nearDepth;13;0;Create;True;0;0;0;False;0;False;0.01;0;0;0;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;89;-1552,-80;Inherit;False;Property;_Steps;Steps;14;0;Create;True;0;0;0;False;0;False;128;128;0;0;0;1;FLOAT;0
 Node;AmplifyShaderEditor.TextureCoordinatesNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;95;-1344,32;Inherit;False;0;-1;2;3;2;SAMPLER2D;;False;0;FLOAT2;1,1;False;1;FLOAT2;0,0;False;5;FLOAT2;0;FLOAT;1;FLOAT;2;FLOAT;3;FLOAT;4
-Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;87;-1008,-160;Inherit;False;// Art box behind the card's window (parallax occlusion inside a recessed frame).$// Depth-map white sits at nearDepth (just behind the glass), black at farDepth@ heightMin/heightMax stretch its contrast.$// Returns the art colour: sampled at the parallax hit, darkened with depth (depthDarken = brightness at the back of the box)$// and faded to black toward the box walls over edgeFade (card-width units).$const float aspect = 63.0 / 88.0@$float3 v = normalize(viewTS)@$float2 shift = -v.xy / max(v.z, 0.15)@$shift.y *= aspect@$float2 dx = ddx(uv), dy = ddy(uv)@$$int   n     = clamp((int)steps, 1, 64)@$float stepD = (farDepth - nearDepth) / n@$float  d = nearDepth@$float2 p = uv@$float4 art = 0@$${$    // ---------- One height map ----------$    float range = max(heightMax - heightMin, 1e-4)@$    p = uv + shift * d@$    float  scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range))@$    float  prevD = d, prevDiff = scene - d@$    [loop] for (int i = 0@ i < 64@ i++)$    {$        if (i >= n || d >= scene) break@$        prevD = d@ prevDiff = scene - d@$        d += stepD@$        p = uv + shift * d@$        scene = lerp(farDepth, nearDepth, saturate((tex2Dgrad(heightMap, p, dx, dy).r - heightMin) / range))@$    }$    float t = prevDiff / max(prevDiff - (scene - d), 1e-5)@$    d = lerp(prevD, d, saturate(t))@$    p = uv + shift * d@$    art = tex2Dgrad(albedo, p, dx, dy)@$}$$float depth01 = saturate((d - nearDepth) / max(farDepth - nearDepth, 1e-5))@$// ---------- Box walls ----------$// The art sits on the back of a box: windowRect is the opening, the side walls go straight down.$// Where the view ray reaches a side wall before it reaches the art, that wall is visible instead.$float2 toWall = float2($    shift.x > 1e-5 ? (windowRect.z - uv.x) / shift.x : (shift.x < -1e-5 ? (windowRect.x - uv.x) / shift.x : 1e5),$    shift.y > 1e-5 ? (windowRect.w - uv.y) / shift.y : (shift.y < -1e-5 ? (windowRect.y - uv.y) / shift.y : 1e5))@$float dWall = max(min(toWall.x, toWall.y), 0.0)@$float soft = max(edgeFade, 1e-4)@$float wallAmount = 1.0 - smoothstep(-soft, soft, dWall - d)@   // 0 = art, 1 = wall (soft crease where they meet)$$float3 artCol = art.rgb * lerp(1.0, depthDarken, depth01)@    // deeper parts of the art darker$$// ---------- Wall surface: interior sky (port of Blender material interior_sky, tower9.blend) ----------$// Starts at the point where the ray meets the wall: sphere-traced FBM nebula + star field + glints + rim,$// tinted by the card rarity colour. Only evaluated where a wall is visible.$float3 wall = 0@$#define SKY_H1(q) frac(sin(dot(q, float3(12.9898, 78.233, 37.719))) * 43758.5453)$#define SKY_H3(q) frac(sin(float3(dot(q, float3(127.1, 311.7, 74.7)), dot(q, float3(269.5, 183.3, 246.1)), dot(q, float3(113.5, 271.9, 124.6)))) * 43758.5453)$[branch] if (wallAmount > 0.001)${$    float3 I  = v@                                          // towards the viewer (Blender Incoming)$    float2 pw = uv + shift * dWall@                         // where the ray meets the wall (UV)$    float3 wp = float3(pw.x, pw.y / aspect, -dWall)@        // wall point, card-width units$    float3 p0 = wp * skyScale@$    float3 rc = pow(saturate(rarityColor.rgb), 2.2)@        // rarity colour, gamma -> linear$$    // Nebula: 8 steps of ro -= I * (fbm(ro) - 0.45)$    float3 ro = p0@$    [loop] for (int s = 0@ s < 8@ s++)$    {$        float3 q = ro * 0.54@$        float fbm = 0.0, amp = 1.0, norm = 0.0@$        [unroll] for (int o = 0@ o < 6@ o++)$        {$            float3 i0 = floor(q), f0 = frac(q), w3 = f0 * f0 * (3.0 - 2.0 * f0)@$            float nv = lerp(lerp(lerp(SKY_H1(i0), SKY_H1(i0 + float3(1, 0, 0)), w3.x),$                                 lerp(SKY_H1(i0 + float3(0, 1, 0)), SKY_H1(i0 + float3(1, 1, 0)), w3.x), w3.y),$                            lerp(lerp(SKY_H1(i0 + float3(0, 0, 1)), SKY_H1(i0 + float3(1, 0, 1)), w3.x),$                                 lerp(SKY_H1(i0 + float3(0, 1, 1)), SKY_H1(i0 + float3(1, 1, 1)), w3.x), w3.y), w3.z)@$            fbm += nv * amp@ norm += amp@ amp *= 0.472@ q *= 1.91@$        }$        ro -= I * (fbm / norm - 0.45)@$    }$    float nebulaDepth = saturate(distance(p0, ro))@$    wall = rc * lerp(0.35, 0.07, nebulaDepth)@               // clouds: bright where thin, dark where deep$$    // Rim (Layer Weight fresnel)$    wall += rc * pow(1.0 - saturate(I.z), 5.0) * 0.5@$$    // Glints on the wall: Voronoi cells with a random direction that light up when you look along it$    float3 gq1 = wp * 2.0, gq2 = wp * 89.2@$    float3 c1 = 0, c2 = 0@ float d1 = 8.0, d2 = 8.0@$    [unroll] for (int gz = -1@ gz <= 1@ gz++)$    [unroll] for (int gy = -1@ gy <= 1@ gy++)$    [unroll] for (int gx = -1@ gx <= 1@ gx++)$    {$        float3 o3 = float3(gx, gy, gz)@$        float3 k1 = floor(gq1) + o3@$        float  e1 = length(k1 + SKY_H3(k1) - gq1)@$        if (e1 < d1) { d1 = e1@ c1 = SKY_H3(k1 + 17.0)@ }$        float3 k2 = floor(gq2) + o3@$        float3 a2 = pow(abs(k2 + SKY_H3(k2) - gq2), 0.38)@  // Minkowski 0.38: star-shaped cells$        float  e2 = pow(a2.x + a2.y + a2.z, 1.0 / 0.38)@$        if (e2 < d2) { d2 = e2@ c2 = SKY_H3(k2 + 17.0)@ }$    }$    wall += float3(0.045, 0.016, 0.0065) * pow(saturate(dot(I, c1 * 2.0 - 1.0) * 0.5 + 0.5), 10.0)@$    wall += float3(1.0, 0.288, 0.082) * pow(saturate(dot(I, c2 * 2.0 - 1.0) * 0.5 + 0.5), 10.0) * (d2 < 0.8 ? 1.0 : 0.0)@$$    // Star field: 16 steps through a field of points (Voronoi F1 * 0.19)@ rays that pass a star stall$    float3 rs = p0@$    [loop] for (int k = 0@ k < 16@ k++)$    {$        float3 sq = rs * 4.53, sc = floor(sq)@$        float dm = 8.0@$        [unroll] for (int sz = -1@ sz <= 1@ sz++)$        [unroll] for (int sy = -1@ sy <= 1@ sy++)$        [unroll] for (int sx = -1@ sx <= 1@ sx++)$        {$            float3 cc = sc + float3(sx, sy, sz)@$            dm = min(dm, length(cc + SKY_H3(cc) - sq))@$        }$        rs -= I * (dm * 0.19)@$    }$    float star = saturate(pow(1.25 / (distance(p0, rs) + 1.0), lerp(30.0, 10.0, nebulaDepth)) * 5.0)@$    float3 starCol = star < 0.089 ? lerp(float3(0, 0, 0), float3(0.5, 0.292, 0.196), saturate((star - 0.027) / 0.062))$                   : star < 0.359 ? lerp(float3(0.5, 0.292, 0.196), float3(1, 1, 1), (star - 0.089) / 0.27)$                   : star < 0.5   ? lerp(float3(1, 1, 1), float3(0.5, 0, 0), (star - 0.359) / 0.141)$                   :                lerp(float3(0.5, 0, 0), float3(0.258, 0.528, 1.0), (star - 0.5) / 0.5)@$    wall += starCol * star@$$    wall *= lerp(1.0, depthDarken, saturate(dWall / max(farDepth, 1e-5)))@   // deeper down the wall = darker$    wall = pow(saturate(wall * skyBrightness), 1.0 / 2.2)@                    // linear -> this project gamma space$}$$hit = float3( p, 1.0 - wallAmount )@             // for the normal map: hit UV, share of art (not wall)$return float4(lerp(artCol, wall, wallAmount), art.a)@;4;Create;16;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;heightMap;SAMPLER2D;_Sampler287;In;;Inherit;False;False;steps;FLOAT;24;In;;Inherit;False;True;windowRect;FLOAT4;0.031,0.022,0.969,0.978;In;;Inherit;False;True;nearDepth;FLOAT;0.01;In;;Inherit;False;True;farDepth;FLOAT;0.25;In;;Inherit;False;True;heightMin;FLOAT;0.75;In;;Inherit;False;True;heightMax;FLOAT;1;In;;Inherit;False;True;albedo;SAMPLER2D;_Sampler987;In;;Inherit;False;True;edgeFade;FLOAT;0.06;In;;Inherit;False;True;depthDarken;FLOAT;0.5;In;;Inherit;False;True;skyScale;FLOAT;6;In;;Inherit;False;True;skyBrightness;FLOAT;1;In;;Inherit;False;True;rarityColor;FLOAT4;0.25,0.55,1,1;In;;Inherit;False;True;hit;FLOAT3;0,0,0;Out;;Inherit;False;ParallaxWindow;True;False;0;;False;16;0;FLOAT2;0,0;False;1;FLOAT3;0,0,0;False;2;SAMPLER2D;_Sampler287;False;3;FLOAT;24;False;4;FLOAT4;0.031,0.022,0.969,0.978;False;5;FLOAT;0.01;False;6;FLOAT;0.25;False;7;FLOAT;0.75;False;8;FLOAT;1;False;9;SAMPLER2D;_Sampler987;False;10;FLOAT;0.06;False;11;FLOAT;0.5;False;12;FLOAT;6;False;13;FLOAT;1;False;14;FLOAT4;0.25,0.55,1,1;False;15;FLOAT3;0,0,0;False;2;FLOAT4;0;FLOAT3;16
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;87;-1008,-160;Inherit;False;// Art box behind the card's window (parallax occlusion inside a recessed frame).$// Depth-map white sits at nearDepth (just behind the glass), black at farDepth@ heightMin/heightMax stretch its contrast.$// Returns the art colour: sampled at the parallax hit, darkened with depth (depthDarken = brightness at the back of the box)$// and faded to black toward the box walls over edgeFade (card-width units).$const float aspect = 63.0 / 88.0@$float3 v = normalize(viewTS)@$float2 shift = -v.xy / max(v.z, 0.15)@$shift.y *= aspect@$float2 dx = ddx(uv), dy = ddy(uv)@$$int   n     = clamp((int)steps, 1, 128)@$float stepD = (farDepth - nearDepth) / n@$float  d = nearDepth@$float2 p = uv@$float4 art = 0@$${$    // ---------- One height map ----------$    float range = max(heightMax - heightMin, 1e-4)@$    float knee = min(background, 0.1)@$    #define BOX_SCENE(q, out_) { float bh = saturate(0.5 + (saturate((tex2Dgrad(heightMap, q, dx, dy).r - heightMin) / range) - 0.5) * strength)@ float bm = max(knee - abs(bh - background), 0.0)@ out_ = lerp(farDepth, nearDepth, max(bh, background) + bm * bm / max(4.0 * knee, 1e-5))@ }$    p = uv + shift * d@$    float  scene@$    BOX_SCENE(p, scene)@$    float  prevD = d, prevDiff = scene - d@$    [loop] for (int i = 0@ i < 128@ i++)$    {$        if (i >= n || d >= scene) break@$        prevD = d@ prevDiff = scene - d@$        d += stepD@$        p = uv + shift * d@$        BOX_SCENE(p, scene)@$    }$    float  lo = prevD, hi = d, loDiff = prevDiff, hiDiff = scene - d@$    [unroll] for (int r = 0@ r < 5@ r++)$    {$        float mid = 0.5 * (lo + hi)@$        p = uv + shift * mid@$        BOX_SCENE(p, scene)@$        if (scene > mid) { lo = mid@ loDiff = scene - mid@ }$        else { hi = mid@ hiDiff = scene - mid@ }$    }$    float t = loDiff / max(loDiff - hiDiff, 1e-5)@$    d = lerp(lo, hi, saturate(t))@$    p = uv + shift * d@$    art = tex2Dgrad(albedo, p, dx, dy)@$}$$float depth01 = saturate((d - nearDepth) / max(farDepth - nearDepth, 1e-5))@$// ---------- Box walls ----------$// The art sits on the back of a box: windowRect is the opening, the side walls go straight down.$// Where the view ray reaches a side wall before it reaches the art, that wall is visible instead.$float2 toWall = float2($    shift.x > 1e-5 ? (windowRect.z - uv.x) / shift.x : (shift.x < -1e-5 ? (windowRect.x - uv.x) / shift.x : 1e5),$    shift.y > 1e-5 ? (windowRect.w - uv.y) / shift.y : (shift.y < -1e-5 ? (windowRect.y - uv.y) / shift.y : 1e5))@$float dWall = max(min(toWall.x, toWall.y), 0.0)@$float soft = max(edgeFade, 1e-4)@$float wallAmount = 1.0 - smoothstep(-soft, soft, dWall - d)@   // 0 = art, 1 = wall (soft crease where they meet)$$float3 artCol = art.rgb * lerp(1.0, depthDarken, depth01)@    // deeper parts of the art darker$$// ---------- Wall surface: interior sky (port of Blender material interior_sky, tower9.blend) ----------$// Starts at the point where the ray meets the wall: sphere-traced FBM nebula + star field + glints + rim,$// tinted by the card rarity colour. Only evaluated where a wall is visible.$float3 wall = 0@$#define SKY_H1(q) frac(sin(dot(q, float3(12.9898, 78.233, 37.719))) * 43758.5453)$#define SKY_H3(q) frac(sin(float3(dot(q, float3(127.1, 311.7, 74.7)), dot(q, float3(269.5, 183.3, 246.1)), dot(q, float3(113.5, 271.9, 124.6)))) * 43758.5453)$[branch] if (wallAmount > 0.001)${$    float3 I  = v@                                          // towards the viewer (Blender Incoming)$    float2 pw = uv + shift * dWall@                         // where the ray meets the wall (UV)$    float3 wp = float3(pw.x, pw.y / aspect, -dWall)@        // wall point, card-width units$    float3 p0 = wp * skyScale@$    float3 rc = pow(saturate(rarityColor.rgb), 2.2)@        // rarity colour, gamma -> linear$$    // Nebula: 8 steps of ro -= I * (fbm(ro) - 0.45)$    float3 ro = p0@$    [loop] for (int s = 0@ s < 8@ s++)$    {$        float3 q = ro * 0.54@$        float fbm = 0.0, amp = 1.0, norm = 0.0@$        [unroll] for (int o = 0@ o < 6@ o++)$        {$            float3 i0 = floor(q), f0 = frac(q), w3 = f0 * f0 * (3.0 - 2.0 * f0)@$            float nv = lerp(lerp(lerp(SKY_H1(i0), SKY_H1(i0 + float3(1, 0, 0)), w3.x),$                                 lerp(SKY_H1(i0 + float3(0, 1, 0)), SKY_H1(i0 + float3(1, 1, 0)), w3.x), w3.y),$                            lerp(lerp(SKY_H1(i0 + float3(0, 0, 1)), SKY_H1(i0 + float3(1, 0, 1)), w3.x),$                                 lerp(SKY_H1(i0 + float3(0, 1, 1)), SKY_H1(i0 + float3(1, 1, 1)), w3.x), w3.y), w3.z)@$            fbm += nv * amp@ norm += amp@ amp *= 0.472@ q *= 1.91@$        }$        ro -= I * (fbm / norm - 0.45)@$    }$    float nebulaDepth = saturate(distance(p0, ro))@$    wall = rc * lerp(0.35, 0.07, nebulaDepth)@               // clouds: bright where thin, dark where deep$$    // Rim (Layer Weight fresnel)$    wall += rc * pow(1.0 - saturate(I.z), 5.0) * 0.5@$$    // Glints on the wall: Voronoi cells with a random direction that light up when you look along it$    float3 gq1 = wp * 2.0, gq2 = wp * 89.2@$    float3 c1 = 0, c2 = 0@ float d1 = 8.0, d2 = 8.0@$    [unroll] for (int gz = -1@ gz <= 1@ gz++)$    [unroll] for (int gy = -1@ gy <= 1@ gy++)$    [unroll] for (int gx = -1@ gx <= 1@ gx++)$    {$        float3 o3 = float3(gx, gy, gz)@$        float3 k1 = floor(gq1) + o3@$        float  e1 = length(k1 + SKY_H3(k1) - gq1)@$        if (e1 < d1) { d1 = e1@ c1 = SKY_H3(k1 + 17.0)@ }$        float3 k2 = floor(gq2) + o3@$        float3 a2 = pow(abs(k2 + SKY_H3(k2) - gq2), 0.38)@  // Minkowski 0.38: star-shaped cells$        float  e2 = pow(a2.x + a2.y + a2.z, 1.0 / 0.38)@$        if (e2 < d2) { d2 = e2@ c2 = SKY_H3(k2 + 17.0)@ }$    }$    wall += float3(0.045, 0.016, 0.0065) * pow(saturate(dot(I, c1 * 2.0 - 1.0) * 0.5 + 0.5), 10.0)@$    wall += float3(1.0, 0.288, 0.082) * pow(saturate(dot(I, c2 * 2.0 - 1.0) * 0.5 + 0.5), 10.0) * (d2 < 0.8 ? 1.0 : 0.0)@$$    // Star field: 16 steps through a field of points (Voronoi F1 * 0.19)@ rays that pass a star stall$    float3 rs = p0@$    [loop] for (int k = 0@ k < 16@ k++)$    {$        float3 sq = rs * 4.53, sc = floor(sq)@$        float dm = 8.0@$        [unroll] for (int sz = -1@ sz <= 1@ sz++)$        [unroll] for (int sy = -1@ sy <= 1@ sy++)$        [unroll] for (int sx = -1@ sx <= 1@ sx++)$        {$            float3 cc = sc + float3(sx, sy, sz)@$            dm = min(dm, length(cc + SKY_H3(cc) - sq))@$        }$        rs -= I * (dm * 0.19)@$    }$    float star = saturate(pow(1.25 / (distance(p0, rs) + 1.0), lerp(30.0, 10.0, nebulaDepth)) * 5.0)@$    float3 starCol = star < 0.089 ? lerp(float3(0, 0, 0), float3(0.5, 0.292, 0.196), saturate((star - 0.027) / 0.062))$                   : star < 0.359 ? lerp(float3(0.5, 0.292, 0.196), float3(1, 1, 1), (star - 0.089) / 0.27)$                   : star < 0.5   ? lerp(float3(1, 1, 1), float3(0.5, 0, 0), (star - 0.359) / 0.141)$                   :                lerp(float3(0.5, 0, 0), float3(0.258, 0.528, 1.0), (star - 0.5) / 0.5)@$    wall += starCol * star@$$    wall *= lerp(1.0, depthDarken, saturate(dWall / max(farDepth, 1e-5)))@   // deeper down the wall = darker$    wall = pow(saturate(wall * skyBrightness), 1.0 / 2.2)@                    // linear -> this project gamma space$}$$hit = float3( p, 1.0 - wallAmount )@             // for the normal map: hit UV, share of art (not wall)$return float4(lerp(artCol, wall, wallAmount), art.a)@;4;Create;18;False;uv;FLOAT2;0,0;In;;Inherit;False;False;viewTS;FLOAT3;0,0,0;In;;Inherit;False;False;heightMap;SAMPLER2D;_Sampler287;In;;Inherit;False;False;steps;FLOAT;24;In;;Inherit;False;True;windowRect;FLOAT4;0.031,0.022,0.969,0.978;In;;Inherit;False;True;nearDepth;FLOAT;0.01;In;;Inherit;False;True;farDepth;FLOAT;0.25;In;;Inherit;False;True;heightMin;FLOAT;0.75;In;;Inherit;False;True;heightMax;FLOAT;1;In;;Inherit;False;True;albedo;SAMPLER2D;_Sampler987;In;;Inherit;False;True;edgeFade;FLOAT;0.06;In;;Inherit;False;True;depthDarken;FLOAT;0.5;In;;Inherit;False;True;skyScale;FLOAT;6;In;;Inherit;False;True;skyBrightness;FLOAT;1;In;;Inherit;False;True;rarityColor;FLOAT4;0.25,0.55,1,1;In;;Inherit;False;True;background;FLOAT;0;In;;Inherit;False;True;strength;FLOAT;1;In;;Inherit;False;True;hit;FLOAT3;0,0,0;Out;;Inherit;False;ParallaxWindow;True;False;0;;False;18;0;FLOAT2;0,0;False;1;FLOAT3;0,0,0;False;2;SAMPLER2D;_Sampler287;False;3;FLOAT;24;False;4;FLOAT4;0.031,0.022,0.969,0.978;False;5;FLOAT;0.01;False;6;FLOAT;0.25;False;7;FLOAT;0.75;False;8;FLOAT;1;False;9;SAMPLER2D;_Sampler987;False;10;FLOAT;0.06;False;11;FLOAT;0.5;False;12;FLOAT;6;False;13;FLOAT;1;False;14;FLOAT4;0.25,0.55,1,1;False;15;FLOAT;0;False;16;FLOAT;1;False;17;FLOAT3;0,0,0;False;2;FLOAT4;0;FLOAT3;18
 Node;AmplifyShaderEditor.LerpOp, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;112;-160,720;Inherit;False;3;0;FLOAT;0;False;1;FLOAT;0;False;2;FLOAT;0;False;1;FLOAT;0
 Node;AmplifyShaderEditor.OneMinusNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;114;16,624;Inherit;False;1;0;FLOAT;0;False;1;FLOAT;0
 Node;AmplifyShaderEditor.SimpleMultiplyOpNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;115;176,432;Inherit;False;2;2;0;COLOR;0,0,0,0;False;1;FLOAT;0;False;1;COLOR;0
@@ -3859,7 +4015,7 @@ Node;AmplifyShaderEditor.SamplerNode, AmplifyShaderEditor, Version=0.0.0.0, Cult
 Node;AmplifyShaderEditor.SamplerNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;141;-480,1360;Inherit;True;Property;_BackFoil;Back Foil;24;0;Create;True;0;0;0;False;0;False;-1;None;None;True;0;False;black;Auto;False;Object;-1;Auto;Texture2D;False;8;0;SAMPLER2D;;False;1;FLOAT2;0,0;False;2;FLOAT;0;False;3;FLOAT2;0,0;False;4;FLOAT2;0,0;False;5;FLOAT;1;False;6;FLOAT;0;False;7;SAMPLERSTATE;;False;6;COLOR;0;FLOAT;1;FLOAT;2;FLOAT;3;FLOAT;4;FLOAT3;5
 Node;AmplifyShaderEditor.TexturePropertyNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;142;-480,1680;Inherit;True;Property;_LayerNormal;Layer Normal;25;0;Create;True;0;0;0;False;0;False;None;None;False;bump;Auto;Texture2D;False;-1;0;2;SAMPLER2D;0;SAMPLERSTATE;1
 Node;AmplifyShaderEditor.TexturePropertyNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;143;-480,1840;Inherit;True;Property;_BackNormal;Back Normal;26;0;Create;True;0;0;0;False;0;False;None;None;False;bump;Auto;Texture2D;False;-1;0;2;SAMPLER2D;0;SAMPLERSTATE;1
-Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;144;-128,1120;Inherit;False;float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers )@$float k = saturate( frontMask )@$float4 surface = lerp( backFoil, layerFoil, k )@$return float4( lerp( backFoil.r, front, k ), surface.b, surface.a, lerp( 1.0, layers, k ) )@;4;Create;5;False;baseFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;layerFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;layers;FLOAT;0;In;;Inherit;False;False;backFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;CardLayerFoil;True;False;0;;False;5;0;FLOAT4;0,0,0,0;False;1;FLOAT4;0,0,0,0;False;2;FLOAT;0;False;3;FLOAT4;0,0,0,0;False;4;FLOAT;1;False;1;FLOAT4;0
+Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;144;-128,1120;Inherit;False;float front = lerp( baseFoil.r * baseFoil.a, layerFoil.r, layers )@$float k = saturate( frontMask )@$float4 surface = lerp( backFoil, layerFoil, k )@$float2 dx = ddx( uv ), dy = ddy( uv )@$float art = saturate( hit.z )@$float rough = lerp( roughness, tex2Dgrad( roughnessMap, hit.xy, dx, dy ).r, hasRoughness * art )@$float metal = lerp( metallic, tex2Dgrad( metallicMap, hit.xy, dx, dy ).r, hasMetallic * art )@$float cover = lerp( 1.0, layers, k )@$return float4( lerp( backFoil.r, front, k ), lerp( rough, surface.b, cover ), surface.a + metal * ( 1.0 - cover ), 1.0 )@;4;Create;13;False;baseFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;layerFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;layers;FLOAT;0;In;;Inherit;False;False;backFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;False;hit;FLOAT3;0,0,0;In;;Inherit;False;False;uv;FLOAT2;0,0;In;;Inherit;False;False;roughnessMap;SAMPLER2D;_Sampler7144;In;;Inherit;False;False;metallicMap;SAMPLER2D;_Sampler8144;In;;Inherit;False;False;roughness;FLOAT;1;In;;Inherit;False;False;metallic;FLOAT;0;In;;Inherit;False;False;hasRoughness;FLOAT;0;In;;Inherit;False;False;hasMetallic;FLOAT;0;In;;Inherit;False;CardLayerFoil;True;False;0;;False;13;0;FLOAT4;0,0,0,0;False;1;FLOAT4;0,0,0,0;False;2;FLOAT;0;False;3;FLOAT4;0,0,0,0;False;4;FLOAT;1;False;5;FLOAT3;0,0,0;False;6;FLOAT2;0,0;False;7;SAMPLER2D;_Sampler7144;False;8;SAMPLER2D;_Sampler8144;False;9;FLOAT;1;False;10;FLOAT;0;False;11;FLOAT;0;False;12;FLOAT;0;False;1;FLOAT4;0
 Node;AmplifyShaderEditor.CustomExpressionNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;145;-352,864;Inherit;False;// Which glow: 0 = the art's (Art Glow), 1 = a frame's (Border Glow). Collection layers count as frame: the client stacks$// that into the G channel of _LayerFoil / _BackFoil.$return lerp( backFoil.g, layerFoil.g, saturate( frontMask ) )@;1;Create;3;False;layerFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;backFoil;FLOAT4;0,0,0,0;In;;Inherit;False;False;frontMask;FLOAT;1;In;;Inherit;False;CardLayerGlow;True;False;0;;False;3;0;FLOAT4;0,0,0,0;False;1;FLOAT4;0,0,0,0;False;2;FLOAT;1;False;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;150;256,896;Inherit;False;Global;_DaCardWorld;DaCard World;40;0;Create;True;0;0;0;False;0;False;0;0;0;1;0;1;FLOAT;0
 Node;AmplifyShaderEditor.RangedFloatNode, AmplifyShaderEditor, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null;151;256,976;Inherit;False;Property;_WorldGlow;Glow in the world;27;0;Create;True;0;0;0;False;0;False;0.1;0.1;0;1;0;1;FLOAT;0
@@ -3891,6 +4047,8 @@ WireConnection;87;11;97;0
 WireConnection;87;12;98;0
 WireConnection;87;13;99;0
 WireConnection;87;14;100;0
+WireConnection;87;15;155;0
+WireConnection;87;16;156;0
 WireConnection;112;0;110;0
 WireConnection;112;1;111;0
 WireConnection;112;2;145;0
@@ -3915,7 +4073,7 @@ WireConnection;120;8;124;0
 WireConnection;125;1;95;0
 WireConnection;121;0;113;0
 WireConnection;121;1;120;0
-WireConnection;126;0;87;16
+WireConnection;126;0;87;18
 WireConnection;126;1;95;0
 WireConnection;126;2;127;0
 WireConnection;126;3;128;0
@@ -3940,6 +4098,14 @@ WireConnection;144;1;140;0
 WireConnection;144;2;70;4
 WireConnection;144;3;141;0
 WireConnection;144;4;41;1
+WireConnection;144;5;87;18
+WireConnection;144;6;95;0
+WireConnection;144;7;157;0
+WireConnection;144;8;158;0
+WireConnection;144;9;159;0
+WireConnection;144;10;160;0
+WireConnection;144;11;161;0
+WireConnection;144;12;162;0
 WireConnection;145;0;140;0
 WireConnection;145;1;141;0
 WireConnection;145;2;41;1

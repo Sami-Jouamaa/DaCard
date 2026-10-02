@@ -265,6 +265,8 @@ public record TextureSlot
     [JsonPropertyName("required")] public bool Required { get; set; }
 
     [JsonPropertyName("default")] public string? Default { get; set; }
+
+    [JsonPropertyName("flag")] public string? Flag { get; set; }
 }
 
 public record CardTypeSettings

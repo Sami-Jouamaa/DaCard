@@ -67,6 +67,14 @@ Material:
         m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
+    - _PictureMetallicMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _PictureRoughnessMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
     - _ArtGlow: 0.6
@@ -75,12 +83,18 @@ Material:
     - _FoilShift: 1.5
     - _FoilStrength: 0.6
     - _GlossyReflections: 1
+    - _HasPictureMetallic: 0
+    - _HasPictureRoughness: 0
     - _NormalStrength: 1
+    - _PictureMetallic: 0
+    - _PictureRoughness: 1
     - _Roughness: 1
     - _SpecularHighlights: 1
     - _Steps: 128
     - _WorldGlow: 0.1
+    - _backPlane: 0
     - _depthDarken: 0.75
+    - _depthStrength: 1
     - _edgeFade: 0.2
     - _farDepth: 1
     - _heightMax: 1

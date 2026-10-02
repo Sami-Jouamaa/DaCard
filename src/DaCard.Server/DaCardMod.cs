@@ -50,7 +50,9 @@ public class DaCardMod(
         new() { Suffix = "height", Property = "_HeightMap", Linear = true, Default = "white" },
         new() { Suffix = "holo", Property = "_HoloMask", Linear = true, Default = "white" },
         new() { Suffix = "foil", Property = "_FoilMask", Linear = true, Default = "white" },
-        new() { Suffix = "normal", Property = "_NormalMap", Linear = true, Default = "bump" }
+        new() { Suffix = "normal", Property = "_NormalMap", Linear = true, Default = "bump" },
+        new() { Suffix = "roughness", Property = "_PictureRoughnessMap", Linear = true, Default = "white", Flag = "_HasPictureRoughness" },
+        new() { Suffix = "metallic", Property = "_PictureMetallicMap", Linear = true, Default = "black", Flag = "_HasPictureMetallic" }
     ];
 
     private static readonly Dictionary<string, CardTypeSettings> DefaultCardTypes = new()

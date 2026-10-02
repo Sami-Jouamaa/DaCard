@@ -135,12 +135,24 @@
                                             <small id="depth-note"></small>
                                             <button type="button" class="facade-btn fx-sm fx-grey" id="depth-reset">Default</button>
                                         </div>
-                                        <div class="depth-range" id="depth-range">
-                                            <div class="depth-range-track"><div class="depth-range-fill"></div></div>
-                                            <input type="range" id="depth-near" min="0" max="1" step="0.01" aria-label="Near depth (white of the depth map)">
-                                            <input type="range" id="depth-far" min="0" max="1" step="0.01" aria-label="Far depth (black of the depth map)">
+                                        <div class="depth-editor">
+                                            <div class="depth-strength" id="depth-strength" tabindex="0" role="slider" aria-label="Strength" aria-valuemin="0" aria-valuemax="200" title="Strength · drag · right-click resets">100%</div>
+                                            <div class="depth-box-wrap">
+                                                <small>Back</small>
+                                                <div class="depth-box" id="depth-box">
+                                                    <div class="depth-effect"></div>
+                                                    <div class="depth-band" id="depth-band" tabindex="0" role="slider" aria-label="Depth position" title="Drag to move"></div>
+                                                    <div class="depth-line is-end" id="depth-end" tabindex="0" role="slider" aria-label="End" title="End"></div>
+                                                    <div class="depth-line is-start" id="depth-start" tabindex="0" role="slider" aria-label="Start" title="Start"></div>
+                                                </div>
+                                                <small>Window</small>
+                                            </div>
                                         </div>
-                                        <div class="depth-range-scale"><span>Window</span><span>Back of the box</span></div>
+                                        <label class="range-row" title="Bring the darkest parts forward">
+                                            <span>Background</span>
+                                            <input type="range" class="facade-range" id="depth-back" min="0" max="0.95" step="0.01">
+                                            <small id="depth-back-value"></small>
+                                        </label>
                                     </div>
                                     <div class="media" id="media-foil" data-slot="foil">
                                         <div class="drop drop-sm" id="drop-foil">
@@ -160,16 +172,49 @@
                                     <div class="media" id="media-normal" data-slot="normal">
                                         <div class="drop drop-sm" id="drop-normal">
                                             <b>Normal map</b>
-                                            <span>Optional. OpenGL, green up.</span>
+                                            <span>Optional. DirectX or OpenGL.</span>
                                             <div class="media-pick"></div>
                                             <small id="normal-name">No normal map</small>
                                         </div>
+                                        <label class="facade-check-row media-gl" title="On: OpenGL (green up). Off: DirectX." hidden><input type="checkbox" class="facade-switch" id="normal-gl"><span>OpenGL</span></label>
                                         <div class="media-anim" hidden>
                                             <label class="media-fps-row"><span>FPS</span><input type="number" class="facade-input media-fps" min="1" max="60" step="1" inputmode="numeric"></label>
                                             <button type="button" class="facade-btn fx-sm media-split">Split frames</button>
                                             <small class="field-note media-info"></small>
                                         </div>
                                         <div class="guide-actions media-actions"><button type="button" class="facade-btn fx-sm fx-grey" id="normal-clear" hidden>Remove the normal map</button></div>
+                                        <input type="file" class="media-file" hidden>
+                                    </div>
+                                    <div class="media" id="media-roughness" data-slot="roughness">
+                                        <div class="drop drop-sm" id="drop-roughness">
+                                            <b>Roughness map</b>
+                                            <span>Optional. White = rough.</span>
+                                            <div class="media-pick"></div>
+                                            <small id="roughness-name">No roughness map</small>
+                                        </div>
+                                        <div class="media-value" id="roughness-value"></div>
+                                        <div class="media-anim" hidden>
+                                            <label class="media-fps-row"><span>FPS</span><input type="number" class="facade-input media-fps" min="1" max="60" step="1" inputmode="numeric"></label>
+                                            <button type="button" class="facade-btn fx-sm media-split">Split frames</button>
+                                            <small class="field-note media-info"></small>
+                                        </div>
+                                        <div class="guide-actions media-actions"><button type="button" class="facade-btn fx-sm fx-grey" id="roughness-clear" hidden>Remove the roughness map</button></div>
+                                        <input type="file" class="media-file" hidden>
+                                    </div>
+                                    <div class="media" id="media-metallic" data-slot="metallic">
+                                        <div class="drop drop-sm" id="drop-metallic">
+                                            <b>Metallic map</b>
+                                            <span>Optional. White = metal.</span>
+                                            <div class="media-pick"></div>
+                                            <small id="metallic-name">No metallic map</small>
+                                        </div>
+                                        <div class="media-value" id="metallic-value"></div>
+                                        <div class="media-anim" hidden>
+                                            <label class="media-fps-row"><span>FPS</span><input type="number" class="facade-input media-fps" min="1" max="60" step="1" inputmode="numeric"></label>
+                                            <button type="button" class="facade-btn fx-sm media-split">Split frames</button>
+                                            <small class="field-note media-info"></small>
+                                        </div>
+                                        <div class="guide-actions media-actions"><button type="button" class="facade-btn fx-sm fx-grey" id="metallic-clear" hidden>Remove the metallic map</button></div>
                                         <input type="file" class="media-file" hidden>
                                     </div>
                                     <div class="crop-controls">

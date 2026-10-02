@@ -144,6 +144,7 @@ namespace DaCard.Client
         [JsonProperty("property")] public string Property;
         [JsonProperty("linear")] public bool Linear;
         [JsonProperty("default")] public string Default;
+        [JsonProperty("flag")] public string Flag;
     }
 
     internal class CardManifestEntry

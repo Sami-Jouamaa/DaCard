@@ -7,14 +7,14 @@
 
     const MATERIAL = {
         ArtGlow: 0.6, BorderGlow: 0.2, FoilStrength: 0.6, FoilScale: 1.5, FoilShift: 1.5,
-        Steps: 128, nearDepth: 0, farDepth: 1, heightMin: 0, heightMax: 1,
+        Steps: 128, nearDepth: 0, farDepth: 1, heightMin: 0, heightMax: 1, backPlane: 0, depthStrength: 1, pictureRoughness: 1, pictureMetallic: 0,
         edgeFade: 0.2, depthDarken: 0.75, skyScale: 6, skyBrightness: 1, NormalStrength: 1,
     };
     // card_amplify_2d.mat values that differ from the 3D material
     const MATERIAL_2D = { NormalStrength: 0.2 };
     const UNIFORMS = {
         ArtGlow: 'uArtGlow', BorderGlow: 'uBorderGlow', FoilScale: 'uFoilScale', FoilShift: 'uFoilShift',
-        Steps: 'uSteps', nearDepth: 'uNear', farDepth: 'uFar', heightMin: 'uHeightMin', heightMax: 'uHeightMax',
+        Steps: 'uSteps', nearDepth: 'uNear', farDepth: 'uFar', heightMin: 'uHeightMin', heightMax: 'uHeightMax', backPlane: 'uBackPlane', depthStrength: 'uStrength', pictureRoughness: 'uPictureRoughnessValue', pictureMetallic: 'uPictureMetallicValue',
         edgeFade: 'uEdgeFade', depthDarken: 'uDepthDarken', skyScale: 'uSkyScale',
         skyBrightness: 'uSkyBrightness', NormalStrength: 'uNormalStrength',
     };
@@ -92,9 +92,11 @@
         uniform sampler2D uNormal;    // card.normal.png, flat when missing
         uniform sampler2D uLayerFoil, uLayerNormal, uBackFoil, uBackNormal, uLayerSurface, uBackSurface;
         uniform float uRoughness;
+        uniform sampler2D uPictureRoughness, uPictureMetallic;
+        uniform float uHasPictureRoughness, uHasPictureMetallic, uPictureRoughnessValue, uPictureMetallicValue;
         // Material floats (MATERIAL below)
         uniform float uArtGlow, uBorderGlow, uFoilScale, uFoilShift;
-        uniform float uSteps, uNear, uFar, uHeightMin, uHeightMax;
+        uniform float uSteps, uNear, uFar, uHeightMin, uHeightMax, uBackPlane, uStrength;
         uniform float uEdgeFade, uDepthDarken, uSkyScale, uSkyBrightness, uNormalStrength;
         out vec4 outColor;
 
@@ -106,6 +108,15 @@
             return fract(sin(vec3(dot(q, vec3(127.1, 311.7, 74.7)), dot(q, vec3(269.5, 183.3, 246.1)), dot(q, vec3(113.5, 271.9, 124.6)))) * 43758.5453);
         }
 
+        float boxScene(vec2 q, vec2 dx, vec2 dy) {
+            float range = max(uHeightMax - uHeightMin, 1e-4);
+            float knee = min(uBackPlane, 0.1);
+            float h = clamp((textureGrad(uDepth, q, dx, dy).r - uHeightMin) / range, 0.0, 1.0);
+            h = clamp(0.5 + (h - 0.5) * uStrength, 0.0, 1.0);
+            float m = max(knee - abs(h - uBackPlane), 0.0);
+            return mix(uFar, uNear, max(h, uBackPlane) + m * m / max(4.0 * knee, 1e-5));
+        }
+
         // Port of CardShader3D ParallaxWindow
         // hit (out): xy = UV the ray landed on, z = share of art (not box wall) seen there; for the normal map
         vec4 parallaxWindow(vec2 uv, vec3 viewTS, out vec3 hit) {
@@ -114,24 +125,31 @@
             vec2 shift = -v.xy / max(v.z, 0.15);
             shift.y *= aspect;
             vec2 dx = dFdx(uv), dy = dFdy(uv);
-            int n = clamp(int(uSteps), 1, 64);
+            int n = clamp(int(uSteps), 1, 128);
             float stepD = (uFar - uNear) / float(n);
             float d = uNear;
             vec2 p = uv;
             // One height map
-            float range = max(uHeightMax - uHeightMin, 1e-4);
             p = uv + shift * d;
-            float scene = mix(uFar, uNear, clamp((textureGrad(uDepth, p, dx, dy).r - uHeightMin) / range, 0.0, 1.0));
+            float scene = boxScene(p, dx, dy);
             float prevD = d, prevDiff = scene - d;
-            for (int i = 0; i < 64; i++) {
+            for (int i = 0; i < 128; i++) {
                 if (i >= n || d >= scene) break;
                 prevD = d; prevDiff = scene - d;
                 d += stepD;
                 p = uv + shift * d;
-                scene = mix(uFar, uNear, clamp((textureGrad(uDepth, p, dx, dy).r - uHeightMin) / range, 0.0, 1.0));
+                scene = boxScene(p, dx, dy);
             }
-            float t = prevDiff / max(prevDiff - (scene - d), 1e-5);
-            d = mix(prevD, d, clamp(t, 0.0, 1.0));
+            float lo = prevD, hi = d, loDiff = prevDiff, hiDiff = scene - d;
+            for (int r = 0; r < 5; r++) {
+                float mid = 0.5 * (lo + hi);
+                p = uv + shift * mid;
+                scene = boxScene(p, dx, dy);
+                if (scene > mid) { lo = mid; loDiff = scene - mid; }
+                else { hi = mid; hiDiff = scene - mid; }
+            }
+            float t = loDiff / max(loDiff - hiDiff, 1e-5);
+            d = mix(lo, hi, clamp(t, 0.0, 1.0));
             p = uv + shift * d;
             vec4 art = textureGrad(uArt, p, dx, dy);
             float depth01 = clamp((d - uNear) / max(uFar - uNear, 1e-5), 0.0, 1.0);
@@ -323,8 +341,15 @@
             vec4 pictureFoil = texture(uFoilMask, vUV);
             float foil = mix(pictureFoil.r * pictureFoil.a, layerFoil.r, layers.a);
             vec4 surface = texture(uLayerSurface, vUV);
-            float rough = mix(uRoughness, surface.r, surface.a * layers.a);
-            outColor = vec4(shade(base, layerFoil.g, nt, foil, rough, surface.g * surface.a, n, T, B, v, viewTS), 1.0);
+            float pictureRough = uRoughness, pictureMetal = 0.0;
+            if (uDeep) {
+                float onArt = clamp(hit.z, 0.0, 1.0);
+                pictureRough = mix(uPictureRoughnessValue, textureGrad(uPictureRoughness, hit.xy, dFdx(vUV), dFdy(vUV)).r, uHasPictureRoughness * onArt);
+                pictureMetal = mix(uPictureMetallicValue, textureGrad(uPictureMetallic, hit.xy, dFdx(vUV), dFdy(vUV)).r, uHasPictureMetallic * onArt);
+            }
+            float rough = mix(pictureRough, surface.r, surface.a * layers.a);
+            float metal = surface.g * surface.a + pictureMetal * (1.0 - layers.a);
+            outColor = vec4(shade(base, layerFoil.g, nt, foil, rough, metal, n, T, B, v, viewTS), 1.0);
         }`;
 
     function compile(gl, type, src) {
@@ -362,13 +387,13 @@
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.idx, gl.STATIC_DRAW);
 
-        const units = { art: 0, depth: 1, foilMask: 2, overlay: 3, back: 4, normal: 5, layerFoil: 6, layerNormal: 7, backFoil: 8, backNormal: 9, layerSurface: 10, backSurface: 11 };
+        const units = { art: 0, depth: 1, foilMask: 2, overlay: 3, back: 4, normal: 5, layerFoil: 6, layerNormal: 7, backFoil: 8, backNormal: 9, layerSurface: 10, backSurface: 11, pictureRoughness: 12, pictureMetallic: 13 };
         const white = [255, 255, 255, 255], flat = [128, 128, 255, 255], noFoil = [0, 0, 0, 255];
         const fallback = { art: [0, 0, 0, 0], depth: white, foilMask: noFoil, overlay: [0, 0, 0, 0], back: [40, 42, 48, 255],
-            normal: flat, layerFoil: noFoil, layerNormal: flat, backFoil: noFoil, backNormal: flat, layerSurface: [0, 0, 0, 0], backSurface: [0, 0, 0, 0] };
+            normal: flat, layerFoil: noFoil, layerNormal: flat, backFoil: noFoil, backNormal: flat, layerSurface: [0, 0, 0, 0], backSurface: [0, 0, 0, 0], pictureRoughness: white, pictureMetallic: noFoil };
         const samplers = { art: 'uArt', depth: 'uDepth', foilMask: 'uFoilMask', overlay: 'uOverlay', back: 'uBack',
             normal: 'uNormal', layerFoil: 'uLayerFoil', layerNormal: 'uLayerNormal', backFoil: 'uBackFoil', backNormal: 'uBackNormal',
-            layerSurface: 'uLayerSurface', backSurface: 'uBackSurface' };
+            layerSurface: 'uLayerSurface', backSurface: 'uBackSurface', pictureRoughness: 'uPictureRoughness', pictureMetallic: 'uPictureMetallic' };
         const textures = {};
         for (const key of Object.keys(units)) {
             const t = gl.createTexture();
@@ -403,7 +428,7 @@
         }
         for (const key of Object.keys(units)) upload(key, null);
 
-        const params = { type: '2d', foil: false, rarity: [1, 1, 1], material: { ...MATERIAL } };
+        const params = { type: '2d', foil: false, rarity: [1, 1, 1], material: { ...MATERIAL }, has: {} };
         const view = { yaw: 0, pitch: 0, dist: DIST, sway: true };
         const IDLE_MS = 3000, BLEND_MS = 1000;
         let frame = 0, t0 = performance.now(), idleTimer = 0, blend = null;
@@ -470,6 +495,8 @@
             gl.uniform3fv(u.uEye, eye);
             gl.uniform1i(u.uDeep, params.type === '3d' ? 1 : 0);
             gl.uniform1f(u.uRoughness, roughnessOf(params.type));
+            gl.uniform1f(u.uHasPictureRoughness, params.has.pictureRoughness ? 1 : 0);
+            gl.uniform1f(u.uHasPictureMetallic, params.has.pictureMetallic ? 1 : 0);
             gl.uniform1f(u.uFoil, params.foil ? params.material.FoilStrength : 0);
             gl.uniform3fv(u.uRarity, params.rarity);
             const material = params.type === '3d' ? params.material : { ...params.material, ...MATERIAL_2D };
@@ -521,6 +548,7 @@
         return {
             set(s) {
                 for (const key of Object.keys(units)) upload(key, s[key] || null);
+                params.has = { pictureRoughness: !!s.pictureRoughness, pictureMetallic: !!s.pictureMetallic };
                 params.type = s.type === '3d' ? '3d' : '2d';
                 params.foil = !!s.foil;
                 const m = /^#?([0-9a-f]{6})$/i.exec(s.rarityColor || '');
@@ -530,6 +558,7 @@
             },
             update(s) {
                 for (const key of Object.keys(s)) if (key in units) upload(key, s[key] || null);
+                for (const key of ['pictureRoughness', 'pictureMetallic']) if (key in s) params.has[key] = !!s[key];
                 requestRender();
             },
             setMaterial(values) {
