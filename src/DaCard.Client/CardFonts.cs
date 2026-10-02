@@ -1,9 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Reflection;
-using System.Security.Cryptography;
-using SPT.Common.Http;
 using TMPro;
 using UnityEngine;
 
@@ -39,13 +36,13 @@ namespace DaCard.Client
             Assets[id] = null;
             try
             {
-                var data = RequestHandler.GetData(id);
-                if (data == null || data.Length == 0)
+                var path = CardCache.LocalFile(id);
+                if (path == null)
                 {
                     Plugin.Log.LogWarning($"The server has no font {id}");
                     return null;
                 }
-                asset = Create(id, data, fallback, template);
+                asset = Create(id, path, fallback, template);
                 Assets[id] = asset;
                 return asset;
             }
@@ -56,17 +53,8 @@ namespace DaCard.Client
             }
         }
 
-        private static TMP_FontAsset Create(string id, byte[] bytes, TMP_FontAsset fallback, Material template)
+        private static TMP_FontAsset Create(string id, string path, TMP_FontAsset fallback, Material template)
         {
-            string hash;
-            using (var sha = SHA1.Create())
-                hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
-            var dir = Path.Combine(BepInEx.Paths.CachePath, "DaCard", "fonts");
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, hash + ".font");
-            if (!File.Exists(path))
-                File.WriteAllBytes(path, bytes);
-
             var font = new Font(path) { name = id };
             var sdfShader = typeof(ShaderUtilities).GetField("k_ShaderRef_MobileSDF", BindingFlags.NonPublic | BindingFlags.Static);
             if (sdfShader != null && sdfShader.GetValue(null) == null && template != null && Shader.Find("TextMeshPro/Mobile/Distance Field") == null)

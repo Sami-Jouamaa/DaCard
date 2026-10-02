@@ -1,8 +1,6 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
 using Newtonsoft.Json;
 using SPT.Common.Http;
 using TMPro;
@@ -21,7 +19,8 @@ namespace DaCard.Client
         private static readonly Dictionary<string, Sprite> StickerSprites = new Dictionary<string, Sprite>();
 
         private const string StickerObject = "sticker";
-        private static readonly ConcurrentDictionary<string, byte[]> ImageBytes = new ConcurrentDictionary<string, byte[]>();
+        private static readonly Dictionary<string, string> FoilToBase = new Dictionary<string, string>();
+        private static readonly Dictionary<string, string> Versions = new Dictionary<string, string>();
         private static readonly Dictionary<string, Texture2D> Textures = new Dictionary<string, Texture2D>();
 
         private static readonly Dictionary<(Material, string), Material> Materials = new Dictionary<(Material, string), Material>();
@@ -53,6 +52,7 @@ namespace DaCard.Client
 
             if (index?.Cards == null)
                 return;
+            CardCache.Init();
 
             if (!string.IsNullOrEmpty(index.BackProperty))
                 _backProperty = index.BackProperty;
@@ -62,41 +62,19 @@ namespace DaCard.Client
             foreach (var tpl in index.Cards)
                 CardTpls.Add(tpl);
             _baseCards = index.Cards.Count;
-            foreach (var foil in (index.Foils ?? new Dictionary<string, string>()).Keys)
-                CardTpls.Add(foil);
+            foreach (var pair in index.Foils ?? new Dictionary<string, string>())
+            {
+                CardTpls.Add(pair.Key);
+                FoilToBase[pair.Key] = pair.Value;
+            }
+            foreach (var pair in index.Versions ?? new Dictionary<string, string>())
+                Versions[pair.Key] = pair.Value;
             foreach (var pair in index.Stickers ?? new Dictionary<string, string>())
                 StickerArt[pair.Key] = pair.Value;
             foreach (var binder in index.Binders ?? new List<BinderManifestEntry>())
                 Binders[binder.Tpl] = binder;
             PackRegistry.Load(index);
-
-            var urls = Binders.Values.SelectMany(b => (b.Stickers ?? new List<BinderSticker>()).Select(s => s?.Image))
-                .Concat((index.Packs ?? new List<PackManifestEntry>()).SelectMany(p => p?.Textures?.Values ?? Enumerable.Empty<string>()))
-                .Concat(StickerArt.Values)
-                .Where(u => u != null).Distinct().ToList();
-            Prefetch(urls);
-        }
-
-        private static void Prefetch(List<string> urls)
-        {
-            if (urls.Count == 0)
-                return;
-            Task.Run(async () =>
-            {
-                foreach (var url in urls)
-                {
-                    if (ImageBytes.ContainsKey(url))
-                        continue;
-                    try
-                    {
-                        ImageBytes.TryAdd(url, await RequestHandler.GetDataAsync(url));
-                    }
-                    catch (Exception e)
-                    {
-                        Plugin.Log.LogWarning($"Prefetch of {url} failed: {e.Message}");
-                    }
-                }
-            });
+            CardCache.Sync(index);
         }
 
         public static bool IsLinear(string property) => _slots.FirstOrDefault(s => s.Property == property)?.Linear ?? false;
@@ -109,16 +87,28 @@ namespace DaCard.Client
                 return null;
             if (Cards.TryGetValue(templateId, out var cached))
                 return cached;
-            CardManifestEntry card = null;
+            var card = FoilToBase.TryGetValue(templateId, out var baseTpl) ? Card(baseTpl)?.AsFoil(templateId) : Download(templateId);
+            Cards[templateId] = card;
+            return card;
+        }
+
+        private static CardManifestEntry Download(string templateId)
+        {
+            var version = Versions.TryGetValue(templateId, out var v) ? v : null;
+            var card = CardCache.ReadCard(templateId, version);
+            if (card != null)
+                return card;
             try
             {
-                card = JsonConvert.DeserializeObject<CardManifestEntry>(RequestHandler.GetJson("/dacard/card/" + templateId));
+                var json = RequestHandler.GetJson("/dacard/card/" + templateId);
+                card = JsonConvert.DeserializeObject<CardManifestEntry>(json);
+                if (card != null)
+                    CardCache.WriteCard(templateId, version, json);
             }
             catch (Exception e)
             {
                 Plugin.Log.LogError($"Could not get card {templateId} from the server: {e.Message}");
             }
-            Cards[templateId] = card;
             return card;
         }
 
@@ -377,13 +367,7 @@ namespace DaCard.Client
 
         public static byte[] ImageData(string url)
         {
-            if (!ImageBytes.TryGetValue(url, out var bytes))
-            {
-                bytes = RequestHandler.GetData(url);
-                if (bytes != null)
-                    ImageBytes[url] = bytes;
-            }
-
+            var bytes = CardCache.Data(url);
             if (bytes == null || bytes.Length == 0)
             {
                 Plugin.Log.LogError("No image data for " + url);
@@ -413,6 +397,7 @@ namespace DaCard.Client
             if (!texture.LoadImage(bytes, markNonReadable: true))
             {
                 Plugin.Log.LogError("Not a valid PNG: " + url);
+                CardCache.Forget(url);
                 UnityEngine.Object.Destroy(texture);
                 return null;
             }

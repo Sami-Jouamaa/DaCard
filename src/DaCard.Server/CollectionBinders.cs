@@ -12,7 +12,7 @@ using SPTarkov.Server.Core.Services.Modding.Custom;
 namespace DaCard.Server;
 
 [Injectable(InjectionType.Singleton)]
-public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemService customItemService, LocaleTable locales, ItemLedger ledger)
+public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemService customItemService, LocaleTable locales, ItemLedger ledger, CardStore store)
 {
     public const string BundlePath = "dacard/item_binder.bundle";
 
@@ -84,7 +84,7 @@ public class CollectionBinders(ISptLogger<CollectionBinders> logger, CustomItemS
                 Collection = collection.Name,
                 Stickers = stickers.Where(s => s.CollectionId == collection.Id).OrderBy(s => s.Position).Select(s => new BinderStickerEntry
                 {
-                    Image = CardManifests.ImageUrl(s.SetId, CardManifests.Albedo),
+                    Image = store.Image(s.SetId, CardManifests.Albedo) is { } image ? CardManifests.ImageUrl(image) : null,
                     Placement = s.Placement
                 }).ToList()
             });

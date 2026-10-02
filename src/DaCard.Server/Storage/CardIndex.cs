@@ -12,6 +12,7 @@ public record ClientIndex
     [JsonPropertyName("overlayProperty")] public string OverlayProperty { get; set; } = "_CARD_FRONT_BORDER";
     [JsonPropertyName("slots")] public List<TextureSlot> Slots { get; set; } = new();
     [JsonPropertyName("cards")] public List<string> Cards { get; set; } = new();
+    [JsonPropertyName("versions")] public Dictionary<string, string> Versions { get; set; } = new();
     [JsonPropertyName("foils")] public Dictionary<string, string> Foils { get; set; } = new();
     [JsonPropertyName("binders")] public List<BinderManifestEntry> Binders { get; set; } = new();
     [JsonPropertyName("packs")] public List<PackManifestEntry> Packs { get; set; } = new();
@@ -25,6 +26,7 @@ public class CardIndex
     public Dictionary<string, CreatedCard> Cards { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> FoilToBase { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> StickerOf { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> Versions { get; } = new(StringComparer.OrdinalIgnoreCase);
     public ClientIndex Client { get; set; } = new();
     public DaCardConfig Config { get; set; } = new();
     public List<TextureSlot> Slots { get; set; } = new();
@@ -40,6 +42,7 @@ public class CardIndex
         Cards.Clear();
         FoilToBase.Clear();
         StickerOf.Clear();
+        Versions.Clear();
         _manifests.Clear();
         Client = new ClientIndex();
     }

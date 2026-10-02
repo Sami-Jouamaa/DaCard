@@ -157,7 +157,7 @@ public record StickerPlacement
 
 public record BinderStickerEntry
 {
-    [JsonPropertyName("image")] public required string Image { get; set; }
+    [JsonPropertyName("image")] public string? Image { get; set; }
     [JsonPropertyName("placement")] public StickerPlacement Placement { get; set; } = new();
 }
 

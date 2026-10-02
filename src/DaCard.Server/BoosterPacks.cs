@@ -110,8 +110,8 @@ public class BoosterPacks(
         }
         if (owner == null)
             return new Dictionary<string, string>();
-        var channels = store.Images([owner]).Select(i => i.Channel).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return Maps.Where(m => channels.Contains(m.Map)).ToDictionary(m => m.Property, m => CardManifests.ImageUrl(owner, m.Map));
+        var images = store.Images([owner]).ToDictionary(i => i.Channel, StringComparer.OrdinalIgnoreCase);
+        return Maps.Where(m => images.ContainsKey(m.Map)).ToDictionary(m => m.Property, m => CardManifests.ImageUrl(images[m.Map]));
     }
 
     private static Dictionary<string, LocaleDetails> Locales(PackRow pack, string english, string shortName, string description)

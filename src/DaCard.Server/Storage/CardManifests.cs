@@ -9,13 +9,18 @@ public class CardManifests(CardStore store, CardIndex index)
     public const string FontRoute = "/dacard/font/";
     public const string Albedo = "albedo";
 
-    public static string ImageUrl(string setId, string channel) => $"{ImageRoute}{setId}_{channel}.png".ToLowerInvariant();
+    public static string ImageUrl(ImageRow image) => $"{ImageRoute}v{image.UpdatedAt}/{image.SetId}_{image.Channel}.png".ToLowerInvariant();
 
-    public static string FramesUrl(string setId, string channel) => $"{ImageRoute}{setId}_{channel}_f".ToLowerInvariant();
+    public static string FramesUrl(ImageRow image) => $"{ImageRoute}v{image.UpdatedAt}/{image.SetId}_{image.Channel}_f".ToLowerInvariant();
 
-    public static string FontUrl(string ownerId, string file) => $"{FontRoute}{ownerId}/{file}";
+    public string FontUrl(string ownerId, string file)
+    {
+        var path = store.FontPath(ownerId, file);
+        var version = path != null ? $"v{new DateTimeOffset(File.GetLastWriteTimeUtc(path)).ToUnixTimeMilliseconds()}/" : "";
+        return $"{FontRoute}{version}{ownerId}/{file}";
+    }
 
-    public CardManifestEntry? Get(string tpl)
+    public CardManifestEntry? Get(string tpl, bool remember = true)
     {
         var cached = index.Cached(tpl);
         if (cached != null)
@@ -26,10 +31,13 @@ public class CardManifests(CardStore store, CardIndex index)
         var entry = Build(created);
         if (entry == null)
             return null;
-        index.Remember(created.Id, entry);
         var foil = entry with { Tpl = created.FoilId, Foil = true, BaseTpl = created.Id };
-        if (created.HasFoil)
-            index.Remember(created.FoilId, foil);
+        if (remember)
+        {
+            index.Remember(created.Id, entry);
+            if (created.HasFoil)
+                index.Remember(created.FoilId, foil);
+        }
         return tpl.Equals(created.Id, StringComparison.OrdinalIgnoreCase) ? entry : created.HasFoil ? foil : null;
     }
 
@@ -71,7 +79,7 @@ public class CardManifests(CardStore store, CardIndex index)
         if (back.Count == 0)
             back.AddRange(layers.Where(l => l.IsCollection && l.Face == "default-back").OrderBy(l => l.Position).Select(l => Entry(l, false)));
         if (!created.UsesDepth && created.DeclaredType != created.TypeName && cardImages.ContainsKey(Albedo))
-            front.Insert(0, PictureLayer(card.Id, cardImages, details.Animation));
+            front.Insert(0, PictureLayer(cardImages, details.Animation));
 
         return new CardManifestEntry
         {
@@ -83,7 +91,7 @@ public class CardManifests(CardStore store, CardIndex index)
                 : type.Floats,
             Textures = created.UsesDepth
                 ? index.Slots.Where(s => cardImages.ContainsKey(ChannelOf(s.Suffix)) && (allowed == null || allowed.Contains(ChannelOf(s.Suffix))))
-                    .ToDictionary(s => s.Property, s => ImageUrl(card.Id, ChannelOf(s.Suffix)))
+                    .ToDictionary(s => s.Property, s => ImageUrl(cardImages[ChannelOf(s.Suffix)]))
                 : new Dictionary<string, string>(),
             HoloStrength = details.Holo?.Strength ?? rarity.Holo.Strength ?? 0,
             HoloPattern = PatternIndex(details.Holo?.Pattern ?? rarity.Holo.Pattern),
@@ -96,7 +104,7 @@ public class CardManifests(CardStore store, CardIndex index)
             Front = front,
             Back = back,
             Text = collection?.CardText == null ? null : CollectionText(collection).WithAlign(details.TextAlign),
-            Animation = created.UsesDepth ? CardAnimation(card.Id, cardImages, details.Animation, allowed) : null
+            Animation = created.UsesDepth ? CardAnimation(cardImages, details.Animation, allowed) : null
         };
     }
 
@@ -115,7 +123,7 @@ public class CardManifests(CardStore store, CardIndex index)
             Roughness = layer.Roughness,
             Metallic = layer.Metallic,
             Sticker = index.StickerOf.GetValueOrDefault(CardIndex.StickerKey(layer.IsCollection ? collectionId : cardId, layer.Key)),
-            Textures = images.Values.ToDictionary(i => i.Channel, i => ImageUrl(i.SetId, i.Channel)),
+            Textures = images.Values.ToDictionary(i => i.Channel, ImageUrl),
             Id = layer.TextId,
             Name = string.IsNullOrWhiteSpace(layer.Name) ? null : layer.Name.Trim(),
             Text = layer.Text == null ? null : layer.Text with
@@ -130,14 +138,14 @@ public class CardManifests(CardStore store, CardIndex index)
         var shared = animated.Where(i => Own(i.Channel) == null).Select(i => i.Frames).DefaultIfEmpty(0).Min();
         entry.Animation = animated.ToDictionary(i => i.Channel, i => new CardAnimationTrack
         {
-            Url = FramesUrl(i.SetId, i.Channel),
+            Url = FramesUrl(i),
             Frames = Own(i.Channel) != null ? i.Frames : shared,
             Fps = Math.Clamp(Own(i.Channel) ?? layer.Speed, 0.1, 120)
         });
         return entry;
     }
 
-    private static LayerManifestEntry PictureLayer(string cardId, Dictionary<string, ImageRow> images, AnimationInfo? animation)
+    private static LayerManifestEntry PictureLayer(Dictionary<string, ImageRow> images, AnimationInfo? animation)
     {
         var maps = new[] { Albedo, "normal" }.Where(images.ContainsKey).ToList();
         var entry = new LayerManifestEntry
@@ -145,20 +153,20 @@ public class CardManifests(CardStore store, CardIndex index)
             Key = "card:card",
             Chance = 100,
             CanBeFoil = true,
-            Textures = maps.ToDictionary(m => m, m => ImageUrl(cardId, m))
+            Textures = maps.ToDictionary(m => m, m => ImageUrl(images[m]))
         };
         var animated = maps.Where(m => images[m].Frames > 1).ToList();
         if (animated.Count > 0)
             entry.Animation = animated.ToDictionary(m => m, m => new CardAnimationTrack
             {
-                Url = FramesUrl(cardId, m),
+                Url = FramesUrl(images[m]),
                 Frames = images[m].Frames,
                 Fps = Math.Clamp(animation?.Slots?.GetValueOrDefault(m) is > 0 and var own ? own : animation?.Fps ?? 12, 0.1, 120)
             });
         return entry;
     }
 
-    private CardAnimation? CardAnimation(string cardId, Dictionary<string, ImageRow> images, AnimationInfo? info, HashSet<string>? allowed)
+    private CardAnimation? CardAnimation(Dictionary<string, ImageRow> images, AnimationInfo? info, HashSet<string>? allowed)
     {
         var animated = index.Slots.Select(s => (Slot: s, Channel: ChannelOf(s.Suffix)))
             .Where(s => images.TryGetValue(s.Channel, out var i) && i.Frames > 1 && (allowed == null || allowed.Contains(s.Channel)))
@@ -173,7 +181,7 @@ public class CardManifests(CardStore store, CardIndex index)
             var own = Own(channel);
             animation.Tracks[slot.Property] = new CardAnimationTrack
             {
-                Url = FramesUrl(cardId, channel),
+                Url = FramesUrl(images[channel]),
                 Frames = own != null ? images[channel].Frames : shared,
                 Fps = Math.Clamp(own ?? info?.Fps ?? 12, 0.1, 120)
             };
@@ -186,7 +194,7 @@ public class CardManifests(CardStore store, CardIndex index)
             ? layer with { Text = layer.Text with { Align = a } }
             : layer;
 
-    private static CardTextSettings CollectionText(CollectionRow collection)
+    private CardTextSettings CollectionText(CollectionRow collection)
     {
         var text = collection.CardText!;
         TextStyle? WithFont(TextStyle? style) => style == null || string.IsNullOrWhiteSpace(style.Font)

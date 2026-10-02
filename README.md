@@ -17,6 +17,7 @@ Example cards are a separate download: import them under **Collections**.
 - Collections export and import as a single .zip, so they are easy to share.
 - Everything is kept in one database (`data/dacard.db`, pictures next to it in `data/collections/`), read by the server only when it needs it.
 - Safeguard for removed/broken cards/binders/booster packs that runs on server startup.
+- The game keeps downloaded cards in `BepInEx\cache\DaCard` and only downloads what changed. Deleting that folder is safe.
 
 ## DaCard Dashboard
 - Run **SPT_Runtime\user\mods\Guro-DaCard\DaCard Dashboard.bat**. It opens the dashboard at http://127.0.0.1:6967 in your browser.

@@ -158,7 +158,7 @@ namespace DaCard.Client
             anim.Started = false;
 
             // In play order, so every track fills up at the pace it's shown
-            var jobs = tracks.SelectMany(t => Enumerable.Range(0, t.Info.Frames).Select(i => (track: t, frame: i, url: t.Info.Url + i.ToString("000") + ".png")))
+            var jobs = tracks.SelectMany(t => Enumerable.Range(0, t.Info.Frames).Select(i => (track: t, frame: i, url: FrameUrl(t.Info, i))))
                 .OrderBy(j => j.frame / j.track.Fps)
                 .ToList();
 
@@ -179,7 +179,7 @@ namespace DaCard.Client
                         var result = new Decoded();
                         try
                         {
-                            result.Png = await RequestHandler.HttpClient.GetAsync(jobs[job].url);
+                            result.Png = await CardCache.DataAsync(jobs[job].url);
                             if (result.Png == null || result.Png.Length == 0)
                                 result.Error = "empty response";
                             else
@@ -239,6 +239,8 @@ namespace DaCard.Client
                                $"loaded in {Time.realtimeSinceStartup - started:0.0}s");
         }
 
+        public static string FrameUrl(CardAnimationTrack track, int frame) => track.Url + frame.ToString("000") + ".png";
+
         private static Texture2D Upload(Decoded result, string name, bool linear)
         {
             var image = result.Image;
@@ -253,7 +255,8 @@ namespace DaCard.Client
 
             if (image == null)
             {
-                texture.LoadImage(result.Png, markNonReadable: true);
+                if (!texture.LoadImage(result.Png, markNonReadable: true))
+                    CardCache.Forget(name);
                 return texture;
             }
             for (var m = 0; m < image.MipCount; m++)

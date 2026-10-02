@@ -6,10 +6,10 @@ using Path = System.IO.Path;
 namespace DaCard.Server.Storage;
 
 public record CollectionRow(string Id, string IdKey, string Name, string? ShortName, string? Description, Dictionary<string, CardText>? Locales,
-    CardTextSettings? CardText);
+    CardTextSettings? CardText, long UpdatedAt);
 
 public record CardRow(string Id, string FoilId, string IdKey, string CollectionId, string Rarity, string Type, string Name, string? ShortName,
-    string? Description, Dictionary<string, CardText>? Locales, string? LegacyKey);
+    string? Description, Dictionary<string, CardText>? Locales, string? LegacyKey, long UpdatedAt);
 
 public record CardDetails(CardRow Card, HoloSettings? Holo, GlowSettings? Glow, Dictionary<string, double>? Floats, AnimationInfo? Animation,
     Dictionary<string, string>? TextAlign, bool CollectionLayers, List<string> HiddenLayers);
@@ -21,7 +21,7 @@ public record LayerRow(string Id, string OwnerKind, string OwnerId, string Face,
     public bool IsCollection => OwnerKind == "collection";
 }
 
-public record ImageRow(string SetId, string Channel, string Scope, int Frames);
+public record ImageRow(string SetId, string Channel, string Scope, int Frames, long UpdatedAt);
 
 public record StickerRow(string CollectionId, int Position, string SetId, StickerPlacement Placement);
 
@@ -57,21 +57,21 @@ public class CardStore(DaCardDatabase db)
         return config;
     }
 
-    private const string CollectionColumns = "id, id_key, name, short_name, description, locales, card_text";
+    private const string CollectionColumns = "id, id_key, name, short_name, description, locales, card_text, updated_at";
 
     private static CollectionRow ReadCollection(SqliteDataReader r) => new(r.GetString(0), r.GetString(1), r.GetString(2),
         DaCardDatabase.Text(r, "short_name"), DaCardDatabase.Text(r, "description"),
-        DaCardDatabase.FromJson<Dictionary<string, CardText>>(r, "locales"), DaCardDatabase.FromJson<CardTextSettings>(r, "card_text"));
+        DaCardDatabase.FromJson<Dictionary<string, CardText>>(r, "locales"), DaCardDatabase.FromJson<CardTextSettings>(r, "card_text"), r.GetInt64(7));
 
     public List<CollectionRow> Collections() => db.Query($"SELECT {CollectionColumns} FROM collections ORDER BY sort, name", ReadCollection);
 
     public CollectionRow? Collection(string id) => db.One($"SELECT {CollectionColumns} FROM collections WHERE id = $id", ReadCollection, ("$id", id));
 
-    private const string CardColumns = "id, foil_id, id_key, collection_id, rarity, type, name, short_name, description, locales, legacy_key";
+    private const string CardColumns = "id, foil_id, id_key, collection_id, rarity, type, name, short_name, description, locales, legacy_key, updated_at";
 
     private static CardRow ReadCard(SqliteDataReader r) => new(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4),
         r.GetString(5), r.GetString(6), DaCardDatabase.Text(r, "short_name"), DaCardDatabase.Text(r, "description"),
-        DaCardDatabase.FromJson<Dictionary<string, CardText>>(r, "locales"), DaCardDatabase.Text(r, "legacy_key"));
+        DaCardDatabase.FromJson<Dictionary<string, CardText>>(r, "locales"), DaCardDatabase.Text(r, "legacy_key"), r.GetInt64(11));
 
     public List<CardRow> Cards() => db.Query($"SELECT {CardColumns} FROM cards ORDER BY sort, name", ReadCard);
 
@@ -109,14 +109,14 @@ public class CardStore(DaCardDatabase db)
         if (ids.Count == 0)
             return [];
         var names = ids.Select((_, i) => "$s" + i).ToList();
-        return db.Query($"SELECT set_id, channel, scope, frames FROM images WHERE set_id IN ({string.Join(", ", names)})",
-            r => new ImageRow(r.GetString(0), r.GetString(1), r.GetString(2), r.GetInt32(3)),
+        return db.Query($"SELECT set_id, channel, scope, frames, updated_at FROM images WHERE set_id IN ({string.Join(", ", names)})",
+            r => new ImageRow(r.GetString(0), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetInt64(4)),
             ids.Select((id, i) => (names[i], (object?)id)).ToArray());
     }
 
     public ImageRow? Image(string setId, string channel) => db.One(
-        "SELECT set_id, channel, scope, frames FROM images WHERE set_id = $s AND channel = $c",
-        r => new ImageRow(r.GetString(0), r.GetString(1), r.GetString(2), r.GetInt32(3)), ("$s", setId), ("$c", channel));
+        "SELECT set_id, channel, scope, frames, updated_at FROM images WHERE set_id = $s AND channel = $c",
+        r => new ImageRow(r.GetString(0), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetInt64(4)), ("$s", setId), ("$c", channel));
 
     public List<StickerRow> BinderStickers() => db.Query(
         "SELECT collection_id, position, set_id, x, y, width, height, rotation FROM binder_stickers ORDER BY collection_id, position",

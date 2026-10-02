@@ -105,6 +105,7 @@ namespace DaCard.Client
             if (!texture.LoadImage(bytes, markNonReadable: false))
             {
                 Plugin.Log.LogError("Not a valid PNG: " + url);
+                CardCache.Forget(url);
                 Object.Destroy(texture);
                 return null;
             }

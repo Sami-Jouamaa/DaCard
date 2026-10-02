@@ -11,6 +11,7 @@ namespace DaCard.Client
         [JsonProperty("overlayProperty")] public string OverlayProperty = "_CARD_FRONT_BORDER";
         [JsonProperty("slots")] public List<TextureSlot> Slots = new List<TextureSlot>();
         [JsonProperty("cards")] public List<string> Cards = new List<string>();
+        [JsonProperty("versions")] public Dictionary<string, string> Versions = new Dictionary<string, string>();
         [JsonProperty("foils")] public Dictionary<string, string> Foils = new Dictionary<string, string>();
         [JsonProperty("binders")] public List<BinderManifestEntry> Binders = new List<BinderManifestEntry>();
         [JsonProperty("packs")] public List<PackManifestEntry> Packs = new List<PackManifestEntry>();
@@ -165,5 +166,14 @@ namespace DaCard.Client
         [JsonProperty("back")] public List<CardLayer> Back = new List<CardLayer>();
         [JsonProperty("text")] public CardTextSettings Text;
         [JsonProperty("animation")] public CardAnimationInfo Animation;
+
+        public CardManifestEntry AsFoil(string tpl)
+        {
+            var copy = (CardManifestEntry)MemberwiseClone();
+            copy.Tpl = tpl;
+            copy.Foil = true;
+            copy.BaseTpl = Tpl;
+            return copy;
+        }
     }
 }

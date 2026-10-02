@@ -21,6 +21,9 @@ public partial class DaCardFiles(CardStore store, DaCardDatabase database, HttpF
     [GeneratedRegex("^(?<set>.+)_(?<channel>[a-z0-9]+)$")]
     private static partial Regex ImagePattern();
 
+    [GeneratedRegex("^v[0-9]+$")]
+    private static partial Regex VersionPattern();
+
     public bool CanHandle(HttpContext context)
     {
         var path = context.Request.Path.Value ?? "";
@@ -54,6 +57,8 @@ public partial class DaCardFiles(CardStore store, DaCardDatabase database, HttpF
     private string? Font(string path)
     {
         var parts = path[CardManifests.FontRoute.Length..].Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 3 && VersionPattern().IsMatch(parts[0]))
+            parts = parts[1..];
         return parts.Length == 2 && Regex.IsMatch(parts[0], "^[A-Za-z0-9_-]+$") ? store.FontPath(parts[0], parts[1]) : null;
     }
 

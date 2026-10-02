@@ -1,4 +1,7 @@
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using DaCard.Server.Storage;
 using SPTarkov.Common.Models.Logging;
@@ -86,13 +89,14 @@ public class DaCardMod(
         var layers = store.AllLayers();
         var layersOf = layers.GroupBy(l => (l.OwnerKind, l.OwnerId)).ToDictionary(g => g.Key, g => g.ToList());
         var stickerArt = store.Images(layers.Where(l => l.Chance < 100).Select(l => l.Id))
-            .Where(i => i.Channel == CardManifests.Albedo).ToDictionary(i => i.SetId, i => CardManifests.ImageUrl(i.SetId, i.Channel));
+            .Where(i => i.Channel == CardManifests.Albedo).ToDictionary(i => i.SetId, CardManifests.ImageUrl);
 
         foreach (var collection in collections)
             foreach (var layer in layersOf.GetValueOrDefault(("collection", collection.Id)) ?? [])
                 RegisterSticker(collection.Id, new StickerOwner($"collection:{collection.Id}", collection.Name), layer, stickerBundle, stickerArt);
 
         _hidden = store.HiddenLayers();
+        var epoch = Hash(JsonSerializer.Serialize(config, DaCardDatabase.Json) + "|" + ModMetadata.CurrentVersion + "|" + string.Join(",", cardTypes.Keys));
         var shownAs = new Dictionary<string, int>();
         var created = new List<CardRow>();
         var cards = store.Cards();
@@ -117,6 +121,7 @@ public class DaCardMod(
             var hasFoil = CreateItem(card, FoilPrice(config, rarity), rarity, bundle, foil: true, stickers.SlotsFor(card.FoilId, card.Id, stack));
             created.Add(card);
             index.Cards[card.Id] = new CreatedCard(card.Id, card.FoilId, card.CollectionId, card.Rarity, card.Type.Trim().ToLowerInvariant(), typeName, usesDepth, hasFoil);
+            index.Versions[card.Id] = Hash($"{card.UpdatedAt}|{collectionById[card.CollectionId].UpdatedAt}|{typeName}|{usesDepth}|{epoch}");
             if (hasFoil)
                 index.FoilToBase[card.FoilId] = card.Id;
         }
@@ -140,6 +145,7 @@ public class DaCardMod(
             BackProperty = string.IsNullOrWhiteSpace(config.BackProperty) ? "_CARD_BACK" : config.BackProperty,
             OverlayProperty = string.IsNullOrWhiteSpace(config.OverlayProperty) ? "_CARD_FRONT_BORDER" : config.OverlayProperty,
             Cards = index.Cards.Keys.ToList(),
+            Versions = new Dictionary<string, string>(index.Versions),
             Foils = new Dictionary<string, string>(index.FoilToBase),
             Binders = binderEntries,
             Packs = packs,
@@ -168,6 +174,8 @@ public class DaCardMod(
                        $"{perRarity} ({perType}); {binderEntries.Count} collection binder(s); {packs.Count} booster pack(s); {collections.Count} collection(s)");
         return Task.CompletedTask;
     }
+
+    private static string Hash(string text) => Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(text)))[..12].ToLowerInvariant();
 
     private readonly Dictionary<string, string?> _stickerArt = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, (bool CollectionLayers, List<string> Hidden)> _hidden = new();
