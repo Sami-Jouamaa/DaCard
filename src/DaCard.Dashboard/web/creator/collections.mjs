@@ -2,6 +2,7 @@
     'use strict';
 
     const $ = (sel, root = document) => root.querySelector(sel);
+    const ICON_SIZE = 256;
     let app = null;
 
     function ask({ title, body, ok = 'OK', check = null }) {
@@ -52,7 +53,11 @@
             const tile = document.createElement('div');
             tile.className = 'addon-tile';
             tile.innerHTML = `
-                <div class="addon-thumb">${coll.thumbUrl ? `<img alt="" src="${coll.thumbUrl}">` : ''}</div>
+                <div class="addon-thumb-wrap">
+                    <button type="button" class="addon-thumb addon-thumb-edit" title="Change icon">${coll.thumbUrl ? `<img alt="" src="${coll.thumbUrl}">` : ''}</button>
+                    ${coll.thumbUrl ? '<button type="button" class="facade-iconbtn addon-thumb-clear" title="Remove icon" aria-label="Remove icon">×</button>' : ''}
+                    <input type="file" accept="image/*" hidden>
+                </div>
                 <div class="addon-info">
                     <b class="addon-name"></b>
                     <small class="addon-meta">${cards} card${cards === 1 ? '' : 's'} · ${packCount} booster pack${packCount === 1 ? '' : 's'}</small>
@@ -68,6 +73,25 @@
                 tile.querySelector('.addon-thumb').appendChild(canvas);
                 drawThumb(canvas, coll);
             }
+            const iconButton = tile.querySelector('.addon-thumb-edit'), iconInput = tile.querySelector('input[type="file"]');
+            iconButton.addEventListener('click', () => iconInput.click());
+            iconInput.addEventListener('change', () => {
+                const file = iconInput.files[0];
+                iconInput.value = '';
+                if (file) changeIcon(coll, file);
+            });
+            iconButton.addEventListener('dragover', (e) => {
+                if ([...e.dataTransfer.items].some((i) => i.type.startsWith('image/'))) { e.preventDefault(); e.stopPropagation(); }
+            });
+            iconButton.addEventListener('drop', (e) => {
+                const file = [...e.dataTransfer.files].find((f) => f.type.startsWith('image/'));
+                if (!file) return;
+                e.preventDefault();
+                e.stopPropagation();
+                changeIcon(coll, file);
+            });
+            const clear = tile.querySelector('.addon-thumb-clear');
+            if (clear) clear.addEventListener('click', () => changeIcon(coll, null));
             tile.querySelector('[data-act="edit"]').addEventListener('click', () => app.openCollection(coll));
             tile.querySelector('[data-act="export"]').addEventListener('click', (e) => exportCollection(coll, e.currentTarget));
             tile.querySelector('[data-act="delete"]').addEventListener('click', (e) => app.confirmMenu(e.currentTarget, `Delete "${coll.data.name}"?`,
@@ -87,6 +111,30 @@
             canvas.getContext('2d').drawImage(img, 0, 0);
         };
         img.src = first.thumbUrl;
+    }
+
+    async function iconBlob(file) {
+        const bitmap = await createImageBitmap(file);
+        const k = Math.min(1, ICON_SIZE / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bitmap.width * k));
+        canvas.height = Math.max(1, Math.round(bitmap.height * k));
+        const g = canvas.getContext('2d');
+        g.imageSmoothingQuality = 'high';
+        g.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+        return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not encode the picture'))), 'image/png'));
+    }
+
+    async function changeIcon(coll, file) {
+        try {
+            if (file) await DaApi.request('PUT', `/api/collections/${coll.id}/thumb`, await iconBlob(file));
+            else await DaApi.del(`/api/collections/${coll.id}/thumb`);
+            await app.rescan();
+            app.toast.ok(file ? 'Icon changed' : 'Icon removed', coll.data.name);
+        } catch (e) {
+            app.toast.err('Could not change the icon', e.message);
+        }
     }
 
     async function exportCollection(coll, button) {

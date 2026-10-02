@@ -399,6 +399,18 @@ export async function setCardThumb({ db, store, id, data }) {
     db.prepare('UPDATE cards SET thumb_version = ? WHERE id = ?').run(THUMB_VERSION, id);
 }
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+export async function setCollectionThumb({ db, store, id, data }) {
+    if (!db.prepare('SELECT id FROM collections WHERE id = ?').get(id)) throw new DocumentError('No such collection', 404);
+    if (!data?.length) {
+        await store.removeThumb(collectionScope(id), id);
+        return;
+    }
+    if (!data.subarray(0, 8).equals(PNG_SIGNATURE)) throw new DocumentError('The icon has to be a PNG');
+    await store.putThumb(collectionScope(id), id, data);
+}
+
 export async function duplicateCard({ db, store, paths, id }) {
     const previous = cardDocument(db, store, id, { internal: true });
     const uploads = new Map();

@@ -11,7 +11,7 @@ import { createJobs } from './jobs.mjs';
 import { runUpgrade, SETTING_KEYS, currentConfig, legacyState } from './upgrade.mjs';
 import {
     DocumentError, cardDocument, collectionDocument, packDocument, skinDocument, saveCard, duplicateCard, deleteCard, saveCollection, deleteCollection,
-    savePack, deletePack, saveSkin, deleteSkin, moveCard, setCardThumb,
+    savePack, deletePack, saveSkin, deleteSkin, moveCard, setCardThumb, setCollectionThumb,
 } from './documents.mjs';
 import { exportCollection, importZip, inspectZip } from './exchange.mjs';
 import { hex } from './ids.mjs';
@@ -224,6 +224,18 @@ function routes() {
         const chunks = [];
         for await (const chunk of req) chunks.push(chunk);
         await setCardThumb({ db, store, id, data: Buffer.concat(chunks) });
+        return { ok: true };
+    });
+    on('PUT', /^\/api\/collections\/([A-Za-z0-9_-]+)\/thumb$/, async (req, [id]) => {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        await setCollectionThumb({ db, store, id, data: Buffer.concat(chunks) });
+        changed();
+        return { ok: true };
+    });
+    on('DELETE', /^\/api\/collections\/([A-Za-z0-9_-]+)\/thumb$/, async (_, [id]) => {
+        await setCollectionThumb({ db, store, id, data: null });
+        changed();
         return { ok: true };
     });
     on('POST', /^\/api\/collections\/([a-f0-9]+)\/export$/, (_, [id]) => {
