@@ -42,7 +42,8 @@ namespace DaCard.Client
         {
             try
             {
-                return item.LocalizedName();
+                var card = CardNames.Of(item);
+                return card != null ? CardNames.Tinted(card, CardNames.Name(card)) : item.LocalizedName();
             }
             catch (Exception)
             {

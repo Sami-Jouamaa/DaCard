@@ -22,9 +22,6 @@ namespace DaCard.Client
                 return;
             TextLayers.Remember(nameText);
 
-            var textTpl = card.BaseTpl ?? card.Tpl;
-            if (card.BaseTpl != null)
-                name = (card.BaseTpl + " Name").Localized();
             var settings = card.Text;
             var showDescription = settings?.Description != null && settings.Description.Show;
             if (descriptionText == null && showDescription)
@@ -36,7 +33,7 @@ namespace DaCard.Client
             var face = CardFace(model, nameText.transform.parent);
             Place(nameText, settings?.Name, name, face);
             if (descriptionText != null)
-                Place(descriptionText, showDescription ? settings.Description : null, (textTpl + " Description").Localized(), face);
+                Place(descriptionText, showDescription ? settings.Description : null, CardNames.Description(card), face);
         }
 
         private struct Face

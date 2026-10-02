@@ -349,12 +349,9 @@ namespace DaCard.Client
                     .SelectMany(f => f.Filter ?? Array.Empty<MongoID>())
                     .Select(id => id.ToString())
                     .FirstOrDefault(CardRegistry.IsCard);
-                var name = slot.Name.Localized();
-                if (tpl != null)
-                    name += " " + (tpl + " Name").Localized();
-                return new Pocket { Slot = slot, Rarity = CardRegistry.Card(tpl)?.Rarity, Search = name.ToLowerInvariant() };
+                return new Pocket { Slot = slot, Rarity = CardRegistry.Template(tpl)?.Rarity, Search = slot.Name.Localized().ToLowerInvariant() };
             }).ToList();
-            _rarities = CardRegistry.Rarities.Where(r => _pockets.Any(p => p.Rarity == r)).ToList();
+            _rarities = _pockets.Select(p => p.Rarity).Where(r => r != null).Distinct().ToList();
             if (_rarity != null)
             {
                 _rarity.Show(new[] { AllRarities }.Concat(_rarities));

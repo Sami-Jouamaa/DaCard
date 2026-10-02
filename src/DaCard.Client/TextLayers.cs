@@ -182,13 +182,12 @@ namespace DaCard.Client
 
         private static string Expand(string value, CardManifestEntry card)
         {
-            var tpl = card.BaseTpl ?? card.Tpl;
             return Variable.Replace(value ?? "", m =>
             {
                 switch (m.Groups[1].Value.ToLowerInvariant())
                 {
-                    case "name": return (tpl + " Name").Localized();
-                    case "description": return (tpl + " Description").Localized();
+                    case "name": return CardNames.Tinted(card, CardNames.Name(card));
+                    case "description": return CardNames.Description(card);
                     case "rarity": return card.Rarity ?? "";
                     case "rarity.color": return Hex(card.RarityColor);
                     case "collection": return card.Collection ?? "";

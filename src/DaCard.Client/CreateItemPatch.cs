@@ -1,10 +1,9 @@
 using System;
-using System.Collections.Generic;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using EFT;
+using Diz.Jobs;
 using EFT.InventoryLogic;
 using HarmonyLib;
 using SPT.Reflection.Patching;
@@ -14,21 +13,34 @@ namespace DaCard.Client
 {
     internal class CreateItemPatch : ModulePatch
     {
-        private static readonly Regex ColorTag = new Regex(@"</?color(=[^>]*)?>", RegexOptions.IgnoreCase);
-
         protected override MethodBase GetTargetMethod() =>
             AccessTools.Method(typeof(ObjectsFactory), nameof(ObjectsFactory.CreateItemAsync));
 
         [PatchPostfix]
-        private static void Postfix(Item item, ref Task<GameObject> __result)
+        private static void Postfix(Item item, YieldDelegate yield, ref Task<GameObject> __result)
         {
             var templateId = item?.StringTemplateId;
             if (__result == null)
                 return;
             var isBinder = CardRegistry.IsBinder(templateId);
             var isPack = PackRegistry.IsPack(templateId);
-            if (!isBinder && !isPack && !CardRegistry.IsCard(templateId))
+            var isCard = CardRegistry.IsCard(templateId);
+            if (!isBinder && !isPack && !isCard)
                 return;
+
+            if (!isPack && yield != null && !yield.Equals(JobYieldPriority.Immediate))
+            {
+                var stamp = isCard ? CardCopies.Get(item) : null;
+                var itemId = item.Id.ToString();
+                __result = Prepared(__result, isBinder ? CardRegistry.PrepareBinder(templateId) : CardRegistry.PrepareCard(stamp), model =>
+                {
+                    if (isBinder)
+                        CardRegistry.ApplyBinder(model, templateId);
+                    else
+                        CardRegistry.Apply(model, stamp, itemId);
+                }, templateId);
+                return;
+            }
 
             __result = __result.ContinueWith(task =>
             {
@@ -42,7 +54,7 @@ namespace DaCard.Client
                         else if (isBinder)
                             CardRegistry.ApplyBinder(model, templateId);
                         else
-                            CardRegistry.Apply(model, templateId, CardName(item), item.Id.ToString(), Stickers(item));
+                            CardRegistry.Apply(model, CardCopies.Get(item), item.Id.ToString());
                     }
                     catch (Exception e)
                     {
@@ -53,27 +65,25 @@ namespace DaCard.Client
             }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
-        private static HashSet<string> Stickers(Item item)
+        private static async Task<GameObject> Prepared(Task<GameObject> created, Task textures, Action<GameObject> apply, string templateId)
         {
-            var stickers = new HashSet<string>();
-            if (item is CompoundItem compound)
-                foreach (var slot in compound.Slots)
-                    if (slot.ContainedItem != null)
-                        stickers.Add(slot.ContainedItem.StringTemplateId);
-            return stickers;
-        }
-
-        private static string CardName(Item item)
-        {
+            var model = await created;
+            if (model == null)
+                return null;
             try
             {
-                return ColorTag.Replace(item.LocalizedName(), "");
+                await textures;
+                await FrameBudget.Turn();
+                var start = FrameBudget.Start();
+                if (model != null)
+                    apply(model);
+                FrameBudget.Spend(start);
             }
             catch (Exception e)
             {
-                Plugin.Log.LogWarning($"No localized name for card {item.StringTemplateId}: {e.Message}");
-                return item.Name;
+                Plugin.Log.LogError($"Could not apply card {templateId}: {e}");
             }
+            return model;
         }
     }
 }

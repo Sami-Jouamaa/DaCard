@@ -40,7 +40,7 @@ namespace DaCard.Client
         private static void Postfix(GridItemView __instance)
         {
             var item = __instance.Item;
-            var tinted = item != null && CardRegistry.Card(item.StringTemplateId) != null && RarityNames.IsTinted(item.ShortName.Localized());
+            var tinted = item != null && CardRegistry.IsCard(item.StringTemplateId) && RarityNames.IsTinted(__instance.Caption.text?.Replace("<color=#b6c1c7> ", ""));
             RarityNames.Apply(__instance.Caption, tinted);
         }
     }

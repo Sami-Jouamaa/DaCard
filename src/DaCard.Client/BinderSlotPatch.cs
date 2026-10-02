@@ -23,15 +23,14 @@ namespace DaCard.Client
         private static void Prefix(Slot slot)
         {
             var name = slot?.Name;
-            var sticker = StickerSlots.IsStickerSlot(slot);
-            if (name == null || (!sticker && !name.StartsWith(SlotPrefix)))
+            if (name == null || !name.StartsWith(SlotPrefix))
                 return;
 
             var key = "Slots/" + name;
             if (ResourcesCache._storage.TryGetValue(key, out var existing) && existing as Sprite != null)
                 return;
 
-            var sprite = sticker ? CardRegistry.EmptyLayerSlotSprite() : CardRegistry.EmptySlotSprite();
+            var sprite = CardRegistry.EmptySlotSprite();
             if (sprite != null)
                 ResourcesCache._storage[key] = sprite;
         }

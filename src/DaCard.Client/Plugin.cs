@@ -17,12 +17,17 @@ namespace DaCard.Client
             Instance = this;
             CardRegistry.Load();
             Enable(
+                new ItemReadPatch(),
+                new ItemWritePatch(),
+                new CardIconHashPatch(),
+                new CardPricePatch(),
+                new CardNamePatch(),
+                new BinderPocketPatch(),
+                new BinderRaidPatch(),
+                new ContainerLookupPatch(),
                 new CreateItemPatch(),
                 new IconShaderPatch(),
-                new StickerIconPatch(),
                 new CardModelSlotsPatch(),
-                new StickerSlotLookPatch(),
-                new NestedStickerSlotsPatch(),
                 new BinderSlotPatch(),
                 new BinderWindowPatch(),
                 new BinderSlotsPatch(),

@@ -6,7 +6,7 @@ namespace DaCard.Client
 {
     internal static class LayerMaps
     {
-        public const string Albedo = "albedo", Normal = "normal", Roughness = "roughness", Metallic = "metallic", Mask = "mask";
+        public const string Albedo = "albedo", Normal = "normal", Roughness = "roughness", Metallic = "metallic", Mask = "mask", FoilMask = "foilmask";
     }
 
     internal static class CardLayers
@@ -14,7 +14,8 @@ namespace DaCard.Client
         public const string CompositeObject = "layer_composite";
         public const string LayerFoil = "_LayerFoil", LayerNormal = "_LayerNormal", BackFoil = "_BackFoil", BackNormal = "_BackNormal";
 
-        private const float ReleaseAfterSeconds = 30f;
+        private const float ReleaseAfterSeconds = 30f, CrowdedReleaseSeconds = 5f;
+        private const int MaxLive = 32;
         // Stacks at 1.5x the card's 490 x 684: layers are placed, scaled and turned on it
         private const int StackWidth = 735, StackHeight = 1026;
         private const int ColorPass = 0, SurfacePass = 1, NormalPass = 2;
@@ -27,6 +28,8 @@ namespace DaCard.Client
             public string Key;
             public CardManifestEntry Card;
             public List<int> Front, Back;
+            public Dictionary<string, int> Foils = new Dictionary<string, int>();
+            public int PictureFoil;
             public float Roughness = FallbackRoughness;
             public RenderTexture FrontColor, FrontFoil, FrontNormal, BackColor, BackFoil, BackNormal;
             public readonly List<GameObject> Models = new List<GameObject>();
@@ -45,6 +48,8 @@ namespace DaCard.Client
         private static float _nextPurge;
 
         public static bool IsCompositeHolder(Renderer renderer) => renderer.name == CompositeObject;
+
+        private static bool IsLive(Stack stack) => !stack.Idle && stack.FrontColor != null;
 
         // Every card prefab carries the stacking shader on a disabled renderer
         public static void TakeCompositeShader(GameObject model)
@@ -67,22 +72,20 @@ namespace DaCard.Client
 
         public static string TrackKey(string side, int index, string map) => side + ":" + index + ":" + map;
 
-        public static string Variant(CardManifestEntry card, ICollection<string> stickers, out List<int> front, out List<int> back)
+        public static string Variant(CardManifestEntry card, CardStamp stamp, out List<int> front, out List<int> back, out bool foil)
         {
-            front = Shown(card.Front, stickers);
-            back = Shown(card.Back, stickers);
-            return card.Tpl + "|" + string.Join(",", front) + "|" + string.Join(",", back);
+            front = Shown(card.Front, stamp);
+            back = Shown(card.Back, stamp);
+            foil = stamp != null && stamp.Foils.Count > 0;
+            return card.Tpl + "|" + string.Join(",", front) + "|" + string.Join(",", back) + "|" + CardCopies.FoilKey(stamp);
         }
 
-        private static List<int> Shown(List<CardLayer> layers, ICollection<string> stickers)
+        private static List<int> Shown(List<CardLayer> layers, CardStamp stamp)
         {
             var shown = new List<int>();
             for (var i = 0; i < (layers?.Count ?? 0); i++)
-            {
-                var layer = layers[i];
-                if (layer != null && (layer.Chance >= 100 || (layer.Sticker != null && stickers.Contains(layer.Sticker))))
+                if (CardCopies.Shows(layers[i], stamp))
                     shown.Add(i);
-            }
             return shown;
         }
 
@@ -98,7 +101,7 @@ namespace DaCard.Client
             return h;
         }
 
-        public static Stack Get(CardManifestEntry card, List<int> front, List<int> back, string key, GameObject model)
+        public static Stack Get(CardManifestEntry card, CardStamp stamp, List<int> front, List<int> back, string key, GameObject model)
         {
             if (_composite == null)
             {
@@ -111,6 +114,10 @@ namespace DaCard.Client
             if (!Stacks.TryGetValue(key, out var stack))
             {
                 Stacks[key] = stack = new Stack { Key = key, Card = card, Front = front, Back = back, Roughness = CardRoughness(model) };
+                if (stamp != null)
+                    foreach (var foil in stamp.Foils)
+                        stack.Foils[foil.Key] = FoilTypes.Index(foil.Value);
+                stack.PictureFoil = stack.Foils.TryGetValue(FoilTypes.Picture, out var picture) ? picture : 0;
                 Plugin.Log.LogInfo($"Card layers {key}: front {front.Count} of {card.Front.Count}, back {back.Count} of {card.Back.Count} layer(s)");
             }
             if (!stack.Models.Contains(model))
@@ -150,22 +157,24 @@ namespace DaCard.Client
             foreach (var stack in Stacks.Values)
             {
                 stack.Models.RemoveAll(m => m == null);
-                if (stack.Models.Any(m => m.activeInHierarchy))
+                var shown = stack.Models.Any(m => m.activeInHierarchy);
+                if (shown)
                     stack.LastSeen = Time.time;
                 if (stack.FrontColor == null)
                     continue;
                 if (stack.Idle)
                 {
-                    // Something drew with it again (Unity recreates a released texture when it's used): stack it again
-                    if (!stack.Textures.Any(t => t.IsCreated()))
+                    // Shown again, or something drew with it (Unity recreates a released texture when it's used): stack it again
+                    if (!shown && !stack.Textures.Any(t => t.IsCreated()))
                         continue;
                     stack.Idle = false;
                     stack.LastSeen = Time.time;
                     stack.Dirty = true;
                     Plugin.Log.LogInfo($"Card layers {stack.Key}: in use again, stacked again");
+                    shown = true;
                 }
                 Restore(stack);
-                if (stack.Dirty)
+                if (stack.Dirty && shown)
                     Build(stack);
             }
 
@@ -173,9 +182,11 @@ namespace DaCard.Client
                 return;
             _nextPurge = Time.time + 5f;
             // Unused for a while: free the GPU memory. Never destroy the textures or materials: the game can copy or pool
-            // a card model without us seeing it. First check that no renderer, shown or not, still draws with its textures:
+            // a card model without us seeing it. First check that no shown renderer still draws with its textures:
             // by texture, as the game draws with copies of our materials (the inspect preview does), which still use them.
-            var idle = Stacks.Values.Where(s => !s.Idle && s.FrontColor != null && s.Models.Count == 0 && Time.time - s.LastSeen > ReleaseAfterSeconds).ToList();
+            var live = Stacks.Values.Where(IsLive).OrderBy(s => s.LastSeen).ToList();
+            var excess = live.Count - MaxLive;
+            var idle = live.Where((s, i) => Time.time - s.LastSeen > (i < excess ? CrowdedReleaseSeconds : ReleaseAfterSeconds)).ToList();
             var freed = Stacks.Values.Where(s => s.Idle).ToList();
             if (idle.Count == 0 && freed.Count == 0)
                 return;
@@ -187,6 +198,7 @@ namespace DaCard.Client
                 stack.LastSeen = Time.time;
                 stack.Dirty = true;
                 Restore(stack);
+                Build(stack);
                 Plugin.Log.LogInfo($"Card layers {stack.Key}: still drawn, stacked again");
             }
             foreach (var stack in idle)
@@ -216,7 +228,7 @@ namespace DaCard.Client
             var used = new HashSet<Texture>();
             foreach (var renderer in Resources.FindObjectsOfTypeAll<Renderer>())
             {
-                if (renderer == null)
+                if (renderer == null || !renderer.gameObject.activeInHierarchy)
                     continue;
                 renderer.GetSharedMaterials(SharedMaterials);
                 foreach (var material in SharedMaterials)
@@ -333,16 +345,19 @@ namespace DaCard.Client
                     if (text == null || !text.IsCreated())
                         stack.Texts[key] = text = TextLayers.Render(card, layers[i], StackWidth, StackHeight, text);
                     if (text != null)
-                        parts.Add(new Part { Layer = layers[i], Albedo = text });
+                        parts.Add(new Part { Layer = layers[i], Albedo = text, Foil = FoilOf(stack, layers[i]) });
                     continue;
                 }
                 var albedo = Current(card, layers, i, side, LayerMaps.Albedo);
-                if (albedo != null)
+                var mask = Current(card, layers, i, side, LayerMaps.Mask);
+                if (albedo != null || mask != null)
                     parts.Add(new Part
                     {
                         Layer = layers[i],
                         Albedo = albedo,
-                        Mask = Current(card, layers, i, side, LayerMaps.Mask),
+                        Foil = FoilOf(stack, layers[i]),
+                        Mask = mask,
+                        FoilMask = Current(card, layers, i, side, LayerMaps.FoilMask),
                         Normal = Current(card, layers, i, side, LayerMaps.Normal),
                         Roughness = Current(card, layers, i, side, LayerMaps.Roughness) ?? Solid(layers[i].Roughness),
                         Metallic = Current(card, layers, i, side, LayerMaps.Metallic) ?? Solid(layers[i].Metallic)
@@ -352,7 +367,7 @@ namespace DaCard.Client
             _composite.SetFloat("_DefaultRoughness", stack.Roughness);
             Composite(color, ColorPass, NoColor, parts);
             Composite(surface, SurfacePass, new Color(0, 0, stack.Roughness, 0), parts);
-            Composite(normal, NormalPass, Flat, parts);
+            Composite(normal, NormalPass, new Color(Flat.r, Flat.g, Flat.b, stack.PictureFoil / 255f), parts);
         }
 
         private static readonly Dictionary<int, Texture2D> SolidTextures = new Dictionary<int, Texture2D>();
@@ -381,7 +396,26 @@ namespace DaCard.Client
         private class Part
         {
             public CardLayer Layer;
-            public Texture Albedo, Mask, Normal, Roughness, Metallic;
+            public Texture Albedo, Mask, FoilMask, Normal, Roughness, Metallic;
+            public int Foil = -1;
+        }
+
+        private static int FoilOf(Stack stack, CardLayer layer) =>
+            layer.Layer != null && stack.Foils.TryGetValue(layer.Layer, out var type) ? type : -1;
+
+        private static Texture2D _clear;
+
+        private static Texture2D Clear
+        {
+            get
+            {
+                if (_clear != null)
+                    return _clear;
+                _clear = new Texture2D(1, 1, TextureFormat.RGBA32, false) { name = "dacard layer clear", hideFlags = HideFlags.DontUnloadUnusedAsset };
+                _clear.SetPixel(0, 0, new Color(0, 0, 0, 0));
+                _clear.Apply(false, true);
+                return _clear;
+            }
         }
 
         private static void SetMap(string property, string flag, Texture texture)
@@ -406,15 +440,18 @@ namespace DaCard.Client
                 {
                     var layer = part.Layer;
                     var next = current == target ? scratch : target;
-                    _composite.SetTexture("_Layer", part.Albedo);
+                    _composite.SetTexture("_Layer", part.Albedo != null ? part.Albedo : Clear);
+                    _composite.SetFloat("_HasAlbedo", part.Albedo != null ? 1f : 0f);
                     SetMap("_MaskMap", "_HasMask", part.Mask);
+                    SetMap("_FoilMaskMap", "_HasFoilMask", part.FoilMask);
                     SetMap("_NormalMap", "_HasNormal", part.Normal);
                     SetMap("_RoughnessMap", "_HasRoughness", part.Roughness);
                     SetMap("_MetallicMap", "_HasMetallic", part.Metallic);
-                    _composite.SetFloat("_CanBeFoil", layer.CanBeFoil ? 1f : 0f);
+                    _composite.SetFloat("_CanBeFoil", part.Foil >= 0 ? 1f : 0f);
+                    _composite.SetFloat("_FoilType", Mathf.Max(0, part.Foil));
                     _composite.SetFloat("_Frame", layer.Frame ? 1f : 0f);
                     _composite.SetFloat("_Premultiplied", layer.Text != null ? 1f : 0f);
-                    var (u, v, rot) = Placement(layer.Transform, part.Albedo);
+                    var (u, v, rot) = Placement(layer.Transform, part.Albedo != null ? part.Albedo : part.Mask);
                     _composite.SetVector("_LayerU", u);
                     _composite.SetVector("_LayerV", v);
                     _composite.SetVector("_NormalRot", rot);

@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using EFT.InventoryLogic;
 using Newtonsoft.Json;
 using SPT.Common.Http;
 using TMPro;
@@ -10,18 +13,16 @@ namespace DaCard.Client
 {
     internal static class CardRegistry
     {
-        public static readonly string[] Rarities = { "Common", "Uncommon", "Rare", "Epic", "Legendary" };
-
 
         private static readonly Dictionary<string, CardManifestEntry> Cards = new Dictionary<string, CardManifestEntry>();
         private static readonly Dictionary<string, BinderManifestEntry> Binders = new Dictionary<string, BinderManifestEntry>();
-        private static readonly Dictionary<string, string> StickerArt = new Dictionary<string, string>();
-        private static readonly Dictionary<string, Sprite> StickerSprites = new Dictionary<string, Sprite>();
+        private static readonly Dictionary<string, CardTemplate> Templates = new Dictionary<string, CardTemplate>();
 
         private const string StickerObject = "sticker";
-        private static readonly Dictionary<string, string> FoilToBase = new Dictionary<string, string>();
         private static readonly Dictionary<string, string> Versions = new Dictionary<string, string>();
         private static readonly Dictionary<string, Texture2D> Textures = new Dictionary<string, Texture2D>();
+        private static readonly Dictionary<string, Task<Texture2D>> Loading = new Dictionary<string, Task<Texture2D>>();
+        private static readonly Dictionary<string, Task<CardManifestEntry>> Fetching = new Dictionary<string, Task<CardManifestEntry>>();
 
         private static readonly Dictionary<(Material, string), Material> Materials = new Dictionary<(Material, string), Material>();
         private static readonly Dictionary<Material, Material> CopyToBase = new Dictionary<Material, Material>();
@@ -32,10 +33,11 @@ namespace DaCard.Client
         private static string _overlayProperty = "_CARD_FRONT_BORDER";
         private static List<TextureSlot> _slots = new List<TextureSlot>();
 
-        private static readonly HashSet<string> CardTpls = new HashSet<string>();
-        private static int _baseCards;
+        private static readonly HashSet<string> CardIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        public static int Count => _baseCards;
+        public static int Count => CardIds.Count;
+
+        private static readonly SemaphoreSlim Decoders = new SemaphoreSlim(2);
 
         public static void Load()
         {
@@ -50,7 +52,7 @@ namespace DaCard.Client
                 return;
             }
 
-            if (index?.Cards == null)
+            if (index?.Versions == null)
                 return;
             CardCache.Init();
 
@@ -59,18 +61,12 @@ namespace DaCard.Client
             if (!string.IsNullOrEmpty(index.OverlayProperty))
                 _overlayProperty = index.OverlayProperty;
             _slots = index.Slots ?? new List<TextureSlot>();
-            foreach (var tpl in index.Cards)
-                CardTpls.Add(tpl);
-            _baseCards = index.Cards.Count;
-            foreach (var pair in index.Foils ?? new Dictionary<string, string>())
-            {
-                CardTpls.Add(pair.Key);
-                FoilToBase[pair.Key] = pair.Value;
-            }
+            foreach (var id in index.Versions.Keys)
+                CardIds.Add(id);
             foreach (var pair in index.Versions ?? new Dictionary<string, string>())
                 Versions[pair.Key] = pair.Value;
-            foreach (var pair in index.Stickers ?? new Dictionary<string, string>())
-                StickerArt[pair.Key] = pair.Value;
+            foreach (var pair in index.Templates ?? new Dictionary<string, CardTemplate>())
+                Templates[pair.Key] = pair.Value;
             foreach (var binder in index.Binders ?? new List<BinderManifestEntry>())
                 Binders[binder.Tpl] = binder;
             PackRegistry.Load(index);
@@ -79,70 +75,174 @@ namespace DaCard.Client
 
         public static bool IsLinear(string property) => _slots.FirstOrDefault(s => s.Property == property)?.Linear ?? false;
 
-        public static bool IsCard(string templateId) => templateId != null && CardTpls.Contains(templateId);
+        public static bool IsCard(string templateId) => templateId != null && Templates.ContainsKey(templateId);
 
-        public static CardManifestEntry Card(string templateId)
+        public static CardTemplate Template(string templateId) => templateId != null && Templates.TryGetValue(templateId, out var template) ? template : null;
+
+        public static bool IsCardId(string cardId) => cardId != null && CardIds.Contains(cardId);
+
+        public static CardManifestEntry Card(string cardId)
         {
-            if (!IsCard(templateId))
+            if (!IsCardId(cardId))
                 return null;
-            if (Cards.TryGetValue(templateId, out var cached))
+            if (Cards.TryGetValue(cardId, out var cached))
                 return cached;
-            var card = FoilToBase.TryGetValue(templateId, out var baseTpl) ? Card(baseTpl)?.AsFoil(templateId) : Download(templateId);
-            Cards[templateId] = card;
+            if (Fetching.ContainsKey(cardId))
+                return null;
+            var card = CardCache.ReadCard(cardId, VersionOf(cardId));
+            if (card != null)
+                Cards[cardId] = card;
+            else
+                CardAsync(cardId);
             return card;
         }
 
-        private static CardManifestEntry Download(string templateId)
+        private static string VersionOf(string cardId) => Versions.TryGetValue(cardId, out var v) ? v : null;
+
+        private static async Task<CardManifestEntry> Download(string cardId)
         {
-            var version = Versions.TryGetValue(templateId, out var v) ? v : null;
-            var card = CardCache.ReadCard(templateId, version);
+            var version = VersionOf(cardId);
+            var card = await Task.Run(() => CardCache.ReadCard(cardId, version));
             if (card != null)
                 return card;
             try
             {
-                var json = RequestHandler.GetJson("/dacard/card/" + templateId);
+                var json = await RequestHandler.GetJsonAsync("/dacard/card/" + cardId);
                 card = JsonConvert.DeserializeObject<CardManifestEntry>(json);
                 if (card != null)
-                    CardCache.WriteCard(templateId, version, json);
+                    CardCache.WriteCard(cardId, version, json);
             }
             catch (Exception e)
             {
-                Plugin.Log.LogError($"Could not get card {templateId} from the server: {e.Message}");
+                Plugin.Log.LogError($"Could not get card {cardId} from the server: {e.Message}");
             }
             return card;
         }
 
-        public static bool IsBinder(string templateId) => templateId != null && Binders.ContainsKey(templateId);
-
-        public static bool IsSticker(string templateId) => templateId != null && StickerArt.ContainsKey(templateId);
-
-        public static bool CanRoll(string cardTpl, string stickerTpl)
+        public static Task<CardManifestEntry> CardAsync(string cardId)
         {
-            var card = Card(cardTpl);
-            return card != null && (card.Front ?? new List<CardLayer>()).Concat(card.Back ?? new List<CardLayer>())
-                .Any(l => l != null && l.Sticker == stickerTpl && l.Chance > 0);
+            if (!IsCardId(cardId))
+                return Task.FromResult<CardManifestEntry>(null);
+            if (Cards.TryGetValue(cardId, out var cached))
+                return Task.FromResult(cached);
+            if (Fetching.TryGetValue(cardId, out var pending))
+                return pending;
+            var task = FetchCard(cardId);
+            if (!task.IsCompleted)
+                Fetching[cardId] = task;
+            return task;
         }
 
-        public static Sprite StickerSprite(string templateId)
+        private static async Task<CardManifestEntry> FetchCard(string cardId)
         {
-            if (StickerSprites.TryGetValue(templateId, out var cached) && cached != null)
-                return cached;
-            var url = StickerArt.TryGetValue(templateId, out var art) ? art : null;
-            var texture = url != null ? GetTexture(url, linear: false) : null;
+            CardManifestEntry card;
+            try
+            {
+                card = await Download(cardId);
+            }
+            finally
+            {
+                Fetching.Remove(cardId);
+            }
+            if (Cards.TryGetValue(cardId, out var existing))
+                return existing;
+            Cards[cardId] = card;
+            return card;
+        }
+
+        public static Task<Texture2D> TextureAsync(string url, bool linear)
+        {
+            if (url == null)
+                return Task.FromResult<Texture2D>(null);
+            if (Textures.TryGetValue(url, out var texture) && texture != null)
+                return Task.FromResult(texture);
+            if (Loading.TryGetValue(url, out var pending))
+                return pending;
+            var task = LoadTexture(url, linear);
+            if (!task.IsCompleted)
+                Loading[url] = task;
+            return task;
+        }
+
+        private static async Task<Texture2D> LoadTexture(string url, bool linear)
+        {
+            byte[] png = null;
+            PngDecoder.Image image = null;
+            try
+            {
+                await Task.Run(async () =>
+                {
+                    png = await CardCache.DataAsync(url);
+                    if (png == null || png.Length == 0)
+                        return;
+                    await Decoders.WaitAsync();
+                    try
+                    {
+                        image = PngDecoder.Decode(png);
+                    }
+                    finally
+                    {
+                        Decoders.Release();
+                    }
+                });
+                await FrameBudget.Turn();
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"Could not load {url}: {e.Message}");
+            }
+            finally
+            {
+                Loading.Remove(url);
+            }
+            if (Textures.TryGetValue(url, out var existing) && existing != null)
+                return existing;
+            var start = FrameBudget.Start();
+            var texture = image != null || (png != null && png.Length > 0) ? CardTextures.Create(image, image != null ? null : png, url, linear) : null;
+            FrameBudget.Spend(start);
             if (texture == null)
-                return EmptyLayerSlotSprite();
-            var sprite = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f), 100f);
-            sprite.name = "dacard sticker " + templateId;
-            sprite.hideFlags = HideFlags.DontUnloadUnusedAsset;
-            StickerSprites[templateId] = sprite;
-            return sprite;
+            {
+                Plugin.Log.LogError("No image data for " + url);
+                CardCache.Forget(url);
+                return null;
+            }
+            Textures[url] = texture;
+            return texture;
         }
+
+        public static async Task PrepareCard(CardStamp stamp)
+        {
+            var card = await CardAsync(stamp?.Card);
+            if (card == null)
+                return;
+            var loads = new List<Task>();
+            foreach (var slot in _slots)
+                if (card.Textures != null && card.Textures.TryGetValue(slot.Property, out var url))
+                    loads.Add(TextureAsync(url, slot.Linear));
+            foreach (var layer in (card.Front ?? new List<CardLayer>()).Concat(card.Back ?? new List<CardLayer>()))
+                if (CardCopies.Shows(layer, stamp) && layer.Textures != null)
+                    foreach (var pair in layer.Textures)
+                        loads.Add(TextureAsync(pair.Value, pair.Key != LayerMaps.Albedo));
+            await Task.WhenAll(loads);
+        }
+
+        public static Task PrepareBinder(string templateId) =>
+            Binders.TryGetValue(templateId, out var binder)
+                ? Task.WhenAll((binder.Stickers ?? new List<BinderSticker>()).Where(s => s?.Image != null).Select(s => TextureAsync(s.Image, false)))
+                : Task.CompletedTask;
+
+        public static string PocketCard(Slot slot)
+        {
+            var binder = slot?.ParentItem?.StringTemplateId;
+            return binder != null && slot.Name != null && Binders.TryGetValue(binder, out var entry) && entry.Pockets != null
+                   && entry.Pockets.TryGetValue(slot.Name, out var card) ? card : null;
+        }
+
+        public static bool IsBinder(string templateId) => templateId != null && Binders.ContainsKey(templateId);
 
         private static readonly Dictionary<string, Sprite> SlotSprites = new Dictionary<string, Sprite>();
 
         public static Sprite EmptySlotSprite() => SlotSprite("card_slot");
-
-        public static Sprite EmptyLayerSlotSprite() => SlotSprite("layer_slot");
 
         private static Sprite SlotSprite(string name)
         {
@@ -228,19 +328,19 @@ namespace DaCard.Client
 
         public static bool IsCardModel(GameObject model) => model != null && CardModels.Contains(model.GetInstanceID());
 
-        public static void Apply(GameObject model, string templateId, string cardName, string itemId, ICollection<string> stickers)
+        public static void Apply(GameObject model, CardStamp stamp, string itemId)
         {
-            var card = Card(templateId);
+            var card = Card(stamp?.Card);
             if (card == null)
                 return;
 
             CardModels.Add(model.GetInstanceID());
 
-            CardText.Apply(model, card, cardName);
+            CardText.Apply(model, card, CardNames.Name(card));
 
             CardLayers.TakeCompositeShader(model);
-            var variant = CardLayers.Variant(card, stickers, out var front, out var back);
-            var stack = CardLayers.Get(card, front, back, variant, model);
+            var variant = CardLayers.Variant(card, stamp, out var front, out var back, out var foil);
+            var stack = CardLayers.Get(card, stamp, front, back, variant, model);
 
             foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
             {
@@ -255,7 +355,7 @@ namespace DaCard.Client
                         continue;
 
                     var bundleMaterial = CopyToBase.TryGetValue(current, out var b) && b != null ? b : current;
-                    materials[i] = GetMaterial(card, bundleMaterial, variant, stack);
+                    materials[i] = GetMaterial(card, bundleMaterial, variant, stack, foil, stamp != null && stamp.Foils.ContainsKey(FoilTypes.Picture));
                 }
                 renderer.sharedMaterials = materials;
                 foreach (var material in materials)
@@ -271,7 +371,7 @@ namespace DaCard.Client
         private static bool IsEdge(Material material) => material.shader != null && material.shader.name == EdgeShader;
 
         // One material per card copy variant (the layers it rolled)
-        private static Material GetMaterial(CardManifestEntry card, Material bundleMaterial, string variant, CardLayers.Stack stack)
+        private static Material GetMaterial(CardManifestEntry card, Material bundleMaterial, string variant, CardLayers.Stack stack, bool foil, bool pictureFoil)
         {
             if (Materials.TryGetValue((bundleMaterial, variant), out var material) && material != null)
                 return material;
@@ -295,6 +395,8 @@ namespace DaCard.Client
                     : noPicture && slot.Suffix == "" ? ClearTexture
                     : noPicture && slot.Suffix == "foil" ? Texture2D.blackTexture
                     : DefaultTexture(slot.Default);
+                if (slot.Suffix == "foil" && !pictureFoil)
+                    texture = Texture2D.blackTexture;
                 if (texture != null)
                     material.SetTexture(slot.Property, texture);
                 if (!string.IsNullOrEmpty(slot.Flag))
@@ -306,12 +408,8 @@ namespace DaCard.Client
             else if (material.HasProperty(_overlayProperty))
                 material.SetTexture(_overlayProperty, ClearTexture);
 
-            material.SetFloat("_HoloStrength", card.HoloStrength);
-            material.SetFloat("_HoloPattern", card.HoloPattern);
-            material.SetFloat("_GratingAngle", card.HoloAngle);
-            if (!card.Foil)
+            if (!foil)
                 material.SetFloat("_FoilStrength", 0f);
-            material.SetFloat("_CardRarity", Math.Max(0, Array.IndexOf(Rarities, card.Rarity)));
             if (card.RarityColor != null && ColorUtility.TryParseHtmlString(card.RarityColor, out var rarityColor))
                 material.SetColor("_RarityColor", rarityColor);
 

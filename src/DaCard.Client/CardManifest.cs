@@ -10,12 +10,17 @@ namespace DaCard.Client
         [JsonProperty("backProperty")] public string BackProperty = "_CARD_BACK";
         [JsonProperty("overlayProperty")] public string OverlayProperty = "_CARD_FRONT_BORDER";
         [JsonProperty("slots")] public List<TextureSlot> Slots = new List<TextureSlot>();
-        [JsonProperty("cards")] public List<string> Cards = new List<string>();
         [JsonProperty("versions")] public Dictionary<string, string> Versions = new Dictionary<string, string>();
-        [JsonProperty("foils")] public Dictionary<string, string> Foils = new Dictionary<string, string>();
+        [JsonProperty("templates")] public Dictionary<string, CardTemplate> Templates = new Dictionary<string, CardTemplate>();
         [JsonProperty("binders")] public List<BinderManifestEntry> Binders = new List<BinderManifestEntry>();
         [JsonProperty("packs")] public List<PackManifestEntry> Packs = new List<PackManifestEntry>();
-        [JsonProperty("stickers")] public Dictionary<string, string> Stickers = new Dictionary<string, string>();
+    }
+
+    internal class CardTemplate
+    {
+        [JsonProperty("collection")] public string Collection;
+        [JsonProperty("rarity")] public string Rarity;
+        [JsonProperty("price")] public double Price;
     }
 
     internal class PackManifestEntry
@@ -49,6 +54,7 @@ namespace DaCard.Client
         [JsonProperty("tpl")] public string Tpl;
         [JsonProperty("collection")] public string Collection;
         [JsonProperty("stickers")] public List<BinderSticker> Stickers = new List<BinderSticker>();
+        [JsonProperty("pockets")] public Dictionary<string, string> Pockets = new Dictionary<string, string>();
     }
 
     internal class BinderSticker
@@ -81,8 +87,12 @@ namespace DaCard.Client
     internal class CardLayer
     {
         [JsonProperty("key")] public string Key;
+        [JsonProperty("layer")] public string Layer;
+        [JsonProperty("group")] public string Group;
         [JsonProperty("chance")] public double Chance = 100;
         [JsonProperty("canBeFoil")] public bool CanBeFoil;
+        [JsonProperty("price")] public double Price;
+        [JsonProperty("pricePercent")] public double PricePercent;
         [JsonProperty("frame")] public bool Frame;
 
         [JsonProperty("textures")] public Dictionary<string, string> Textures = new Dictionary<string, string>();
@@ -90,7 +100,6 @@ namespace DaCard.Client
         [JsonProperty("transform")] public LayerTransform Transform;
         [JsonProperty("roughness")] public float? Roughness;
         [JsonProperty("metallic")] public float? Metallic;
-        [JsonProperty("sticker")] public string Sticker;
         [JsonProperty("id")] public string Id;
         [JsonProperty("name")] public string Name;
         [JsonProperty("text")] public LayerText Text;
@@ -154,12 +163,14 @@ namespace DaCard.Client
         [JsonProperty("type")] public string Type;
         [JsonProperty("floats")] public Dictionary<string, float> Floats = new Dictionary<string, float>();
         [JsonProperty("textures")] public Dictionary<string, string> Textures = new Dictionary<string, string>();
-        [JsonProperty("holoStrength")] public float HoloStrength;
-        [JsonProperty("holoPattern")] public int HoloPattern;
-        [JsonProperty("holoAngle")] public float HoloAngle;
-        [JsonProperty("foil")] public bool Foil;
-        [JsonProperty("baseTpl")] public string BaseTpl;
+        [JsonProperty("template")] public string Template;
+        [JsonProperty("price")] public double Price;
+        [JsonProperty("name")] public string Name;
+        [JsonProperty("shortName")] public string ShortName;
+        [JsonProperty("description")] public string Description;
+        [JsonProperty("locales")] public Dictionary<string, CardLocale> Locales;
         [JsonProperty("rarityColor")] public string RarityColor;
+        [JsonProperty("foilLayers")] public List<string> FoilLayers = new List<string>();
         [JsonProperty("collection")] public string Collection;
         [JsonProperty("glow")] public CardGlowSettings Glow;
         // Collection layers first, then the card's; bottom first
@@ -167,14 +178,12 @@ namespace DaCard.Client
         [JsonProperty("back")] public List<CardLayer> Back = new List<CardLayer>();
         [JsonProperty("text")] public CardTextSettings Text;
         [JsonProperty("animation")] public CardAnimationInfo Animation;
+    }
 
-        public CardManifestEntry AsFoil(string tpl)
-        {
-            var copy = (CardManifestEntry)MemberwiseClone();
-            copy.Tpl = tpl;
-            copy.Foil = true;
-            copy.BaseTpl = Tpl;
-            return copy;
-        }
+    internal class CardLocale
+    {
+        [JsonProperty("name")] public string Name;
+        [JsonProperty("shortName")] public string ShortName;
+        [JsonProperty("description")] public string Description;
     }
 }

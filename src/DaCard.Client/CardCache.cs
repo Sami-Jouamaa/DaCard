@@ -195,8 +195,6 @@ namespace DaCard.Client
             foreach (var pack in index.Packs ?? new List<PackManifestEntry>())
                 foreach (var url in pack?.Textures?.Values ?? Enumerable.Empty<string>())
                     Keep(keep, url);
-            foreach (var url in (index.Stickers ?? new Dictionary<string, string>()).Values)
-                Keep(keep, url);
 
             foreach (var file in Directory.GetFiles(_files))
                 if (!IsFreshTemp(file) && !keep.Contains(Path.GetFileName(file)))
