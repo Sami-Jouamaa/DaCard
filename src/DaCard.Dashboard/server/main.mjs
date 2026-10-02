@@ -5,10 +5,11 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import { resolveModDir, layout, dashboardDir } from './paths.mjs';
-import { openDatabase, fromJson, getSetting, setSetting, transaction, recordMigration } from './db.mjs';
+import { openDatabase, compact, fromJson, getSetting, setSetting, transaction, recordMigration } from './db.mjs';
 import { createImageStore } from './images.mjs';
 import { createJobs } from './jobs.mjs';
-import { runUpgrade, SETTING_KEYS, currentConfig, legacyState } from './upgrade.mjs';
+import { runUpgrade, SETTING_KEYS, currentConfig, legacyState, legacyFolderState } from './upgrade.mjs';
+import { FOIL_TYPES } from './rarities.mjs';
 import {
     DocumentError, cardDocument, collectionDocument, packDocument, skinDocument, saveCard, duplicateCard, deleteCard, saveCollection, deleteCollection,
     savePack, deletePack, saveSkin, deleteSkin, moveCard, setCardThumb, setCollectionThumb,
@@ -132,6 +133,7 @@ function overview() {
     const counts = Object.fromEntries(db.prepare('SELECT collection_id, COUNT(*) AS n FROM cards GROUP BY collection_id').all().map((r) => [r.collection_id, r.n]));
     const collections = db.prepare('SELECT * FROM collections ORDER BY sort, name').all().map((c) => ({
         id: c.id, name: c.name, shortName: c.short_name, description: c.description, idKey: c.id_key, cards: counts[c.id] || 0,
+        rarities: fromJson(c.rarities), foilChance: c.foil_chance, foilTypes: fromJson(c.foil_types),
         thumb: thumbUrl(`collections/${c.id}`, c.id),
     }));
     const cards = db.prepare('SELECT id, collection_id, rarity, type, name, short_name, thumb_version, updated_at FROM cards ORDER BY sort').all().map((c) => ({
@@ -141,15 +143,18 @@ function overview() {
     }));
     const packs = db.prepare('SELECT * FROM packs ORDER BY sort, name').all().map((p) => ({
         id: p.id, collectionId: p.collection_id, name: p.name, look: p.look, skin: p.skin_id, cardCount: p.card_count, price: p.price,
-        purchasable: !!p.purchasable, lootPercent: p.loot_percent, allCollections: !!p.all_collections, rarities: fromJson(p.rarities),
-        thumb: thumbUrl(p.collection_id ? `collections/${p.collection_id}` : `packs/${p.id}`, p.id),
+        purchasable: !!p.purchasable, lootPercent: p.loot_percent, rarities: fromJson(p.rarities),
+        thumb: p.collection_id ? thumbUrl(`collections/${p.collection_id}`, p.id) : null,
     }));
     const skins = db.prepare('SELECT * FROM skins ORDER BY builtin DESC, sort, name').all().map((s) => ({
         id: s.id, name: s.name, builtin: !!s.builtin, design: fromJson(s.design), thumb: thumbUrl(`skins/${s.id}`, s.id),
         albedo: db.prepare("SELECT updated_at FROM images WHERE set_id = ? AND channel = 'albedo'").get(s.id) ? `/files/skins/${s.id}/${s.id}_albedo.png` : null,
     }));
     const migrations = db.prepare('SELECT * FROM migrations WHERE seen = 0 ORDER BY id').all().map((m) => ({ ...m, details: fromJson(m.details) }));
-    return { version: VERSION, settings: currentConfig(db, paths), collections, cards, packs, skins, migrations, legacy: legacyState(paths).old };
+    return {
+        version: VERSION, settings: currentConfig(db, paths), collections, cards, packs, skins, migrations, legacy: legacyState(paths).old,
+        legacyFolder: legacyFolderState(paths), foilTypes: FOIL_TYPES,
+    };
 }
 
 const changed = () => jobs.events.emit('changed');
@@ -172,6 +177,11 @@ function routes() {
             changed();
             return currentConfig(db, paths);
         });
+    });
+    on('POST', /^\/api\/legacy\/open$/, () => {
+        if (!legacyFolderState(paths)) throw new HttpError(404, 'There is no old data');
+        openFolder(paths.legacyDir);
+        return { ok: true };
     });
     on('POST', /^\/api\/migrations\/seen$/, () => {
         db.prepare('UPDATE migrations SET seen = 1 WHERE seen = 0').run();
@@ -373,6 +383,13 @@ function openBrowser(url) {
     } catch { }
 }
 
+function openFolder(dir) {
+    const command = process.platform === 'win32' ? ['explorer', [dir]] : process.platform === 'darwin' ? ['open', [dir]] : ['xdg-open', [dir]];
+    try {
+        spawn(command[0], command[1], { detached: true, stdio: 'ignore' }).unref();
+    } catch { }
+}
+
 async function alreadyRunning() {
     try {
         const response = await fetch(`http://${host}:${port}/api/ping`, { signal: AbortSignal.timeout(2000) });
@@ -400,6 +417,7 @@ function startUpgrade() {
             console.error(readyError);
         } else {
             db = openDatabase(paths.dbFile);
+            compact(db);
             store = createImageStore(db, paths.dataDir);
             if (state.result?.legacy) console.log(`Moved ${state.result.legacy.cards} card(s) from the old addon folders into the database.`);
         }

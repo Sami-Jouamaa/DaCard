@@ -14,7 +14,7 @@ import { subdirs, isFile } from './content.mjs';
 
 export const MANIFEST = 'dacard-collection.json';
 export const FORMAT = 'dacard-collection';
-export const FORMAT_VERSION = 1;
+export const FORMAT_VERSION = 3;
 
 function walk(dir, base = dir) {
     if (!fs.existsSync(dir)) return [];
@@ -196,6 +196,9 @@ async function importCollection({ db, store, paths, file, info, replace, onProgr
             for (const row of m.packs) insert('packs', { ...row, skin_id: row.skin_id && db.prepare('SELECT 1 FROM skins WHERE id = ?').get(row.skin_id) ? row.skin_id : null });
             for (const row of m.packCards) insert('pack_cards', row);
             for (const row of m.images) insert('images', row);
+            if (m.version === 2)
+                db.prepare(`DELETE FROM layers WHERE foil = 1 AND ((owner_kind = 'collection' AND owner_id = ?) OR (owner_kind = 'card' AND owner_id IN (SELECT id FROM cards WHERE collection_id = ?)))`)
+                    .run(coll.id, coll.id);
         });
         return { kind: 'collection', id: coll.id, name: coll.name, cards: m.cards.length, packs: m.packs.length, replaced: !!existing, warnings: [] };
     } finally {

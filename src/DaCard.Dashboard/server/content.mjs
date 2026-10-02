@@ -3,9 +3,10 @@ import path from 'node:path';
 import { idFor, binderId, cardIds, newImageId } from './ids.mjs';
 import { collectionScope } from './paths.mjs';
 import { THUMB_VERSION } from './schema.mjs';
+import { cleanChance, cleanFoilTypes, cleanRarities, isFoilType } from './rarities.mjs';
 
 export const RARITIES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'];
-export const LEGACY_MAPS = ['art', 'normal', 'roughness', 'metallic', 'mask'];
+export const LEGACY_MAPS = ['art', 'normal', 'roughness', 'metallic', 'mask', 'foilmask'];
 export const PACK_MAPS = ['albedo', 'normal', 'metallic', 'roughness', 'ao'];
 export const PACK_LAYER_SUFFIX = { normal: '.normal', roughness: '.roughness', metallic: '.metallic', mask: '.mask' };
 export const DEFAULT_SLOTS = ['', 'height', 'holo', 'foil', 'normal', 'roughness', 'metallic'];
@@ -95,7 +96,7 @@ export function pictureLayer(dir, file, { key, chance = 100, canBeFoil = false, 
         const list = frameFiles(path.join(dir, map === 'art' ? base : `${base}.${map}`));
         if (list.length) frames[channelOf(map)] = list;
     }
-    if (!maps.albedo) return null;
+    if (!maps.albedo && !maps.mask) return null;
     const ownFps = {};
     for (const [map, value] of Object.entries(fps || {})) if (num(value, 0) > 0) ownFps[channelOf(lower(map))] = value;
     return {
@@ -110,6 +111,46 @@ export function pictureLayer(dir, file, { key, chance = 100, canBeFoil = false, 
     };
 }
 
+export const MAX_VARIANT_WEIGHT = 1000000;
+
+function commonOf(entry, file) {
+    const material = (v) => (typeof v === 'number' && Number.isFinite(v) ? clamp(v, 0, 1) : null);
+    return {
+        file,
+        roughness: entry.text ? null : material(entry.roughness),
+        metallic: entry.text ? null : material(entry.metallic),
+        name: text(entry.name),
+        text_id: text(entry.id),
+        over: entry.over ? 1 : 0,
+        price: Math.max(0, num(entry.price, 0)),
+        price_percent: Math.max(0, num(entry.pricePercent, 0)),
+        foil_chance: cleanChance(entry.foilChance),
+        foil_type: isFoilType(entry.foilType) ? entry.foilType : null,
+    };
+}
+
+function readVariants(plan, dir, entry, { keyPrefix, where }) {
+    const variants = [];
+    for (const v of Array.isArray(entry.variants) ? entry.variants : []) {
+        const file = typeof v?.file === 'string' ? v.file : '';
+        if (!FILE_NAME.test(file)) {
+            plan.warnings.push(`${where}: variant file name '${v?.file}' is not valid; skipped`);
+            continue;
+        }
+        const source = pictureLayer(dir, file, { key: keyPrefix + file, canBeFoil: v.canBeFoil !== false, fps: v.fps });
+        if (!source) {
+            plan.warnings.push(`${where}: variant '${file}' has no ${file}.png or ${file}.mask.png; skipped`);
+            continue;
+        }
+        variants.push({
+            ...source, ...commonOf(v, file), over: 0, kind: 'image',
+            chance: clamp(num(v.chance, 1), 0, MAX_VARIANT_WEIGHT),
+            transform: v.transform && typeof v.transform === 'object' ? { ...v.transform } : null,
+        });
+    }
+    return variants;
+}
+
 export function readLayerList(plan, dir, entries, { keyPrefix, where }) {
     const out = [];
     for (const entry of Array.isArray(entries) ? entries : []) {
@@ -119,16 +160,24 @@ export function readLayerList(plan, dir, entries, { keyPrefix, where }) {
             plan.warnings.push(`${where}: layer file name '${entry.file}' is not valid; skipped`);
             continue;
         }
-        const material = (v) => (typeof v === 'number' && Number.isFinite(v) ? clamp(v, 0, 1) : null);
-        const common = {
-            file,
-            roughness: entry.text ? null : material(entry.roughness),
-            metallic: entry.text ? null : material(entry.metallic),
-            name: text(entry.name),
-            text_id: text(entry.id),
-            over: entry.over ? 1 : 0,
-            price: Math.max(0, num(entry.price, 0)),
-        };
+        const common = commonOf(entry, file);
+        if (entry.kind === 'variant') {
+            const variants = readVariants(plan, dir, entry, { keyPrefix, where });
+            if (!variants.length || !variants.some((v) => v.chance > 0)) {
+                plan.warnings.push(`${where}: variant layer '${entry.name || file}' has no variant that can roll; skipped`);
+                continue;
+            }
+            out.push({
+                ...common, kind: 'variant', key: keyPrefix + file, chance: clamp(num(entry.chance, 100), 0, 100), can_be_foil: 0,
+                roughness: null, metallic: null, price: 0, price_percent: 0, foil_chance: null, foil_type: null,
+                maps: {}, frames: {}, speed: 12, variants,
+            });
+            continue;
+        }
+        if (entry.foil) {
+            plan.warnings.push(`${where}: the "Foil" layer is gone: every layer that can be foil now rolls its own foil`);
+            continue;
+        }
         if (entry.text && typeof entry.text === 'object') {
             const layer = {
                 ...common,
@@ -152,7 +201,7 @@ export function readLayerList(plan, dir, entries, { keyPrefix, where }) {
         }
         const source = pictureLayer(dir, file, { key: keyPrefix + file, chance: entry.chance, canBeFoil: entry.canBeFoil !== false, fps: entry.fps });
         if (!source) {
-            plan.warnings.push(`${where}: layer '${file}' has no ${file}.png; skipped`);
+            plan.warnings.push(`${where}: layer '${file}' has no ${file}.png or ${file}.mask.png; skipped`);
             continue;
         }
         out.push({ ...source, ...common, transform: entry.transform && typeof entry.transform === 'object' ? { ...entry.transform } : null });
@@ -176,7 +225,7 @@ function layerIdFor(plan, file) {
     return { id, key: null };
 }
 
-export function addLayerRows(plan, layers, { ownerKind, ownerId, face, scope, keyFor }) {
+export function addLayerRows(plan, layers, { ownerKind, ownerId, face, scope, keyFor, parentId = null }) {
     const ids = {};
     layers.forEach((layer, position) => {
         const reused = layerIdFor(plan, layer.file);
@@ -203,13 +252,19 @@ export function addLayerRows(plan, layers, { ownerKind, ownerId, face, scope, ke
             can_be_foil: layer.can_be_foil,
             over: layer.over ?? 0,
             price: layer.price ?? 0,
+            price_percent: layer.price_percent ?? 0,
+            foil_chance: layer.foil_chance ?? null,
+            foil_type: layer.foil_type ?? null,
             transform: layer.transform ?? null,
             text: textJson,
             fps: layer.fps ?? null,
             speed: layer.speed ?? 12,
             roughness: layer.roughness ?? null,
             metallic: layer.metallic ?? null,
+            kind: layer.kind === 'variant' ? 'variant' : null,
+            parent_id: parentId,
         });
+        if (layer.variants) Object.assign(ids, addLayerRows(plan, layer.variants, { ownerKind, ownerId, face, scope, keyFor, parentId: id }));
     });
     return ids;
 }
@@ -257,10 +312,14 @@ export function planCollection(plan, { dir, data, where, idKey, id = binderId(id
         row: {
             id, id_key: idKey, name: text(data.name) || idKey, short_name: text(data.shortName), description: text(data.description),
             locales: localesOf(data.locales), card_text: null, legacy_folder: legacyFolder, sort, created_at: time, updated_at: time,
+            rarities: null, foil_chance: cleanChance(data.foilChance), foil_types: cleanFoilTypes(data.foilTypes),
         },
         dir, layerIds: {}, isDefault: false,
     };
     coll.row.card_text = cardTextOf(plan, data, dir, scope, id, where);
+    const rarities = cleanRarities(data.rarities);
+    if (rarities.error) plan.warnings.push(`${where}: ${rarities.error}; it uses the default rarities`);
+    else coll.row.rarities = rarities.list;
     let front, back;
     if (data.layers && typeof data.layers === 'object') {
         front = readLayerList(plan, dir, data.layers.front, { keyPrefix: `coll:${idKey}:`, where });
@@ -441,7 +500,7 @@ export function planSkin(plan, { dir, data, id, scope }) {
     return skin;
 }
 
-export function planPack(plan, { dir, data, id, collectionId, all = false, collections = [], cards = [], rarities = [], skinId = null, base = null, scope }) {
+export function planPack(plan, { dir, data, id, collectionId, cards = [], rarities = [], skinId = null, base = null, scope }) {
     const time = Date.now();
     planMaps(plan, dir, scope, id);
     if (isFile(path.join(dir, 'thumb.png'))) plan.files.push({ kind: 'thumb', scope, ownerId: id, from: path.join(dir, 'thumb.png') });
@@ -450,12 +509,11 @@ export function planPack(plan, { dir, data, id, collectionId, all = false, colle
     const pack = {
         row: {
             id, collection_id: collectionId, name: text(data.name) || id, short_name: text(data.shortName), description: text(data.description),
-            locales: localesOf(data.locales), all_collections: all ? 1 : 0, rarities: rarities.length ? rarities : null,
+            locales: localesOf(data.locales), all_collections: 0, rarities: rarities.length ? rarities : null,
             card_count: clamp(Math.round(num(data.cardCount, 3)), 1, 10), price: Math.max(0, num(data.price, 25000)),
             purchasable: data.purchasable === false ? 0 : 1, loot_percent: Math.max(0, num(data.lootPercent, 0)), background: text(data.background),
             look, skin_id: skinId, design, sort: plan.packs.length, created_at: time, updated_at: time,
         },
-        collections,
         cards,
     };
     plan.packs.push(pack);

@@ -8,7 +8,7 @@ import { applyPlan, planSize } from './legacy/apply.mjs';
 
 const PICTURE_SURFACE = ['roughness', 'metallic'];
 
-export const SETTING_KEYS =['rarities', 'containers', 'textures', 'cardTypes', 'backProperty', 'overlayProperty', 'binders', 'geek', 'foil', 'packs', 'retiredItems'];
+export const SETTING_KEYS = ['rarities', 'loot', 'containers', 'textures', 'cardTypes', 'backProperty', 'overlayProperty', 'binders', 'geek', 'foil', 'retiredItems'];
 
 function readJsonFile(file) {
     try {
@@ -39,6 +39,57 @@ function ensureSettings(db, paths, source) {
         if (getSetting(db, key, undefined) !== undefined) continue;
         const value = config[key] !== undefined ? config[key] : defaults[key];
         if (value !== undefined) setSetting(db, key, value);
+    }
+}
+
+const OLD_WEIGHTS = { common: 68, uncommon: 22, rare: 7, epic: 2, legendary: 1 };
+
+function migrateRaritySettings(db, legacyConfig) {
+    const rarities = getSetting(db, 'rarities', undefined);
+    const packs = getSetting(db, 'packs', undefined) ?? legacyConfig?.packs;
+    const old = rarities && typeof rarities === 'object' && Object.values(rarities).some((r) => r && ('lootPercent' in r || 'holo' in r));
+    let changed = false;
+    if (old) {
+        const weights = Object.fromEntries(Object.entries(packs?.rarityWeights || {}).map(([k, v]) => [k.toLowerCase(), v]));
+        const chances = [];
+        const next = {};
+        for (const [name, r] of Object.entries(rarities)) {
+            const { lootPercent, holo, ...rest } = r || {};
+            if (Number.isFinite(lootPercent) && lootPercent > 0) chances.push(Math.min(100, lootPercent));
+            const weight = weights[name.toLowerCase()] ?? OLD_WEIGHTS[name.toLowerCase()] ?? 0;
+            next[name] = { weight: Number.isFinite(rest.weight) ? rest.weight : Math.max(0, +weight || 0), ...rest };
+        }
+        setSetting(db, 'rarities', next);
+        if (getSetting(db, 'loot', undefined) === undefined && chances.length) {
+            const none = chances.reduce((p, c) => p * (1 - c / 100), 1);
+            setSetting(db, 'loot', { cardPercent: Math.round((1 - none) * 10000) / 100 });
+        }
+        changed = true;
+    }
+    if (getSetting(db, 'packs', undefined) !== undefined) {
+        db.prepare("DELETE FROM settings WHERE key = 'packs'").run();
+        changed = true;
+    }
+    const foil = getSetting(db, 'foil', undefined);
+    if (foil && typeof foil === 'object' && 'priceMultiplier' in foil) {
+        const { priceMultiplier, ...rest } = foil;
+        setSetting(db, 'foil', rest);
+        changed = true;
+    }
+    const geek = getSetting(db, 'geek', undefined);
+    if (geek && typeof geek === 'object' && 'sellFoilCards' in geek) {
+        const { sellFoilCards, ...rest } = geek;
+        setSetting(db, 'geek', rest);
+        changed = true;
+    }
+    return changed && old;
+}
+
+export function legacyFolderState(paths) {
+    try {
+        return fs.readdirSync(paths.legacyDir).length > 0;
+    } catch {
+        return false;
     }
 }
 
@@ -107,7 +158,7 @@ export async function runUpgrade({ modDir, by = 'dashboard', onProgress, onLog }
     const summary = { schema: [], skins: 0, legacy: null, warnings: [] };
     try {
         const before = schemaVersion(db);
-        summary.schema = upgradeSchema(db).map((s) => s.title);
+        summary.schema = upgradeSchema(db, { dataDir: paths.dataDir, by }).map((s) => s.title);
         const store = createImageStore(db, paths.dataDir);
         const legacy = legacyState(paths);
         if (legacy.old.length)
@@ -115,6 +166,10 @@ export async function runUpgrade({ modDir, by = 'dashboard', onProgress, onLog }
 
         const legacyConfig = legacy.config ? readJsonFile(path.join(paths.dataDir, 'config.json')) : null;
         transaction(db, () => ensureSettings(db, paths, legacyConfig));
+        if (transaction(db, () => migrateRaritySettings(db, legacyConfig)) && before > 0) {
+            recordMigration(db, { migration: 'rarity-weights', title: 'Rarity chances: one roll per card, one card chance per container', by });
+            log('Rarity chances: one roll per card, one card chance per container');
+        }
         if (getSetting(db, 'retiredItems', undefined) === 'keep') {
             transaction(db, () => {
                 setSetting(db, 'retiredItems', 'refund');

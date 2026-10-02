@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fromJson, transaction, toJson, getSetting } from './db.mjs';
+import { compact, fromJson, transaction, toJson, getSetting } from './db.mjs';
 import { collectionScope, packScope, skinScope, imageFile, framesDir, frameFile, thumbFile, fontFile } from './paths.mjs';
 import { hex, newKey, cardIds, binderId, idFor } from './ids.mjs';
 import {
-    createPlan, planCard, planCollection, planPack, planSkin, resolveHidden, mapOf, rarityOf, text, lower, slotsFromConfig, typeUsesDepthFor, FILE_NAME,
+    createPlan, planCard, planCollection, planPack, planSkin, resolveHidden, mapOf, text, lower, slotsFromConfig, typeUsesDepthFor, FILE_NAME,
 } from './content.mjs';
+import { raritiesOfRow, rarityIn } from './rarities.mjs';
 import { copyPlanFiles } from './legacy/apply.mjs';
 import { THUMB_VERSION } from './schema.mjs';
 
@@ -67,6 +68,9 @@ function layerEntry(row) {
     entry.canBeFoil = !!row.can_be_foil;
     if (row.over) entry.over = true;
     if (row.price > 0) entry.price = row.price;
+    if (row.price_percent > 0) entry.pricePercent = row.price_percent;
+    if (typeof row.foil_chance === 'number') entry.foilChance = row.foil_chance;
+    if (row.foil_type) entry.foilType = row.foil_type;
     const transform = fromJson(row.transform);
     if (transform) entry.transform = transform;
     if (typeof row.roughness === 'number') entry.roughness = row.roughness;
@@ -77,6 +81,10 @@ function layerEntry(row) {
     const t = fromJson(row.text);
     if (t) entry.text = t;
     return entry;
+}
+
+function variantsOf(rows, groupId) {
+    return rows.filter((r) => r.parent_id === groupId).sort((a, b) => a.position - b.position).map(layerEntry);
 }
 
 function layerView(db, store, view, scope, ownerKind, ownerId) {
@@ -91,8 +99,11 @@ function layerView(db, store, view, scope, ownerKind, ownerId) {
     }
     const out = { front: [], back: [], defaultBack: null, rows };
     for (const row of rows) {
-        if (row.face === 'default-back') out.defaultBack = { ...layerEntry(row), key: row.key };
-        else out[row.face].push(layerEntry(row));
+        if (row.parent_id) continue;
+        const entry = row.kind === 'variant' ? { ...layerEntry(row), kind: 'variant', variants: variantsOf(rows, row.id) } : layerEntry(row);
+        if (row.kind === 'variant') delete entry.canBeFoil;
+        if (row.face === 'default-back') out.defaultBack = { ...entry, key: row.key };
+        else out[row.face].push(entry);
     }
     return out;
 }
@@ -149,6 +160,9 @@ export function collectionDocument(db, store, id, { internal = false } = {}) {
         ...(coll.description && { description: coll.description }),
         ...(fromJson(coll.locales) && { locales: fromJson(coll.locales) }),
         ...(cardText && { cardText }),
+        ...(fromJson(coll.rarities) && { rarities: fromJson(coll.rarities) }),
+        ...(typeof coll.foil_chance === 'number' && { foilChance: coll.foil_chance }),
+        ...(fromJson(coll.foil_types) && { foilTypes: fromJson(coll.foil_types) }),
         stickers: stickers.map((s) => ({ file: `${s.set_id}.png`, x: s.x, y: s.y, width: s.width, height: s.height, rotation: s.rotation })),
         layers: { front: layers.front, back: layers.back },
         ...(layers.defaultBack && { defaultBack: layers.defaultBack }),
@@ -177,7 +191,6 @@ export function packDocument(db, store, id, { internal = false } = {}) {
     const design = fromJson(pack.design, {});
     designView(db, store, view, scope, design);
     addThumb(view, store, scope, pack.id);
-    const collections = db.prepare('SELECT collection_id FROM pack_collections WHERE pack_id = ?').all(pack.id).map((r) => r.collection_id);
     const cards = db.prepare('SELECT card_id FROM pack_cards WHERE pack_id = ?').all(pack.id).map((r) => r.card_id);
     const json = {
         id: pack.id,
@@ -189,7 +202,7 @@ export function packDocument(db, store, id, { internal = false } = {}) {
         ...(pack.skin_id && { skin: pack.skin_id }),
         ...(design.base && { base: design.base }),
         layers: design.layers || [],
-        cards: { all: !!pack.all_collections, collections, cards, ...(fromJson(pack.rarities) && { rarities: fromJson(pack.rarities) }) },
+        cards: { cards, ...(fromJson(pack.rarities) && { rarities: fromJson(pack.rarities) }) },
         cardCount: pack.card_count,
         price: pack.price,
         purchasable: !!pack.purchasable,
@@ -294,25 +307,35 @@ function writeImageRows(db, plan, oldSetIds) {
     }
 }
 
-const insertLayer = (db) => db.prepare(`INSERT INTO layers (id, owner_kind, owner_id, face, position, key, name, text_id, chance, can_be_foil, over, price, transform, text, fps, speed, roughness, metallic)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+const insertLayer = (db) => db.prepare(`INSERT INTO layers (id, owner_kind, owner_id, face, position, key, name, text_id, chance, can_be_foil, over, price, transform, text, fps, speed, roughness, metallic, price_percent, foil_chance, foil_type, kind, parent_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
 function writeLayerRows(db, plan) {
     const insert = insertLayer(db);
     for (const l of plan.layers)
         insert.run(l.id, l.owner_kind, l.owner_id, l.face, l.position, l.key, l.name, l.text_id, l.chance, l.can_be_foil, l.over, l.price,
-            toJson(l.transform), toJson(l.text), toJson(l.fps), l.speed, l.roughness ?? null, l.metallic ?? null);
+            toJson(l.transform), toJson(l.text), toJson(l.fps), l.speed, l.roughness ?? null, l.metallic ?? null, l.price_percent ?? 0, l.foil_chance ?? null, l.foil_type ?? null, l.kind ?? null, l.parent_id ?? null);
 }
 
 function oldImageRows(db, setIds) {
     return setIds.length ? db.prepare(`SELECT * FROM images WHERE set_id IN (${setIds.map(() => '?').join(',')})`).all(...setIds) : [];
 }
 
-function settingsFor(db, paths) {
-    let defaults = {};
+function defaultsOf(paths) {
     try {
-        defaults = JSON.parse(fs.readFileSync(paths.defaultConfig, 'utf8'));
-    } catch { }
+        return JSON.parse(fs.readFileSync(paths.defaultConfig, 'utf8'));
+    } catch {
+        return {};
+    }
+}
+
+export function rarityListOf(db, paths, collectionId) {
+    const row = db.prepare('SELECT rarities FROM collections WHERE id = ?').get(collectionId);
+    return raritiesOfRow(row, { rarities: getSetting(db, 'rarities', defaultsOf(paths).rarities) });
+}
+
+function settingsFor(db, paths) {
+    const defaults = defaultsOf(paths);
     const textures = getSetting(db, 'textures', defaults.textures);
     const cardTypes = getSetting(db, 'cardTypes', defaults.cardTypes);
     return { slots: slotsFromConfig({ textures }), typeUsesDepth: typeUsesDepthFor(cardTypes) };
@@ -321,8 +344,8 @@ function settingsFor(db, paths) {
 export async function saveCard({ db, store, paths, id = null, collectionId, rarity, json, uploads, keep = [], keepAll = {}, thumbVersion = undefined }) {
     const collection = db.prepare('SELECT id, id_key FROM collections WHERE id = ?').get(collectionId);
     if (!collection) throw new DocumentError('Pick a collection for the card');
-    const r = rarityOf(rarity);
-    if (!r) throw new DocumentError(`"${rarity}" is not a rarity`);
+    const r = rarityIn(rarityListOf(db, paths, collection.id), rarity);
+    if (!r) throw new DocumentError(`"${rarity}" is not one of the collection's rarities`);
     if (!text(json?.name)) throw new DocumentError('The card needs a name');
     const previous = id ? cardDocument(db, store, id, { internal: true }) : null;
     const keepNames = new Set(keep.map((k) => String(k)));
@@ -386,8 +409,11 @@ export async function saveCard({ db, store, paths, id = null, collectionId, rari
 
 export async function moveCard({ db, store, paths, id, collectionId, rarity }) {
     const previous = cardDocument(db, store, id, { internal: true });
+    const target = collectionId || previous.collectionId;
+    const list = rarityListOf(db, paths, target);
+    const wanted = rarityIn(list, rarity || previous.rarity) || list[0].name;
     return saveCard({
-        db, store, paths, id, collectionId: collectionId || previous.collectionId, rarity: rarity || previous.rarity, json: previous.json,
+        db, store, paths, id, collectionId: target, rarity: wanted, json: previous.json,
         uploads: new Map(), keepAll: { picture: true, layers: true },
     });
 }
@@ -480,18 +506,23 @@ export async function saveCollection({ db, store, paths, id = null, json, upload
         const cleanup = await finishImages(db, store, plan, oldImageRows(db, oldSetIds));
         const row = coll.row;
         const valid = new Set(plan.layers.filter((l) => l.owner_kind === 'collection').map((l) => l.id));
+        let moved = [];
         transaction(db, () => {
             if (previous) {
                 db.prepare('DELETE FROM layers WHERE owner_kind = ? AND owner_id = ?').run('collection', row.id);
                 db.prepare('DELETE FROM binder_stickers WHERE collection_id = ?').run(row.id);
-                db.prepare('UPDATE collections SET name = ?, short_name = ?, description = ?, locales = ?, card_text = ?, updated_at = ? WHERE id = ?')
-                    .run(row.name, row.short_name, row.description, toJson(row.locales), toJson(row.card_text), Date.now(), row.id);
+                db.prepare(`UPDATE collections SET name = ?, short_name = ?, description = ?, locales = ?, card_text = ?, rarities = ?, foil_chance = ?, foil_types = ?,
+                    updated_at = ? WHERE id = ?`)
+                    .run(row.name, row.short_name, row.description, toJson(row.locales), toJson(row.card_text), toJson(row.rarities), row.foil_chance, toJson(row.foil_types),
+                        Date.now(), row.id);
             } else {
-                db.prepare(`INSERT INTO collections (id, id_key, name, short_name, description, locales, card_text, legacy_folder, sort, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-                    .run(row.id, row.id_key, row.name, row.short_name, row.description, toJson(row.locales), toJson(row.card_text), row.legacy_folder, row.sort, row.created_at, row.updated_at);
+                db.prepare(`INSERT INTO collections (id, id_key, name, short_name, description, locales, card_text, legacy_folder, sort, created_at, updated_at,
+                    rarities, foil_chance, foil_types) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                    .run(row.id, row.id_key, row.name, row.short_name, row.description, toJson(row.locales), toJson(row.card_text), row.legacy_folder, row.sort,
+                        row.created_at, row.updated_at, toJson(row.rarities), row.foil_chance, toJson(row.foil_types));
             }
             writeLayerRows(db, plan);
+            if (previous) moved = moveRarities(db, paths, row.id, json.rarityMoves);
             const sticker = db.prepare('INSERT INTO binder_stickers (collection_id, position, set_id, x, y, width, height, rotation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
             for (const s of plan.stickers) sticker.run(s.collection_id, s.position, s.set_id, s.x, s.y, s.width, s.height, s.rotation);
             writeImageRows(db, plan, oldSetIds);
@@ -503,10 +534,28 @@ export async function saveCollection({ db, store, paths, id = null, json, upload
             }
         });
         await cleanup();
-        return { id: row.id, warnings: plan.warnings };
+        return { id: row.id, warnings: [...plan.warnings, ...moved] };
     } finally {
         await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => { });
     }
+}
+
+function moveRarities(db, paths, collectionId, moves) {
+    const list = rarityListOf(db, paths, collectionId);
+    const map = new Map(Object.entries(moves && typeof moves === 'object' ? moves : {}).map(([k, v]) => [k.toLowerCase(), v]));
+    const target = (name) => rarityIn(list, name) || rarityIn(list, map.get(String(name).toLowerCase())) || list[0].name;
+    const counts = new Map();
+    for (const card of db.prepare('SELECT id, rarity FROM cards WHERE collection_id = ?').all(collectionId)) {
+        const to = target(card.rarity);
+        if (to === card.rarity) continue;
+        db.prepare('UPDATE cards SET rarity = ?, updated_at = ? WHERE id = ?').run(to, Date.now(), card.id);
+        if (!rarityIn(list, card.rarity)) counts.set(`${card.rarity} → ${to}`, (counts.get(`${card.rarity} → ${to}`) || 0) + 1);
+    }
+    for (const pack of db.prepare('SELECT id, rarities FROM packs WHERE collection_id = ? AND rarities IS NOT NULL').all(collectionId)) {
+        const kept = [...new Set((fromJson(pack.rarities) || []).map((r) => rarityIn(list, r) || rarityIn(list, map.get(String(r).toLowerCase()))).filter(Boolean))];
+        db.prepare('UPDATE packs SET rarities = ? WHERE id = ?').run(kept.length && kept.length < list.length ? JSON.stringify(kept) : null, pack.id);
+    }
+    return [...counts.entries()].map(([what, n]) => `${n} card${n === 1 ? '' : 's'} moved: ${what}`);
 }
 
 export async function deleteCollection({ db, store, id }) {
@@ -521,19 +570,21 @@ export async function deleteCollection({ db, store, id }) {
         db.prepare('DELETE FROM images WHERE scope = ?').run(collectionScope(id));
     });
     await store.removeScope(collectionScope(id));
+    compact(db);
 }
 
-function packRule(db, json) {
+function packRule(db, paths, collectionId, json) {
     const cards = json.cards && typeof json.cards === 'object' ? json.cards : {};
-    const collections = (Array.isArray(cards.collections) ? cards.collections : []).filter((c) => db.prepare('SELECT 1 FROM collections WHERE id = ?').get(c));
-    const picked = (Array.isArray(cards.cards) ? cards.cards : []).filter((c) => db.prepare('SELECT 1 FROM cards WHERE id = ?').get(c));
-    const rarities = (Array.isArray(cards.rarities) ? cards.rarities : []).map(rarityOf).filter(Boolean);
-    return { all: !!cards.all, collections, cards: picked, rarities };
+    const picked = (Array.isArray(cards.cards) ? cards.cards : []).filter((c) => db.prepare('SELECT 1 FROM cards WHERE id = ? AND collection_id = ?').get(c, collectionId));
+    const list = rarityListOf(db, paths, collectionId);
+    const rarities = [...new Set((Array.isArray(cards.rarities) ? cards.rarities : []).map((r) => rarityIn(list, r)).filter(Boolean))];
+    return { cards: picked, rarities: rarities.length < list.length ? rarities : [] };
 }
 
 export async function savePack({ db, store, paths, id = null, collectionId = null, json, uploads, keep = [] }) {
     if (!text(json?.name)) throw new DocumentError('The booster pack needs a name');
-    if (collectionId && !db.prepare('SELECT 1 FROM collections WHERE id = ?').get(collectionId)) throw new DocumentError('No such collection');
+    if (!collectionId) throw new DocumentError('Pick the collection the booster pack opens cards of');
+    if (!db.prepare('SELECT 1 FROM collections WHERE id = ?').get(collectionId)) throw new DocumentError('No such collection');
     const clash = db.prepare('SELECT id FROM packs WHERE lower(name) = lower(?) AND id <> ?').get(json.name.trim(), id || '');
     if (clash) throw new DocumentError(`"${json.name.trim()}" already exists`);
     const previous = id ? packDocument(db, store, id, { internal: true }) : null;
@@ -548,12 +599,11 @@ export async function savePack({ db, store, paths, id = null, collectionId = nul
             keepIds: true,
             existing: { layerIds: existingLayerIds(db, { kind: 'pack', id: packId }).filter((x) => !(design.layers || []).some((l) => l.file === x)) },
         });
-        const rule = packRule(db, json);
+        const rule = packRule(db, paths, collectionId, json);
         const skinId = json.skin && db.prepare('SELECT 1 FROM skins WHERE id = ?').get(json.skin) ? json.skin : null;
         const base = json.base && db.prepare('SELECT 1 FROM skins WHERE id = ?').get(json.base) ? json.base : null;
         const pack = planPack(plan, {
-            dir, data: json, id: packId, collectionId, all: !collectionId && rule.all, collections: collectionId ? [] : rule.collections, cards: rule.cards,
-            rarities: rule.rarities, skinId, base, scope,
+            dir, data: json, id: packId, collectionId, cards: rule.cards, rarities: rule.rarities, skinId, base, scope,
         });
         if (!previous) pack.row.sort = db.prepare('SELECT COALESCE(MAX(sort) + 1, 0) AS n FROM packs').get().n;
         else pack.row.sort = previous.row.sort;
@@ -567,7 +617,6 @@ export async function savePack({ db, store, paths, id = null, collectionId = nul
                 loot_percent, background, look, skin_id, design, sort, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
                 .run(r.id, r.collection_id, r.name, r.short_name, r.description, toJson(r.locales), r.all_collections, toJson(r.rarities), r.card_count, r.price,
                     r.purchasable, r.loot_percent, r.background, r.look, r.skin_id, toJson(r.design), r.sort, previous?.row.created_at ?? r.created_at, Date.now());
-            for (const c of pack.collections) db.prepare('INSERT OR IGNORE INTO pack_collections (pack_id, collection_id) VALUES (?, ?)').run(r.id, c);
             for (const c of pack.cards) db.prepare('INSERT OR IGNORE INTO pack_cards (pack_id, card_id) VALUES (?, ?)').run(r.id, c);
             writeImageRows(db, plan, oldSetIds);
         });
@@ -592,6 +641,7 @@ export async function deletePack({ db, store, id }) {
     for (const row of rows) await fs.promises.rm(store.imagePath(row.scope, row.set_id, row.channel), { force: true });
     if (previous.collectionId) await store.removeThumb(collectionScope(previous.collectionId), id);
     else await store.removeScope(packScope(id));
+    compact(db);
 }
 
 export async function saveSkin({ db, store, paths, id = null, json, uploads }) {

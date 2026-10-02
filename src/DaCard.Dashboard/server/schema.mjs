@@ -1,3 +1,5 @@
+import { retireFoilLayersAndBindPacks } from './migrate5.mjs';
+
 export const SCHEMA = [
     {
         version: 1,
@@ -168,6 +170,35 @@ ALTER TABLE cards ADD COLUMN thumb_version INTEGER NOT NULL DEFAULT 0;
 UPDATE cards SET thumb_version = 1 WHERE NOT EXISTS (
     SELECT 1 FROM layers l WHERE l.owner_kind = 'card' AND l.owner_id = cards.id AND l.face = 'front' AND l.chance < 100
 );
+`,
+    },
+    {
+        version: 4,
+        title: "Layer prices: a share of the card's price",
+        sql: `
+ALTER TABLE layers ADD COLUMN foil INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE layers ADD COLUMN price_percent REAL NOT NULL DEFAULT 0;
+`,
+    },
+    {
+        version: 5,
+        title: 'Custom rarities, foil types and one collection per booster pack',
+        sql: `
+ALTER TABLE collections ADD COLUMN rarities TEXT;
+ALTER TABLE collections ADD COLUMN foil_chance REAL;
+ALTER TABLE collections ADD COLUMN foil_types TEXT;
+ALTER TABLE layers ADD COLUMN foil_chance REAL;
+ALTER TABLE layers ADD COLUMN foil_type TEXT;
+`,
+        run: retireFoilLayersAndBindPacks,
+    },
+    {
+        version: 6,
+        title: 'Variant layers and foil masks',
+        sql: `
+ALTER TABLE layers ADD COLUMN kind TEXT;
+ALTER TABLE layers ADD COLUMN parent_id TEXT;
+CREATE INDEX layers_by_parent ON layers(parent_id);
 `,
     },
 ];

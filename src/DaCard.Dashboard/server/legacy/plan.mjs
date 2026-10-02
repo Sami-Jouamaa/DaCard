@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { idFor, isMongoId, newImageId } from '../ids.mjs';
-import { collectionScope, packScope, skinScope } from '../paths.mjs';
+import { collectionScope, skinScope } from '../paths.mjs';
 import {
     RARITIES, PACK_MAPS, lower, text, isDir, isFile, subdirs, findChild, readJson, createPlan, planCollection, planCard, resolveHidden,
     pictureLayer, addLayerRows, planSkin, planPack, slotsFromConfig, typeUsesDepthFor, rarityOf,
@@ -204,12 +204,22 @@ export function planAddons(plan, addonDirs, { slots, cardTypes = null, builtinSk
                 else plan.warnings.push(`${where}: card '${key}' is not installed; left out of the pack`);
             }
             const rarities = (Array.isArray(rule.rarities) ? rule.rarities : []).map(rarityOf).filter(Boolean);
-            const single = collections.size === 1 && cards.size === 0 ? [...collections][0] : null;
+            const counts = new Map();
+            for (const card of plan.cards)
+                if (collections.has(card.row.collection_id) || cards.has(card.row.id)) counts.set(card.row.collection_id, (counts.get(card.row.collection_id) || 0) + 1);
+            const single = [...counts.entries()].sort((x, y) => y[1] - x[1])[0]?.[0] ?? [...collections][0] ?? null;
+            if (!single) {
+                plan.warnings.push(`${where}: none of its cards are installed; skipped`);
+                continue;
+            }
+            if (collections.size + new Set(plan.cards.filter((c) => cards.has(c.row.id)).map((c) => c.row.collection_id)).size > 1)
+                plan.warnings.push(`${where}: a booster pack now holds the cards of one collection; it uses ${plan.collections.find((c) => c.row.id === single)?.row.name ?? single}`);
+            const picked = collections.size ? [] : plan.cards.filter((c) => cards.has(c.row.id) && c.row.collection_id === single).map((c) => c.row.id);
             const skinId = resolveSkin(info.folder, data.skin);
             if (text(data.skin) && !skinId) plan.warnings.push(`${where}: skin '${data.skin}' is not installed; the pack uses its own maps`);
             planPack(plan, {
-                dir, data: { ...data, name: text(data.name) || packFolder }, id, collectionId: single, collections: single ? [] : [...collections], cards: [...cards],
-                rarities, skinId, base: resolveSkin(info.folder, data.base) ?? text(data.base), scope: single ? collectionScope(single) : packScope(id),
+                dir, data: { ...data, name: text(data.name) || packFolder }, id, collectionId: single, cards: picked,
+                rarities, skinId, base: resolveSkin(info.folder, data.base) ?? text(data.base), scope: collectionScope(single),
             });
         }
     }

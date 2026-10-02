@@ -15,6 +15,19 @@ export function openDatabase(file, { readOnly = false } = {}) {
     return db;
 }
 
+export function compact(db) {
+    try {
+        const free = db.prepare('PRAGMA freelist_count').get().freelist_count;
+        const pages = db.prepare('PRAGMA page_count').get().page_count;
+        if (free < 64 || free * 4 < pages) return false;
+        db.exec('VACUUM');
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export const schemaVersion = (db) => db.prepare('PRAGMA user_version').get().user_version;
 
 export function pendingSchema(db) {
@@ -23,14 +36,20 @@ export function pendingSchema(db) {
     return SCHEMA.filter((s) => s.version > current);
 }
 
-export function upgradeSchema(db) {
+export function upgradeSchema(db, context = {}) {
     const steps = pendingSchema(db);
     for (const step of steps) {
+        const afterCommit = [];
         transaction(db, () => {
             db.exec(step.sql);
-            if (step.run) step.run(db);
+            if (step.run) step.run(db, { ...context, afterCommit });
             db.exec(`PRAGMA user_version = ${step.version}`);
         });
+        for (const done of afterCommit) {
+            try {
+                done();
+            } catch { }
+        }
     }
     return steps;
 }
