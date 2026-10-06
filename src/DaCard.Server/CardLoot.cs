@@ -12,7 +12,7 @@ using SPTarkov.Server.Core.Models.Eft.Common;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 
 namespace DaCard.Server;
-
+// Build: dotnet build -p:E:\SPT, will automatically put the new DLL in the correct folder, run through powershell
 // Cards found in raid: extra loot, on top of what a container would hold anyway. After SPT fills a raid's containers, every
 // container of a card container type ("containers" in config.json) rolls "loot.cardPercent"; a hit rolls a rarity (each
 // collection's own rarity chances) and adds a random card of it, with its layers rolled, into a free cell.
