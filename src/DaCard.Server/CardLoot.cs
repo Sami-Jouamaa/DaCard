@@ -40,7 +40,6 @@ public class CardLoot(ISptLogger<CardLoot> logger, CardIndex cardIndex)
             _index.RaritiesOf);
 
         _instance = this;
-        _instance.LogInfo($"Number of cards: {_instance._cards.Count}");
 
         if (_patched)
             return;
@@ -171,7 +170,6 @@ public class CardLoot(ISptLogger<CardLoot> logger, CardIndex cardIndex)
             if (probability >= 1.0)
                 return;
             double poolWeight = existingWeight * probability / (1.0 - probability);
-            _instance.LogInfo($"[DaCard] Added MTG_POOL to {containerTypeId}: existingWeight={existingWeight}, poolWeight={poolWeight}, targetChance={_instance._cardPercent}%");
             result.Add(new ProbabilityObject<MongoId, float?>(MtzCardPoolTpl, (float)poolWeight, null));
         }
     }
