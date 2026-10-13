@@ -64,7 +64,6 @@ namespace DaCard.Client
                 _composite = new Material(shader) { name = "dacard_layer_composite", hideFlags = HideFlags.DontUnloadUnusedAsset };
             else if (_composite.shader == null || _composite.shader.name != shader.name || !_composite.shader.isSupported)
             {
-                Plugin.Log.LogInfo($"Card layer shader was gone ({(_composite.shader == null ? "unloaded" : _composite.shader.name)}): taken again from {model.name}");
                 _composite.shader = shader;
             }
         }
@@ -117,7 +116,6 @@ namespace DaCard.Client
                     foreach (var foil in stamp.Foils)
                         stack.Foils[foil.Key] = FoilTypes.Index(foil.Value);
                 stack.PictureFoil = stack.Foils.TryGetValue(FoilTypes.Picture, out var picture) ? picture : 0;
-                Plugin.Log.LogInfo($"Card layers {key}: front {front.Count} of {card.Front.Count}, back {back.Count} of {card.Back.Count} layer(s)");
             }
             if (!stack.Models.Contains(model))
                 stack.Models.Add(model);
@@ -518,9 +516,13 @@ namespace DaCard.Client
             var frame = CardAnimator.Frame(card.Tpl, TrackKey(side, index, map));
             if (frame != null)
                 return frame;
-            return layer.Textures != null && layer.Textures.TryGetValue(map, out var url) && url != null
-                ? CardRegistry.GetTexture(url, linear: map != LayerMaps.Albedo)
-                : null;
+
+            if (layer.Textures != null && layer.Textures.TryGetValue(map, out var url) && url != null)
+            {
+                var texture = CardRegistry.GetTexture(url, linear: map != LayerMaps.Albedo);
+                return texture;
+            }
+            return null;
         }
     }
 }
